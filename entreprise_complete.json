@@ -1,0 +1,1177 @@
+{
+  "siren": "853547644",
+  "siren_formate": "853 547 644",
+  "diffusable": true,
+  "opposition_utilisation_commerciale": true,
+  "nom_entreprise": "HOMA GAMES",
+  "personne_morale": true,
+  "denomination": "HOMA GAMES",
+  "sigle": null,
+  "nom": null,
+  "prenom": null,
+  "sexe": null,
+  "siege": {
+    "type_etablissement": "SEP",
+    "siret": "85354764400031",
+    "siret_formate": "853 547 644 00031",
+    "diffusion_partielle": false,
+    "nic": "00031",
+    "numero_voie": 7,
+    "indice_repetition": null,
+    "type_voie": "RUE",
+    "libelle_voie": "DE MADRID",
+    "complement_adresse": null,
+    "adresse_ligne_1": "7 RUE DE MADRID",
+    "adresse_ligne_2": null,
+    "code_postal": "75008",
+    "ville": "PARIS",
+    "pays": "France",
+    "code_pays": "FR",
+    "latitude": 48.878440999801846,
+    "longitude": 2.321101000002812,
+    "code_naf": "58.21Z",
+    "libelle_code_naf": "Édition de jeux électroniques",
+    "etablissement_employeur": false,
+    "effectif": "0 salarié",
+    "effectif_min": 0,
+    "effectif_max": 0,
+    "tranche_effectif": "22",
+    "annee_effectif": 2022,
+    "date_de_creation": "2022-06-27",
+    "etablissement_cesse": false,
+    "date_cessation": null,
+    "siege": true,
+    "domiciliation": {
+      "siren": "819707316",
+      "nom": "WeWork Paris I Tenant SAS"
+    },
+    "enseigne": "HOMA",
+    "nom_commercial": "HOMA",
+    "predecesseurs": [
+      {
+        "siret": "85354764400015",
+        "date": "2022-06-27",
+        "transfert_siege": false,
+        "continuite_economique": true
+      }
+    ]
+  },
+  "rnm": null,
+  "code_nafa": null,
+  "code_naf": "58.21Z",
+  "libelle_code_naf": "Édition de jeux électroniques",
+  "domaine_activite": "Édition",
+  "objet_social": "Conception, développement, édition, production, commercialisation, exploitation, distribution et diffusion de logiciels, applications multimédia et contenus sur tous supports , tous développements à caractère informatique et/ou multimédia sur tous supports et dans tous domaines D activité , toute activité de communication, publicité et marketing sur tous supports , achat et vente D espaces publicitaires , négociation de tout droit de propriété intellectuelle.",
+  "activites_rne": [
+    {
+      "description": "Conception, développement, édition, production, commercialisation, exploitation, distribution et diffusion de logiciels, applications multimédia et contenus sur tous supports , tous développements à caractère informatique et/ou multimédia sur tous supports et dans tous domaines D activité , toute activité de communication, publicité et marketing sur tous supports , achat et vente D espaces publicitaires , négociation de tout droit de propriété intellectuelle."
+    }
+  ],
+  "conventions_collectives": [
+    {
+      "nom": "Convention collective nationale des bureaux d'études techniques, des cabinets d'ingénieurs-conseils et des sociétés de conseils",
+      "idcc": 1486,
+      "pourcentage": null,
+      "confirmee": true
+    }
+  ],
+  "date_creation": "2019-08-01",
+  "date_creation_formate": "01/08/2019",
+  "entreprise_cessee": false,
+  "date_cessation": null,
+  "date_cessation_formate": null,
+  "associe_unique": false,
+  "categorie_juridique": "5710",
+  "forme_juridique": "SAS, société par actions simplifiée",
+  "forme_exercice": "Commerciale",
+  "formes_exercice": [
+    "Commerciale"
+  ],
+  "entreprise_employeuse": false,
+  "societe_a_mission": false,
+  "qualite_artisan": null,
+  "effectif": "Entre 100 et 199 salariés",
+  "effectif_min": 100,
+  "effectif_max": 199,
+  "annee_effectif": 2022,
+  "tranche_effectif": "22",
+  "annee_tranche_effectif": 2022,
+  "capital": 20938.41,
+  "capital_actuel_si_variable": null,
+  "devise_capital": "Euros",
+  "capital_formate": "20 938,41 €",
+  "date_cloture_exercice": "31 Décembre",
+  "date_cloture_exercice_exceptionnelle": "2020-12-31",
+  "prochaine_date_cloture_exercice": "2025-12-31",
+  "prochaine_date_cloture_exercice_formate": "31/12/2025",
+  "economie_sociale_solidaire": false,
+  "duree_personne_morale": "99",
+  "derniere_mise_a_jour_sirene": "2025-09-11",
+  "derniere_mise_a_jour_rcs": "2025-10-21",
+  "derniere_mise_a_jour_rne": "2025-10-21",
+  "dernier_traitement": "2025-02-10",
+  "date_debut_activite": "2019-09-03",
+  "date_debut_premiere_activite": "2019-08-01",
+  "statut_rcs": "Inscrit",
+  "greffe": "PARIS",
+  "code_greffe": "7501",
+  "numero_rcs": "853 547 644 R.C.S. Paris",
+  "date_immatriculation_rcs": "2019-09-03",
+  "date_premiere_immatriculation_rcs": "2019-09-03",
+  "date_radiation_rcs": null,
+  "statut_rne": "Inscrit",
+  "date_immatriculation_rne": "2019-09-03",
+  "date_radiation_rne": null,
+  "numero_tva_intracommunautaire": "FR84853547644",
+  "etablissements": [
+    {
+      "type_etablissement": "SEP",
+      "siret": "85354764400031",
+      "siret_formate": "853 547 644 00031",
+      "diffusion_partielle": false,
+      "nic": "00031",
+      "numero_voie": 7,
+      "indice_repetition": null,
+      "type_voie": "RUE",
+      "libelle_voie": "DE MADRID",
+      "complement_adresse": null,
+      "adresse_ligne_1": "7 RUE DE MADRID",
+      "adresse_ligne_2": null,
+      "code_postal": "75008",
+      "ville": "PARIS",
+      "pays": "France",
+      "code_pays": "FR",
+      "latitude": 48.878440999801846,
+      "longitude": 2.321101000002812,
+      "code_naf": "58.21Z",
+      "libelle_code_naf": "Édition de jeux électroniques",
+      "etablissement_employeur": false,
+      "effectif": "0 salarié",
+      "effectif_min": 0,
+      "effectif_max": 0,
+      "tranche_effectif": "22",
+      "annee_effectif": 2022,
+      "date_de_creation": "2022-06-27",
+      "etablissement_cesse": false,
+      "date_cessation": null,
+      "siege": true,
+      "domiciliation": {
+        "siren": "819707316",
+        "nom": "WeWork Paris I Tenant SAS"
+      },
+      "enseigne": "HOMA",
+      "nom_commercial": "HOMA",
+      "predecesseurs": [
+        {
+          "siret": "85354764400015",
+          "date": "2022-06-27",
+          "transfert_siege": false,
+          "continuite_economique": true
+        }
+      ]
+    },
+    {
+      "type_etablissement": "SEC",
+      "siret": "85354764400015",
+      "siret_formate": "853 547 644 00015",
+      "diffusion_partielle": false,
+      "nic": "00015",
+      "numero_voie": 76,
+      "indice_repetition": null,
+      "type_voie": "RUE",
+      "libelle_voie": "DU FAUBOURG SAINT-DENIS",
+      "complement_adresse": null,
+      "adresse_ligne_1": "76 RUE DU FAUBOURG SAINT-DENIS",
+      "adresse_ligne_2": null,
+      "code_postal": "75010",
+      "ville": "PARIS",
+      "pays": "France",
+      "code_pays": "FR",
+      "latitude": 48.87323499980185,
+      "longitude": 2.3548010000026722,
+      "code_naf": "58.21Z",
+      "libelle_code_naf": "Édition de jeux électroniques",
+      "etablissement_employeur": true,
+      "effectif": "Au moins 1 salarié",
+      "effectif_min": 1,
+      "effectif_max": 500000,
+      "tranche_effectif": "00",
+      "annee_effectif": 2022,
+      "date_de_creation": "2019-08-01",
+      "etablissement_cesse": true,
+      "date_cessation": "2022-06-27",
+      "siege": false,
+      "domiciliation": null,
+      "enseigne": null,
+      "nom_commercial": null,
+      "successeurs": [
+        {
+          "siret": "85354764400031",
+          "date": "2022-06-27",
+          "transfert_siege": false,
+          "continuite_economique": true
+        }
+      ]
+    },
+    {
+      "type_etablissement": "SEC",
+      "siret": "85354764400023",
+      "siret_formate": "853 547 644 00023",
+      "diffusion_partielle": false,
+      "nic": "00023",
+      "numero_voie": 3,
+      "indice_repetition": null,
+      "type_voie": "RUE",
+      "libelle_voie": "ALARIC II",
+      "complement_adresse": null,
+      "adresse_ligne_1": "3 RUE ALARIC II",
+      "adresse_ligne_2": null,
+      "code_postal": "31100",
+      "ville": "TOULOUSE",
+      "pays": "France",
+      "code_pays": "FR",
+      "latitude": 43.61166199980348,
+      "longitude": 1.429763000005908,
+      "code_naf": "58.21Z",
+      "libelle_code_naf": "Édition de jeux électroniques",
+      "etablissement_employeur": true,
+      "effectif": "Entre 3 et 5 salariés",
+      "effectif_min": 3,
+      "effectif_max": 5,
+      "tranche_effectif": "02",
+      "annee_effectif": 2022,
+      "date_de_creation": "2020-09-17",
+      "etablissement_cesse": true,
+      "date_cessation": "2023-06-30",
+      "siege": false,
+      "domiciliation": null,
+      "enseigne": null,
+      "nom_commercial": "HOMA GAMES TOULOUSE"
+    }
+  ],
+  "date_reouverture": null,
+  "statut_consolide": "actif",
+  "finances": [],
+  "finances_consolidees": [],
+  "representants": [
+    {
+      "qualite": "Président",
+      "qualites": [
+        "Président"
+      ],
+      "personne_morale": false,
+      "date_prise_de_poste": "2020-03-11",
+      "nom_complet": "Daniel Nathan",
+      "nom": "Nathan",
+      "prenom": "Daniel",
+      "prenom_usuel": "Daniel",
+      "pseudonyme": null,
+      "nom_usage": null,
+      "sexe": "M",
+      "date_de_naissance_rgpd": "1988-02",
+      "date_de_naissance": "1988-02-14",
+      "date_de_naissance_rgpd_formatee": "02/1988",
+      "date_de_naissance_formate": "14/02/1988",
+      "age": 37,
+      "nationalite": "Française",
+      "code_nationalite": "FR",
+      "codes_nationalites": [
+        "FR"
+      ],
+      "code_nationalité": "FR",
+      "ville_de_naissance": "Fontenay-sous-Bois",
+      "departement_de_naissance": "94",
+      "pays_de_naissance": "FRANCE",
+      "code_pays_de_naissance": "FR",
+      "adresse_ligne_1": "36 rue d'Hauteville",
+      "adresse_ligne_2": null,
+      "adresse_ligne_3": null,
+      "code_postal": "75010",
+      "ville": "Paris",
+      "departement": "75",
+      "pays": "FRANCE",
+      "code_pays": "FR"
+    },
+    {
+      "qualite": "Commissaire aux comptes titulaire",
+      "qualites": [
+        "Commissaire aux comptes titulaire"
+      ],
+      "personne_morale": true,
+      "date_prise_de_poste": "2021-07-30",
+      "nom_complet": "SAINT HONORE BK&A",
+      "denomination": "SAINT HONORE BK&A",
+      "siren": "501572390",
+      "forme_juridique": "SAS, société par actions simplifiée",
+      "adresse_ligne_1": "140 rue du Faubourg Saint-Honoré",
+      "adresse_ligne_2": null,
+      "adresse_ligne_3": null,
+      "code_postal": "75008",
+      "ville": "Paris",
+      "departement": "75",
+      "pays": "FRANCE",
+      "code_pays": "FR"
+    }
+  ],
+  "beneficiaires_effectifs": [],
+  "depots_actes": [
+    {
+      "date_depot": "2025-02-10",
+      "date_depot_formate": "10/02/2025",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 10-02-2025.pdf",
+      "token": "Uk5FQTg1MzU0NzY0NDY3YTk5NjY4OTkwNTVlMzk3NDAzNjAzNg",
+      "actes": [
+        {
+          "type": "Copie des statuts mis à jour",
+          "decision": null,
+          "date_acte": null,
+          "date_acte_formate": null
+        }
+      ]
+    },
+    {
+      "date_depot": "2025-02-10",
+      "date_depot_formate": "10/02/2025",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 10-02-2025.pdf",
+      "token": "Uk5FQTg1MzU0NzY0NDY3YTk5NjY4OTkwNTVlMzk3NDAzNjAzNQ",
+      "actes": [
+        {
+          "type": "PV ayant décidé et constaté la modification enregistrée, certifié conforme par le représentant légal",
+          "decision": null,
+          "date_acte": null,
+          "date_acte_formate": null
+        }
+      ]
+    },
+    {
+      "date_depot": "2024-11-29",
+      "date_depot_formate": "29/11/2024",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 29-11-2024.pdf",
+      "token": "Uk5FQTg1MzU0NzY0NDY3NTNjMzRkOWMwNWRkZDA3ZjAxYTFjMw",
+      "actes": [
+        {
+          "type": "Projet de traité de fusion",
+          "decision": null,
+          "date_acte": null,
+          "date_acte_formate": null
+        }
+      ]
+    },
+    {
+      "date_depot": "2024-04-05",
+      "date_depot_formate": "05/04/2024",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 05-04-2024.pdf",
+      "token": "Uk5FQTg1MzU0NzY0NDY2NTA4OTI3ODUwMzZhYjY5ZDAzODU1ZA",
+      "actes": [
+        {
+          "type": "Décision(s) du président",
+          "decision": "Augmentation du capital social",
+          "date_acte": null,
+          "date_acte_formate": null
+        },
+        {
+          "type": "Décision(s) du président",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": null,
+          "date_acte_formate": null
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": null,
+          "date_acte_formate": null
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Augmentation du capital social",
+          "date_acte": null,
+          "date_acte_formate": null
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": null,
+          "date_acte_formate": null
+        }
+      ]
+    },
+    {
+      "date_depot": "2024-04-05",
+      "date_depot_formate": "05/04/2024",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 05-04-2024.pdf",
+      "token": "Uk5FQTg1MzU0NzY0NDY2NTA4OTI3ODUwMzZhYjY5ZDAzODU1Yw",
+      "actes": [
+        {
+          "type": "Décision(s) du président",
+          "decision": "Augmentation du capital social",
+          "date_acte": null,
+          "date_acte_formate": null
+        },
+        {
+          "type": "Décision(s) du président",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": null,
+          "date_acte_formate": null
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": null,
+          "date_acte_formate": null
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Augmentation du capital social",
+          "date_acte": null,
+          "date_acte_formate": null
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": null,
+          "date_acte_formate": null
+        }
+      ]
+    },
+    {
+      "date_depot": "2023-02-21",
+      "date_depot_formate": "21/02/2023",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 21-02-2023.pdf",
+      "token": "QVlqbDRNcWxGZGVjRV9DMDAyMkExMDAxTDEwNjg5NUQyMDIzMDIyNkgxNzU1MTRUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": "2023-01-20",
+          "date_acte_formate": "20/01/2023"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Décision d'augmentation",
+          "date_acte": "2022-12-29",
+          "date_acte_formate": "29/12/2022"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Augmentation du capital social",
+          "date_acte": "2023-01-20",
+          "date_acte_formate": "20/01/2023"
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": "2023-01-20",
+          "date_acte_formate": "20/01/2023"
+        }
+      ]
+    },
+    {
+      "date_depot": "2023-02-21",
+      "date_depot_formate": "21/02/2023",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 21-02-2023.pdf",
+      "token": "QTFBWmpEVHppZlNGa19DMDAyMkExMDAxTDEwNjg2MkQyMDIzMDIyNkgxNzU1MTNUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": "2023-01-20",
+          "date_acte_formate": "20/01/2023"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Décision d'augmentation",
+          "date_acte": "2022-12-29",
+          "date_acte_formate": "29/12/2022"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Augmentation du capital social",
+          "date_acte": "2023-01-20",
+          "date_acte_formate": "20/01/2023"
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": "2023-01-20",
+          "date_acte_formate": "20/01/2023"
+        }
+      ]
+    },
+    {
+      "date_depot": "2022-09-27",
+      "date_depot_formate": "27/09/2022",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 27-09-2022.pdf",
+      "token": "QTA5ZVFEM21aaUxXRl9DMDAyMkExMDAxTDc1MTQxNEQyMDIyMTAwMkgxNzQzMTdUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Nomination de commissaire aux comptes titulaire",
+          "date_acte": "2021-07-30",
+          "date_acte_formate": "30/07/2021"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": null,
+          "date_acte": "2021-09-28",
+          "date_acte_formate": "28/09/2021"
+        }
+      ]
+    },
+    {
+      "date_depot": "2022-07-21",
+      "date_depot_formate": "21/07/2022",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 21-07-2022.pdf",
+      "token": "QUhZcWV3Y0ZJRENxaF9DMDAyMkExMDAxTDY1NTE2OUQyMDIyMDcyNkgyMDQ2MTRUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": "2022-06-20",
+          "date_acte_formate": "20/06/2022"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Transfert du siège social",
+          "date_acte": "2022-06-20",
+          "date_acte_formate": "20/06/2022"
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": "2022-06-20",
+          "date_acte_formate": "20/06/2022"
+        }
+      ]
+    },
+    {
+      "date_depot": "2022-01-28",
+      "date_depot_formate": "28/01/2022",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 28-01-2022.pdf",
+      "token": "QXNIWHBmRlZBUkdoR19DMDAyMkExMDAxTDcyNzYyOEQyMDIyMDIwMkgxOTE4MDVUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Refonte des statuts",
+          "date_acte": "2021-09-28",
+          "date_acte_formate": "28/09/2021"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Augmentation du capital social",
+          "date_acte": "2021-10-25",
+          "date_acte_formate": "25/10/2021"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Décision d'augmentation",
+          "date_acte": "2021-09-28",
+          "date_acte_formate": "28/09/2021"
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": "2021-09-28",
+          "date_acte_formate": "28/09/2021"
+        }
+      ]
+    },
+    {
+      "date_depot": "2021-01-21",
+      "date_depot_formate": "21/01/2021",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 21-01-2021.pdf",
+      "token": "QWJVZ0IzWXR2bXQyS19DMDAyMkExMDAxTDI2NDc1OUQyMDIxMDEyN0gwMjIzNDFUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Décision(s) du président",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": "2020-06-03",
+          "date_acte_formate": "03/06/2020"
+        },
+        {
+          "type": "Décision(s) du président",
+          "decision": "Augmentation du capital social",
+          "date_acte": "2020-06-03",
+          "date_acte_formate": "03/06/2020"
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": "2020-06-03",
+          "date_acte_formate": "03/06/2020"
+        }
+      ]
+    },
+    {
+      "date_depot": "2021-01-21",
+      "date_depot_formate": "21/01/2021",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 21-01-2021.pdf",
+      "token": "QVN4MnlHYkJ4N0hLMV9DMDAyMkExMDAxTDI2NDcwOUQyMDIxMDEyN0gwMjIzMzJUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Décision(s) du président",
+          "decision": "Augmentation du capital social",
+          "date_acte": "2020-07-30",
+          "date_acte_formate": "30/07/2020"
+        },
+        {
+          "type": "Décision(s) du président",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": "2020-07-30",
+          "date_acte_formate": "30/07/2020"
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": "2020-07-30",
+          "date_acte_formate": "30/07/2020"
+        }
+      ]
+    },
+    {
+      "date_depot": "2021-01-21",
+      "date_depot_formate": "21/01/2021",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 21-01-2021.pdf",
+      "token": "QTFtSURQM0QyTGlvd19DMDAyMkExMDAxTDI2NTI3M0QyMDIxMDEyN0gwMjI0NTNUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Décision(s) du président",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": "2020-10-12",
+          "date_acte_formate": "12/10/2020"
+        },
+        {
+          "type": "Décision(s) du président",
+          "decision": "Augmentation du capital social",
+          "date_acte": "2020-10-12",
+          "date_acte_formate": "12/10/2020"
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": "2020-10-12",
+          "date_acte_formate": "12/10/2020"
+        }
+      ]
+    },
+    {
+      "date_depot": "2020-08-26",
+      "date_depot_formate": "26/08/2020",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 26-08-2020.pdf",
+      "token": "QU9lOU9aQTVFUkZiSV9DMDAyMkExMDAxTDU4ODYxNUQyMDIwMDgzMUgxOTQxMjlUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Certificat",
+          "decision": "Divers",
+          "date_acte": "2020-04-21",
+          "date_acte_formate": "21/04/2020"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Augmentation du capital social",
+          "date_acte": "2020-03-11",
+          "date_acte_formate": "11/03/2020"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": "2020-03-11",
+          "date_acte_formate": "11/03/2020"
+        },
+        {
+          "type": "Extrait de procès-verbal",
+          "decision": "Changement de président",
+          "date_acte": "2020-03-11",
+          "date_acte_formate": "11/03/2020"
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": "2020-03-11",
+          "date_acte_formate": "11/03/2020"
+        }
+      ]
+    },
+    {
+      "date_depot": "2020-04-09",
+      "date_depot_formate": "09/04/2020",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 09-04-2020.pdf",
+      "token": "QVlJa2VPS0s2OXNWQV9DMDAyMkExMDAxTDI0NzQ2NEQyMDIwMDQxNEgxODE1MjhUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Décision(s) du président",
+          "decision": "Démission de directeur général",
+          "date_acte": "2020-03-10",
+          "date_acte_formate": "10/03/2020"
+        }
+      ]
+    },
+    {
+      "date_depot": "2019-10-23",
+      "date_depot_formate": "23/10/2019",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 23-10-2019.pdf",
+      "token": "QWdrM1Jvd3RRRjN1MF9DMDAyMkExMDAxTDA4ODYzN0QyMDE5MTAyOEgyMTI1NDBUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Procès-verbal d'assemblée générale ordinaire",
+          "decision": "Modification(s) statutaire(s)",
+          "date_acte": "2019-10-01",
+          "date_acte_formate": "01/10/2019"
+        },
+        {
+          "type": "Procès-verbal d'assemblée générale ordinaire",
+          "decision": "Changement de président",
+          "date_acte": "2019-10-01",
+          "date_acte_formate": "01/10/2019"
+        },
+        {
+          "type": "Statuts mis à jour",
+          "decision": null,
+          "date_acte": "2019-10-01",
+          "date_acte_formate": "01/10/2019"
+        }
+      ]
+    },
+    {
+      "date_depot": "2019-09-03",
+      "date_depot_formate": "03/09/2019",
+      "disponible": true,
+      "nom_fichier_pdf": "HOMA GAMES - Actes du 03-09-2019.pdf",
+      "token": "QUZsSjJqcW8yMmxQTF9DMDAyMkExMDAxTDI0MzUwNUQyMDE5MDkwOEgyMDEyMTZUUElKVEVTMDAzUERCT1I",
+      "actes": [
+        {
+          "type": "Acte",
+          "decision": "Nomination de directeur général",
+          "date_acte": "2019-08-20",
+          "date_acte_formate": "20/08/2019"
+        },
+        {
+          "type": "Certificat",
+          "decision": "Divers",
+          "date_acte": "2019-07-31",
+          "date_acte_formate": "31/07/2019"
+        },
+        {
+          "type": "Liste des souscripteurs",
+          "decision": null,
+          "date_acte": "2019-07-29",
+          "date_acte_formate": "29/07/2019"
+        },
+        {
+          "type": "Statuts constitutifs",
+          "decision": null,
+          "date_acte": "2019-08-20",
+          "date_acte_formate": "20/08/2019"
+        }
+      ]
+    }
+  ],
+  "comptes": [],
+  "publications_bodacc": [
+    {
+      "numero_parution": "20250035",
+      "date": "2025-02-19",
+      "numero_annonce": "1088",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": null,
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "7 rue de Madrid 75008 Paris",
+      "capital": 20938.41,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur le capital (augmentation)"
+    },
+    {
+      "numero_parution": "20240240",
+      "date": "2024-12-12",
+      "numero_annonce": "1574",
+      "annonce_rectificative": false,
+      "bodacc": "A",
+      "type": "Vente",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": null,
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "7 rue de Madrid 75008 Paris",
+      "capital": 20900.17,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_immatriculation": null,
+      "categorie_vente": "Autre achat, apport, attribution (immatriculation d'une personne morale, uniquement)",
+      "date_debut_activite": null,
+      "origine_fonds": null,
+      "commentaires": "Avis au Bodacc relatif au projet commun de fusion nationale. Société absorbante : HOMA GAMES Forme : Société par actions simplifiée Adresse du siège : 7 rue de Madrid 75008 Paris Capital : 20900.17 EUR Numéro unique d'identification : 853547644 Lieu d'immatriculation : Paris. Société absorbee : Global App Publishing Forme : Société par actions simplifiée Adresse du siège : 1-3 rue d'Enghien 75010 Paris Capital : 1000.00 EUR Numéro unique d'identification : 889459327 Lieu d'immatriculation : Paris. Evaluation de l'actif et du passif dont la transmission à la société absorbante est prévue : actif de 421.00 EUR - passif de 13522.00 EUR. Rapport d'échange des droits sociaux : néant. Prime de fusion : mali de fusion de 12 101 € . Date du projet commun de fusion : 22.11.2024. Date et lieu du dépôt du projet au RCS au titre de chaque société participante : Pour la société HOMA GAMES : 29.11.2024 (au greffe du tribunal de commerce de Paris). Pour la société Global App Publishing : 29.11.2024 (au greffe du tribunal de commerce de Paris).",
+      "oppositions": "Article L.236-15 du code de commerce",
+      "declaration_creance": null,
+      "publication_legale": null,
+      "denomination_ancien_proprietaire": "Global App Publishing",
+      "siren_ancien_proprietaire": "889459327"
+    },
+    {
+      "numero_parution": "20240075",
+      "date": "2024-04-16",
+      "numero_annonce": "2090",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": null,
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "7 rue de Madrid 75008 Paris",
+      "capital": 20900.17,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur le capital (augmentation)"
+    },
+    {
+      "numero_parution": "20230043",
+      "date": "2023-03-02",
+      "numero_annonce": "3923",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": null,
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "7 rue de Madrid 75008 Paris",
+      "capital": 20879.79,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur le capital (augmentation)"
+    },
+    {
+      "numero_parution": "20220194",
+      "date": "2022-10-06",
+      "numero_annonce": "3637",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": "nomination du Commissaire aux comptes titulaire : SAINT HONORE BK&A",
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "7 rue de Madrid 75008 Paris",
+      "capital": 17355.3,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur l'administration"
+    },
+    {
+      "numero_parution": "20220147",
+      "date": "2022-07-31",
+      "numero_annonce": "1714",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": null,
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "7 rue de Madrid 75008 Paris",
+      "capital": 17355.3,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur l'adresse du siège et l'adresse de l'établissement"
+    },
+    {
+      "numero_parution": "20220027",
+      "date": "2022-02-08",
+      "numero_annonce": "3681",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": null,
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "76 rue du Faubourg Saint-Denis 75010 Paris",
+      "capital": 17355.3,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur le capital (augmentation)"
+    },
+    {
+      "numero_parution": "20210021",
+      "date": "2021-01-31",
+      "numero_annonce": "1912",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": null,
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "76 rue du Faubourg Saint-Denis 75010 Paris",
+      "capital": 13145.52,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur le capital (augmentation)"
+    },
+    {
+      "numero_parution": "20200172",
+      "date": "2020-09-04",
+      "numero_annonce": "1528",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": "Président partant : DN VENTURES ; nomination du Président : Nathan, Daniel",
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "76 rue du Faubourg Saint-Denis 75010 Paris",
+      "capital": 10426.65,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur le capital (augmentation) et l'administration"
+    },
+    {
+      "numero_parution": "20200077",
+      "date": "2020-04-19",
+      "numero_annonce": "710",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": "Directeur général partant : VHK Ventures",
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "76 rue du Faubourg Saint-Denis 75010 Paris",
+      "capital": 10256,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur l'administration"
+    },
+    {
+      "numero_parution": "20190248",
+      "date": "2019-12-26",
+      "numero_annonce": "1434",
+      "annonce_rectificative": false,
+      "bodacc": "A",
+      "type": "Vente",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": null,
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "76 rue du Faubourg Saint-Denis 75010 Paris",
+      "capital": 10256,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_immatriculation": "2019-09-03",
+      "categorie_vente": "Autre achat, apport, attribution (immatriculation d'une personne morale, uniquement)",
+      "date_debut_activite": null,
+      "origine_fonds": null,
+      "commentaires": "A compter du 31-10-2019, achat d'une branche d'activité de édition de jeux vidéo sur appareils mobiles au prix de 225 000 euros de la société HYDRANE SAS 808 515 209 RCS PARIS",
+      "oppositions": [
+        "Au fonds vendu",
+        "Adresse de correspondance : CJP AVOCATS 16 bd Charles de Gaulle BP 30192 44802 ST Herblain cedex"
+      ],
+      "declaration_creance": null,
+      "publication_legale": "L'Itinérant, le 19/12/2019",
+      "denomination_ancien_proprietaire": "Hydrane",
+      "siren_ancien_proprietaire": "808515209"
+    },
+    {
+      "numero_parution": "20190212",
+      "date": "2019-11-03",
+      "numero_annonce": "735",
+      "annonce_rectificative": false,
+      "bodacc": "B",
+      "type": "Modification",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": "Président partant : HYDRANE SAS ; nomination du Président : DN VENTURES",
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "76 rue du Faubourg Saint-Denis 75010 Paris",
+      "capital": 10256,
+      "devise_capital": "EUR",
+      "activite": null,
+      "date_debut_activite": null,
+      "description": "modification survenue sur l'administration"
+    },
+    {
+      "numero_parution": "20190176",
+      "date": "2019-09-12",
+      "numero_annonce": "1128",
+      "annonce_rectificative": false,
+      "bodacc": "A",
+      "type": "Création",
+      "rcs": "de Paris",
+      "greffe": "Paris",
+      "nom_entreprise": "HOMA GAMES",
+      "personne_morale": true,
+      "sigle": null,
+      "denomination": "HOMA GAMES",
+      "nom_commercial": null,
+      "forme_juridique": "Société par actions simplifiée",
+      "nom": null,
+      "prenom": null,
+      "administration": "Président : HYDRANE SAS, Directeur général : VHK Ventures",
+      "pseudonyme": null,
+      "nationnalite": null,
+      "adresse": "76 rue du Faubourg Saint-Denis 75010 Paris",
+      "capital": 10256,
+      "devise_capital": "EUR",
+      "activite": "Conception, développement, édition, production, commercialisation, exploitation, distribution et diffusion de logiciels, applications multimédia et contenus sur tous supports ; tous développements à caractère informatique et/ou multimédia sur tous supports et dans tous domaines D activité ; toute activité de communication, publicité et marketing sur tous supports ; achat et vente D espaces publicitaires ; négociation de tout droit de propriété intellectuelle.",
+      "date_immatriculation": "2019-09-03",
+      "categorie_creation": "Immatriculation d'une personne morale (B, C, D) suite à création d'un établissement principal",
+      "date_debut_activite": "2019-08-01",
+      "descriptif": null
+    }
+  ],
+  "procedures_collectives": [],
+  "procedure_collective_existe": false,
+  "procedure_collective_en_cours": false,
+  "derniers_statuts": {
+    "date_depot": "2025-02-10",
+    "date_depot_formate": "10/02/2025",
+    "disponible": true,
+    "nom_fichier_pdf": "HOMA GAMES - Actes du 10-02-2025.pdf",
+    "token": "Uk5FQTg1MzU0NzY0NDY3YTk5NjY4OTkwNTVlMzk3NDAzNjAzNg",
+    "type": "Copie des statuts mis à jour",
+    "decision": null,
+    "date_acte": null,
+    "date_acte_formate": null
+  },
+  "extrait_immatriculation": {
+    "token": "Szg1MzU0NzY0NA"
+  },
+  "association": null
+}

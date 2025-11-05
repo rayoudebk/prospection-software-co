@@ -1,0 +1,49 @@
+[
+  {
+    "country": "UK",
+    "search_term": "07895806",
+    "name": "WEALTH DYNAMICS LIMITED",
+    "company_number": "07895806",
+    "activities": [],
+    "local_activities": [
+      {
+        "code": "62012",
+        "name": "Business and domestic software development",
+        "classification": "sic"
+      },
+      {
+        "code": "62020",
+        "name": "Information technology consultancy activities",
+        "classification": "sic"
+      }
+    ]
+  },
+  {
+    "country": "BE",
+    "search_term": "0890.021.619",
+    "name": "GAMBIT Financial Solutions",
+    "company_number": "0890.021.619",
+    "activities": [
+      {
+        "code": "62.01",
+        "name": "Programmation informatique"
+      },
+      {
+        "code": "62.01",
+        "name": "Programmation informatique"
+      }
+    ],
+    "local_activities": [
+      {
+        "code": "62010",
+        "name": "Programmation informatique",
+        "classification": null
+      },
+      {
+        "code": "62010",
+        "name": "Programmation informatique",
+        "classification": null
+      }
+    ]
+  }
+]
