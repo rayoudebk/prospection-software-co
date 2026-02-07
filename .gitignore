@@ -1,0 +1,29 @@
+# OS / editor noise
+.DS_Store
+.cursor/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python caches / local envs
+__pycache__/
+*.py[cod]
+.venv/
+.venv-test/
+
+# Node / Next build artifacts
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+
+# Local databases and generated run outputs
+*.db
+test_run*.db
+test_run_output*.json
+
+# Logs and temp files
+*.log
+*.tmp

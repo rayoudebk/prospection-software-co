@@ -1,0 +1,27 @@
+# FastAPI
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+# Async SQLAlchemy
+sqlalchemy[asyncio]>=2.0.25
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.9
+alembic>=1.13.1
+
+# Celery
+celery[redis]>=5.3.6
+redis>=5.0.1
+
+# Gemini - using new SDK
+google-genai>=1.50.0
+
+# Web scraping for seed URLs
+trafilatura>=1.12.0
+httpx>=0.28.1
+selectolax>=0.3.21
+
+# Utilities
+pydantic>=2.9.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.1
