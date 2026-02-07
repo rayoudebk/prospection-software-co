@@ -1,0 +1,430 @@
+"""Comparator source ingestion utilities."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
+import re
+
+import httpx
+from selectolax.parser import HTMLParser
+
+
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+)
+MAX_FILTERED_MENTIONS = 250
+
+
+@dataclass
+class SourceConfig:
+    source_name: str
+    seed_url: str
+    parser: Callable[[str, str], List[Dict[str, Any]]]
+    default_max_pages: int = 1
+
+
+def _clean_text(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _normalize_company_url(raw_url: Optional[str], base_url: str) -> Optional[str]:
+    if not raw_url:
+        return None
+    raw = raw_url.strip()
+    if not raw or raw.startswith(("mailto:", "tel:", "#")):
+        return None
+    if "{{" in raw or "}}" in raw:
+        return None
+    absolute = urljoin(base_url, raw)
+    parsed = urlparse(absolute)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return None
+    return f"{parsed.scheme}://{host}{parsed.path}"
+
+
+def _extract_category_tags(tree: HTMLParser) -> List[str]:
+    tags: List[str] = []
+    for selector in ["h1", "h2", ".breadcrumb", ".page-title", ".need-title", ".taxonomy"]:
+        for node in tree.css(selector):
+            text = _clean_text(node.text())
+            if not text:
+                continue
+            for token in re.split(r"[,|/]", text):
+                normalized = _clean_text(token).lower()
+                if not normalized:
+                    continue
+                if len(normalized) < 4:
+                    continue
+                if normalized in {"home", "needs", "providers"}:
+                    continue
+                tags.append(normalized[:80])
+    deduped: List[str] = []
+    seen = set()
+    for tag in tags:
+        if tag in seen:
+            continue
+        seen.add(tag)
+        deduped.append(tag)
+    return deduped[:8]
+
+
+def _extract_listing_snippets(anchor_node: Any) -> List[str]:
+    snippets: List[str] = []
+    current = anchor_node
+    for _ in range(3):
+        if not current:
+            break
+        text = _clean_text(current.text())
+        if 24 <= len(text) <= 380:
+            snippets.append(text)
+        current = current.parent
+    deduped: List[str] = []
+    seen = set()
+    for snippet in snippets:
+        key = snippet.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(snippet)
+    return deduped[:3]
+
+
+def _label_from_vendor_path(company_url: str) -> Optional[str]:
+    """Infer vendor/company label from /vendors/{vendor_slug}/... path."""
+    try:
+        path = urlparse(company_url).path.strip("/")
+        parts = path.split("/")
+        if len(parts) >= 2 and parts[0] in {"vendor", "vendors"}:
+            slug = parts[1].strip()
+            if slug:
+                return slug.replace("-", " ").replace("_", " ").title()
+    except Exception:
+        return None
+    return None
+
+
+def parse_wealth_mosaic_listing(html: str, listing_url: str) -> List[Dict[str, Any]]:
+    """Parse Wealth Mosaic need/listing page into mention records."""
+    tree = HTMLParser(html)
+    if tree is None:
+        return []
+
+    category_tags = _extract_category_tags(tree)
+    mentions: List[Dict[str, Any]] = []
+    seen_keys = set()
+    base_host = (urlparse(listing_url).netloc or "").lower()
+    if base_host.startswith("www."):
+        base_host = base_host[4:]
+    internal_allowed_markers = (
+        "/company/",
+        "/companies/",
+        "/provider/",
+        "/providers/",
+        "/solution-provider/",
+        "/solution-providers/",
+        "/vendor/",
+        "/vendors/",
+    )
+    internal_blocked_markers = (
+        "/login",
+        "/registration",
+        "/terms",
+        "/privacy",
+        "/suggest",
+        "/become",
+        "/market/",
+        "/needs/",
+        "/knowledge/",
+        "/events/",
+        "/news/",
+    )
+    generic_anchor_text = {
+        "next",
+        "previous",
+        "read more",
+        "see all",
+        "view solution",
+        "request twm support",
+        "register interest",
+        "suggest a solution provider",
+        "privacy",
+        "terms and conditions",
+        "sign up or login if a wealth manager",
+        "register as a solution provider",
+    }
+
+    # First-pass: parse product cards, which carry the cleanest mentions.
+    for block in tree.css("div.sol-block"):
+        candidate_links = []
+        for anchor in block.css("a[href]"):
+            href = (anchor.attributes.get("href") or "").strip()
+            if not href:
+                continue
+            if "/vendors/" not in href and "/vendor/" not in href:
+                continue
+            candidate_links.append((anchor, href))
+        if not candidate_links:
+            continue
+        # Prefer heading anchor when available.
+        chosen_anchor, chosen_href = candidate_links[0]
+        for anchor, href in candidate_links:
+            text = _clean_text(anchor.text())
+            if text and len(text) > 3:
+                chosen_anchor, chosen_href = anchor, href
+                break
+
+        company_url = _normalize_company_url(chosen_href, listing_url)
+        if not company_url:
+            continue
+
+        title_node = block.css_first("h3")
+        product_title = _clean_text(title_node.text() if title_node else chosen_anchor.text())
+        company_name = _label_from_vendor_path(company_url) or product_title
+        if not company_name:
+            continue
+
+        description_node = block.css_first("p")
+        snippet = _clean_text(description_node.text() if description_node else "")
+        snippets = []
+        if product_title:
+            snippets.append(f"Solution: {product_title}")
+        if snippet:
+            snippets.append(snippet)
+
+        key = (company_name.lower(), company_url.lower())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        mentions.append(
+            {
+                "company_name": company_name[:300],
+                "company_url": company_url,
+                "listing_url": listing_url,
+                "category_tags": category_tags,
+                "listing_text_snippets": snippets,
+                "provenance": {
+                    "source_name": "wealth_mosaic",
+                    "listing_url": listing_url,
+                    "anchor_href": chosen_href[:1000],
+                    "anchor_text": company_name[:300],
+                    "extractor": "sol_block",
+                    "solution_title": product_title[:300] if product_title else None,
+                },
+            }
+        )
+
+    # Second-pass fallback: broad anchor scanning.
+    for anchor in tree.css("a[href]"):
+        href = anchor.attributes.get("href", "")
+        company_name = _clean_text(anchor.text())
+        if not company_name or len(company_name) < 2:
+            continue
+
+        company_url = _normalize_company_url(href, listing_url)
+        if not company_url:
+            continue
+
+        parsed = urlparse(company_url)
+        path = parsed.path.lower()
+        host = parsed.netloc.lower()
+
+        # Prefer provider/company profile links, skip nav/auth/legal paths.
+        if host == base_host:
+            if any(marker in path for marker in internal_blocked_markers):
+                continue
+            if not any(marker in path for marker in internal_allowed_markers):
+                continue
+
+        if company_name.lower() in generic_anchor_text:
+            continue
+        if re.search(r"^(subscribe|login|register|privacy|terms)", company_name, flags=re.IGNORECASE):
+            continue
+        if len(company_name) < 3:
+            continue
+
+        key = (company_name.lower(), company_url.lower())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        mentions.append(
+            {
+                "company_name": company_name[:300],
+                "company_url": company_url,
+                "listing_url": listing_url,
+                "category_tags": category_tags,
+                "listing_text_snippets": _extract_listing_snippets(anchor),
+                "provenance": {
+                    "source_name": "wealth_mosaic",
+                    "listing_url": listing_url,
+                    "anchor_href": href[:1000],
+                    "anchor_text": company_name[:300],
+                    "extractor": "anchor_scan",
+                },
+            }
+        )
+
+    return mentions
+
+
+def _mention_quality_score(mention: Dict[str, Any], base_host: Optional[str]) -> int:
+    score = 0
+    company_name = _clean_text(str(mention.get("company_name") or ""))
+    company_url = str(mention.get("company_url") or "")
+    listing_snippets = mention.get("listing_text_snippets") or []
+    host = (urlparse(company_url).netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if base_host and host and host != base_host:
+        score += 2
+    if any(keyword in company_name.lower() for keyword in ("software", "platform", "technology", "systems")):
+        score += 1
+    if listing_snippets:
+        score += 1
+    if len(company_name.split()) >= 2:
+        score += 1
+    return score
+
+
+SOURCE_REGISTRY: Dict[str, SourceConfig] = {
+    "wealth_mosaic": SourceConfig(
+        source_name="wealth_mosaic",
+        seed_url="https://www.thewealthmosaic.com/needs/portfolio-wealth-management-systems/",
+        parser=parse_wealth_mosaic_listing,
+        default_max_pages=2,
+    )
+}
+
+
+def _discover_pagination_urls(html: str, listing_url: str, max_pages: int) -> List[str]:
+    tree = HTMLParser(html)
+    if tree is None:
+        return [listing_url]
+
+    urls = [listing_url]
+    seen = {listing_url}
+    for anchor in tree.css("a[href]"):
+        href = anchor.attributes.get("href", "")
+        if not href:
+            continue
+        absolute = urljoin(listing_url, href)
+        if absolute in seen:
+            continue
+        if "page=" not in absolute and "/page/" not in absolute:
+            continue
+        if urlparse(absolute).netloc != urlparse(listing_url).netloc:
+            continue
+        seen.add(absolute)
+        urls.append(absolute)
+        if len(urls) >= max_pages:
+            break
+    return urls
+
+
+def ingest_source(
+    source_name: str,
+    source_url: Optional[str] = None,
+    max_pages: Optional[int] = None,
+    timeout_seconds: int = 20,
+) -> Dict[str, Any]:
+    """Ingest comparator mentions for a configured source."""
+    config = SOURCE_REGISTRY.get(source_name)
+    if not config:
+        raise ValueError(f"Unsupported comparator source: {source_name}")
+
+    listing_url = source_url or config.seed_url
+    page_limit = max_pages or config.default_max_pages
+    page_limit = max(1, min(page_limit, 10))
+
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    mentions: List[Dict[str, Any]] = []
+    pages_crawled = 0
+    errors: List[str] = []
+
+    with httpx.Client(timeout=timeout_seconds, follow_redirects=True, headers=headers) as client:
+        try:
+            seed_res = client.get(listing_url)
+            seed_res.raise_for_status()
+            page_urls = _discover_pagination_urls(seed_res.text, listing_url, page_limit)
+        except Exception as exc:
+            page_urls = [listing_url]
+            errors.append(f"seed_fetch_failed:{exc}")
+
+        for page_url in page_urls[:page_limit]:
+            try:
+                response = client.get(page_url)
+                response.raise_for_status()
+                pages_crawled += 1
+                mentions.extend(config.parser(response.text, page_url))
+            except Exception as exc:
+                errors.append(f"page_fetch_failed:{page_url}:{exc}")
+
+    # Deduplicate primarily by company URL (one record per vendor profile URL).
+    deduped_by_url: Dict[str, Dict[str, Any]] = {}
+    deduped_fallback: List[Dict[str, Any]] = []
+    for mention in mentions:
+        company_url = _clean_text(str(mention.get("company_url", ""))).lower()
+        if company_url:
+            existing = deduped_by_url.get(company_url)
+            if not existing:
+                deduped_by_url[company_url] = mention
+                continue
+            # Keep the richer mention when duplicates share the same URL.
+            existing_snippet_len = len(" ".join(existing.get("listing_text_snippets", []) or []))
+            candidate_snippet_len = len(" ".join(mention.get("listing_text_snippets", []) or []))
+            existing_name_len = len(_clean_text(str(existing.get("company_name", ""))))
+            candidate_name_len = len(_clean_text(str(mention.get("company_name", ""))))
+            if (candidate_snippet_len, candidate_name_len) > (existing_snippet_len, existing_name_len):
+                deduped_by_url[company_url] = mention
+        else:
+            deduped_fallback.append(mention)
+    deduped = list(deduped_by_url.values()) + deduped_fallback
+
+    # Secondary dedupe by normalized company name.
+    seen_name: set[str] = set()
+    deduped_name: List[Dict[str, Any]] = []
+    for mention in deduped:
+        name_key = _clean_text(str(mention.get("company_name", ""))).lower()
+        url_key = _clean_text(str(mention.get("company_url", ""))).lower()
+        key = name_key or url_key
+        if not key:
+            continue
+        if key in seen_name:
+            continue
+        seen_name.add(key)
+        deduped_name.append(mention)
+
+    base_host = (urlparse(listing_url).netloc or "").lower()
+    if base_host.startswith("www."):
+        base_host = base_host[4:]
+    scored = sorted(
+        deduped_name,
+        key=lambda mention: _mention_quality_score(mention, base_host),
+        reverse=True,
+    )
+    filtered = [
+        mention
+        for mention in scored
+        if _mention_quality_score(mention, base_host) >= 2
+    ][:MAX_FILTERED_MENTIONS]
+
+    return {
+        "source_name": source_name,
+        "source_url": listing_url,
+        "pages_crawled": pages_crawled,
+        "mentions": filtered,
+        "errors": errors,
+    }
