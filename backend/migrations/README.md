@@ -1,5 +1,27 @@
 # Database Migrations
 
+## migrate_canonical_entities.py
+
+Adds canonical discovery entity support:
+
+1. Creates `candidate_entities`, `candidate_entity_aliases`, `candidate_origin_edges`, and `registry_query_logs`
+2. Adds `candidate_entity_id` to `vendor_screenings` (if missing)
+3. Adds index on `vendor_screenings.candidate_entity_id`
+4. Adds FK to `candidate_entities(id)` on PostgreSQL (best effort)
+
+### How to run:
+
+**From project root:**
+```bash
+cd backend
+python -m migrations.migrate_canonical_entities
+```
+
+**Or with Docker:**
+```bash
+docker-compose exec backend python -m migrations.migrate_canonical_entities
+```
+
 ## migrate_vertical_focus.py
 
 Migrates `vertical_focus` data from `company_profiles` table to `brick_taxonomies` table.

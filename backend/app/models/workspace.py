@@ -50,6 +50,15 @@ class Workspace(Base):
         "VendorClaim",
         cascade="all, delete-orphan",
     )
+    registry_query_logs = relationship(
+        "RegistryQueryLog",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    candidate_entities = relationship(
+        "CandidateEntity",
+        cascade="all, delete-orphan",
+    )
 
 
 class CompanyProfile(Base):

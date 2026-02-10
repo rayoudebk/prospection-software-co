@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 import re
@@ -15,6 +16,20 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 )
 MAX_FILTERED_MENTIONS = 250
+AGGREGATOR_DOMAINS = {
+    "thewealthmosaic.com",
+    "thewealthmosaic.co.uk",
+}
+EXTERNAL_HOST_BLOCKLIST = {
+    "linkedin.com",
+    "x.com",
+    "twitter.com",
+    "youtube.com",
+    "facebook.com",
+    "instagram.com",
+    "vimeo.com",
+    "wikipedia.org",
+}
 
 
 @dataclass
@@ -428,3 +443,125 @@ def ingest_source(
         "mentions": filtered,
         "errors": errors,
     }
+
+
+def _is_aggregator_domain(domain: Optional[str]) -> bool:
+    if not domain:
+        return False
+    return any(domain == agg or domain.endswith(f".{agg}") for agg in AGGREGATOR_DOMAINS)
+
+
+def _pick_external_company_website(profile_url: str, html: str) -> Optional[str]:
+    tree = HTMLParser(html)
+    if tree is None:
+        return None
+
+    profile_domain = (urlparse(profile_url).netloc or "").lower()
+    if profile_domain.startswith("www."):
+        profile_domain = profile_domain[4:]
+
+    candidates: list[tuple[int, str]] = []
+    for anchor in tree.css("a[href]"):
+        href = (anchor.attributes.get("href") or "").strip()
+        if not href:
+            continue
+        if href.startswith(("mailto:", "tel:", "#")):
+            continue
+        absolute = _normalize_company_url(href, profile_url)
+        if not absolute:
+            continue
+        parsed = urlparse(absolute)
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if not host:
+            continue
+        if host == profile_domain:
+            continue
+        if _is_aggregator_domain(host):
+            continue
+        if any(blocked == host or host.endswith(f".{blocked}") for blocked in EXTERNAL_HOST_BLOCKLIST):
+            continue
+
+        anchor_text = _clean_text(anchor.text()).lower()
+        score = 0
+        if any(token in anchor_text for token in ("website", "visit", "company site", "official")):
+            score += 4
+        if any(token in parsed.path.lower() for token in ("contact", "about", "platform", "products", "solution")):
+            score += 1
+        if parsed.path in {"", "/"}:
+            score += 1
+        if len(anchor_text) <= 32:
+            score += 1
+        candidates.append((score, absolute))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], -len(item[1])), reverse=True)
+    return candidates[0][1]
+
+
+def resolve_external_website_from_profile(
+    profile_url: Optional[str],
+    timeout_seconds: int = 4,
+) -> Dict[str, Any]:
+    """Resolve official company website from a directory profile page."""
+    now = datetime.utcnow().isoformat()
+    if not profile_url:
+        return {
+            "profile_url": profile_url,
+            "official_website": None,
+            "identity_confidence": "low",
+            "captured_at": now,
+            "error": "missing_profile_url",
+        }
+
+    normalized = profile_url.strip()
+    if not normalized.startswith(("http://", "https://")):
+        normalized = f"https://{normalized}"
+
+    domain = (urlparse(normalized).netloc or "").lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+
+    if domain and not _is_aggregator_domain(domain):
+        return {
+            "profile_url": normalized,
+            "official_website": normalized,
+            "identity_confidence": "high",
+            "captured_at": now,
+            "error": None,
+        }
+
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=True, headers=headers) as client:
+            response = client.get(normalized)
+            response.raise_for_status()
+            official = _pick_external_company_website(normalized, response.text)
+            if official:
+                return {
+                    "profile_url": normalized,
+                    "official_website": official,
+                    "identity_confidence": "high",
+                    "captured_at": now,
+                    "error": None,
+                }
+            return {
+                "profile_url": normalized,
+                "official_website": None,
+                "identity_confidence": "low",
+                "captured_at": now,
+                "error": "external_website_not_found",
+            }
+    except Exception as exc:
+        return {
+            "profile_url": normalized,
+            "official_website": None,
+            "identity_confidence": "low",
+            "captured_at": now,
+            "error": f"profile_fetch_failed:{exc}",
+        }

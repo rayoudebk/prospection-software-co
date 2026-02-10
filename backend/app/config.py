@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # Gemini
     gemini_api_key: str = ""
 
+    # Optional registry API keys
+    companies_house_api_key: str = ""
+
     # App
     debug: bool = True
 
@@ -24,4 +27,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

@@ -13,6 +13,10 @@ from app.models.workspace_evidence import WorkspaceEvidence
 from app.models.report import ReportSnapshot, ReportSnapshotItem, VendorFact
 from app.models.intelligence import (
     ComparatorSourceRun,
+    CandidateEntity,
+    CandidateEntityAlias,
+    CandidateOriginEdge,
+    RegistryQueryLog,
     VendorMention,
     VendorScreening,
     VendorClaim,
@@ -27,5 +31,6 @@ __all__ = [
     "Job", "JobType", "JobState", "JobProvider",
     "WorkspaceEvidence",
     "ReportSnapshot", "ReportSnapshotItem", "VendorFact",
-    "ComparatorSourceRun", "VendorMention", "VendorScreening", "VendorClaim",
+    "ComparatorSourceRun", "CandidateEntity", "CandidateEntityAlias", "CandidateOriginEdge", "RegistryQueryLog",
+    "VendorMention", "VendorScreening", "VendorClaim",
 ]

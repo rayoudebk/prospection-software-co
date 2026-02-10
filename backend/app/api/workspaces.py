@@ -14,7 +14,16 @@ from app.models.vendor import Vendor, VendorDossier, VendorStatus
 from app.models.job import Job, JobType, JobState, JobProvider
 from app.models.workspace_evidence import WorkspaceEvidence
 from app.models.report import ReportSnapshot, ReportSnapshotItem, VendorFact
-from app.models.intelligence import ComparatorSourceRun, VendorMention, VendorScreening, VendorClaim
+from app.models.intelligence import (
+    CandidateEntity,
+    CandidateEntityAlias,
+    CandidateOriginEdge,
+    ComparatorSourceRun,
+    RegistryQueryLog,
+    VendorMention,
+    VendorScreening,
+    VendorClaim,
+)
 from app.services.reporting import (
     RELIABLE_FILINGS_COUNTRIES,
     build_adjacency_map,
@@ -914,6 +923,72 @@ async def get_discovery_diagnostics(
         for run in source_runs
     ]
 
+    latest_discovery_job_result: Dict[str, Any] = {}
+    discovery_job_result = await db.execute(
+        select(Job)
+        .where(
+            Job.workspace_id == workspace_id,
+            Job.job_type == JobType.discovery_universe,
+        )
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    )
+    latest_discovery_job = discovery_job_result.scalar_one_or_none()
+    if latest_discovery_job and isinstance(latest_discovery_job.result_json, dict):
+        latest_discovery_job_result = latest_discovery_job.result_json
+
+    registry_logs: List[RegistryQueryLog] = []
+    if latest_run_id:
+        registry_log_result = await db.execute(
+            select(RegistryQueryLog).where(
+                RegistryQueryLog.workspace_id == workspace_id,
+                RegistryQueryLog.run_id == latest_run_id,
+            )
+        )
+        registry_logs = registry_log_result.scalars().all()
+
+    registry_queries_by_country: Dict[str, int] = {}
+    registry_raw_hits_by_country: Dict[str, int] = {}
+    registry_reject_reason_breakdown: Dict[str, int] = {}
+    registry_neighbors_kept_pre_dedupe = 0
+    for log in registry_logs:
+        country_key = log.country or "UNKNOWN"
+        registry_queries_by_country[country_key] = registry_queries_by_country.get(country_key, 0) + 1
+        registry_raw_hits_by_country[country_key] = registry_raw_hits_by_country.get(country_key, 0) + int(log.raw_hits or 0)
+        registry_neighbors_kept_pre_dedupe += int(log.kept_hits or 0)
+        for reason, count in (log.reject_reasons_json or {}).items():
+            key = str(reason)
+            registry_reject_reason_breakdown[key] = registry_reject_reason_breakdown.get(key, 0) + int(count or 0)
+
+    entity_result = await db.execute(
+        select(CandidateEntity).where(CandidateEntity.workspace_id == workspace_id)
+    )
+    candidate_entities = entity_result.scalars().all()
+    entity_ids = [entity.id for entity in candidate_entities]
+    entity_aliases: List[CandidateEntityAlias] = []
+    entity_origins: List[CandidateOriginEdge] = []
+    if entity_ids:
+        alias_result = await db.execute(
+            select(CandidateEntityAlias).where(CandidateEntityAlias.entity_id.in_(entity_ids))
+        )
+        entity_aliases = alias_result.scalars().all()
+        origin_result = await db.execute(
+            select(CandidateOriginEdge).where(CandidateOriginEdge.entity_id.in_(entity_ids))
+        )
+        entity_origins = origin_result.scalars().all()
+
+    alias_count_by_entity: Dict[int, int] = {}
+    for alias in entity_aliases:
+        alias_count_by_entity[alias.entity_id] = alias_count_by_entity.get(alias.entity_id, 0) + 1
+    alias_clusters_count = len(
+        [entity_id for entity_id, count in alias_count_by_entity.items() if count > 1]
+    )
+
+    origin_mix_distribution: Dict[str, int] = {}
+    for edge in entity_origins:
+        origin_type = edge.origin_type or "unknown"
+        origin_mix_distribution[origin_type] = origin_mix_distribution.get(origin_type, 0) + 1
+
     screening_ids = [row.id for row in screenings]
     claims: List[VendorClaim] = []
     if screening_ids:
@@ -923,6 +998,7 @@ async def get_discovery_diagnostics(
         claims = claims_result.scalars().all()
 
     kept_count = len([row for row in screenings if row.screening_status == "kept"])
+    review_count = len([row for row in screenings if row.screening_status == "review"])
     rejected_count = len([row for row in screenings if row.screening_status == "rejected"])
 
     reject_reason_counts: Dict[str, int] = {}
@@ -968,12 +1044,71 @@ async def get_discovery_diagnostics(
         "screening_totals": {
             "screenings": len(screenings),
             "kept": kept_count,
+            "review": review_count,
             "rejected": rejected_count,
         },
         "filter_reason_counts": reject_reason_counts,
         "evidence_coverage_stats": evidence_coverage_stats,
         "source_quality_distribution": source_quality_distribution,
         "source_coverage": source_coverage,
+        "funnel_metrics": {
+            "seed_directory_count": int(latest_discovery_job_result.get("seed_directory_count", 0)),
+            "seed_reference_count": int(latest_discovery_job_result.get("seed_reference_count", 0)),
+            "seed_llm_count": int(latest_discovery_job_result.get("seed_llm_count", 0)),
+            "identity_resolved_count": int(latest_discovery_job_result.get("identity_resolved_count", 0)),
+            "registry_identity_candidates_count": int(latest_discovery_job_result.get("registry_identity_candidates_count", 0)),
+            "registry_identity_mapped_count": int(latest_discovery_job_result.get("registry_identity_mapped_count", 0)),
+            "registry_identity_country_breakdown": latest_discovery_job_result.get("registry_identity_country_breakdown", {}),
+            "alias_clusters_count": int(
+                latest_discovery_job_result.get("alias_clusters_count", alias_clusters_count)
+            ),
+            "duplicates_collapsed_count": int(latest_discovery_job_result.get("duplicates_collapsed_count", 0)),
+            "registry_queries_count": int(
+                latest_discovery_job_result.get("registry_queries_count", sum(registry_queries_by_country.values()))
+            ),
+            "registry_neighbors_kept_count": int(
+                latest_discovery_job_result.get("registry_neighbors_kept_count", 0)
+            ),
+            "registry_queries_by_country": latest_discovery_job_result.get("registry_queries_by_country", registry_queries_by_country),
+            "registry_raw_hits_by_country": latest_discovery_job_result.get("registry_raw_hits_by_country", registry_raw_hits_by_country),
+            "registry_neighbors_kept_pre_dedupe": int(
+                latest_discovery_job_result.get("registry_neighbors_kept_pre_dedupe", registry_neighbors_kept_pre_dedupe)
+            ),
+            "registry_neighbors_unique_post_dedupe": int(
+                latest_discovery_job_result.get("registry_neighbors_unique_post_dedupe", 0)
+            ),
+            "registry_reject_reason_breakdown": latest_discovery_job_result.get(
+                "registry_reject_reason_breakdown",
+                registry_reject_reason_breakdown,
+            ),
+            "final_universe_count": int(
+                latest_discovery_job_result.get("final_universe_count", len(candidate_entities))
+            ),
+            "first_party_crawl_attempted_count": int(
+                latest_discovery_job_result.get("first_party_crawl_attempted_count", 0)
+            ),
+            "first_party_crawl_success_count": int(
+                latest_discovery_job_result.get("first_party_crawl_success_count", 0)
+            ),
+            "first_party_crawl_failed_count": int(
+                latest_discovery_job_result.get("first_party_crawl_failed_count", 0)
+            ),
+            "first_party_crawl_deep_count": int(
+                latest_discovery_job_result.get("first_party_crawl_deep_count", 0)
+            ),
+            "first_party_crawl_light_count": int(
+                latest_discovery_job_result.get("first_party_crawl_light_count", 0)
+            ),
+            "first_party_crawl_pages_total": int(
+                latest_discovery_job_result.get("first_party_crawl_pages_total", 0)
+            ),
+            "first_party_crawl_fallback_count": int(
+                latest_discovery_job_result.get("first_party_crawl_fallback_count", 0)
+            ),
+        },
+        "origin_mix_distribution": latest_discovery_job_result.get("origin_mix_distribution", origin_mix_distribution),
+        "dedupe_quality_metrics": latest_discovery_job_result.get("dedupe_quality_metrics", {}),
+        "registry_expansion_yield": latest_discovery_job_result.get("registry_expansion_yield", {}),
         "generated_at": datetime.utcnow().isoformat(),
     }
 
@@ -1982,6 +2117,29 @@ async def export_report_snapshot(
     for claim in claims:
         claims_by_screening.setdefault(claim.screening_id, []).append(claim)
 
+    entity_ids = [row.candidate_entity_id for row in screenings if row.candidate_entity_id]
+    entity_map: Dict[int, CandidateEntity] = {}
+    aliases_by_entity: Dict[int, List[CandidateEntityAlias]] = {}
+    origins_by_entity: Dict[int, List[CandidateOriginEdge]] = {}
+    if entity_ids:
+        entity_result = await db.execute(
+            select(CandidateEntity).where(CandidateEntity.id.in_(entity_ids))
+        )
+        entities = entity_result.scalars().all()
+        entity_map = {entity.id: entity for entity in entities}
+
+        alias_result = await db.execute(
+            select(CandidateEntityAlias).where(CandidateEntityAlias.entity_id.in_(entity_ids))
+        )
+        for alias in alias_result.scalars().all():
+            aliases_by_entity.setdefault(alias.entity_id, []).append(alias)
+
+        origin_result = await db.execute(
+            select(CandidateOriginEdge).where(CandidateOriginEdge.entity_id.in_(entity_ids))
+        )
+        for origin in origin_result.scalars().all():
+            origins_by_entity.setdefault(origin.entity_id, []).append(origin)
+
     vendor_ids = [row.vendor_id for row in screenings if row.vendor_id]
     vendor_map: Dict[int, Vendor] = {}
     dossier_map: Dict[int, VendorDossier] = {}
@@ -2056,8 +2214,23 @@ async def export_report_snapshot(
         source_key = claim.source_type or "unknown"
         source_type_distribution[source_key] = source_type_distribution.get(source_key, 0) + 1
 
+    latest_discovery_job_result: Dict[str, Any] = {}
+    discovery_job_result = await db.execute(
+        select(Job)
+        .where(
+            Job.workspace_id == workspace_id,
+            Job.job_type == JobType.discovery_universe,
+        )
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    )
+    latest_discovery_job = discovery_job_result.scalar_one_or_none()
+    if latest_discovery_job and isinstance(latest_discovery_job.result_json, dict):
+        latest_discovery_job_result = latest_discovery_job.result_json
+
     for screening in screenings:
         vendor = vendor_map.get(screening.vendor_id) if screening.vendor_id else None
+        candidate_entity = entity_map.get(screening.candidate_entity_id) if screening.candidate_entity_id else None
         vendor_claims = claims_by_screening.get(screening.id, [])
         report_item = item_by_vendor.get(vendor.id) if vendor else None
         dossier_json = {}
@@ -2170,6 +2343,54 @@ async def export_report_snapshot(
         company_name = vendor.name if vendor else screening.candidate_name
         website = vendor.website if vendor else screening.candidate_website
         country = vendor.hq_country if vendor else (screening.screening_meta_json or {}).get("candidate_hq_country")
+        screening_meta = screening.screening_meta_json or {}
+        source_summary = screening.source_summary_json or {}
+        first_party_enrichment = screening_meta.get("first_party_enrichment") if isinstance(screening_meta.get("first_party_enrichment"), dict) else {}
+        identity_meta = screening_meta.get("identity") if isinstance(screening_meta.get("identity"), dict) else {}
+        merge_rationale = []
+        entity_aliases_payload: List[Dict[str, Any]] = []
+        entity_origins_payload: List[Dict[str, Any]] = []
+        registry_ids_payload: List[str] = []
+        registry_identity_payload: Dict[str, Any] = {}
+        industry_signature_payload: Dict[str, Any] = {}
+        expansion_provenance_payload: List[Dict[str, Any]] = []
+        if candidate_entity:
+            merge_rationale = (candidate_entity.metadata_json or {}).get("merge_rationale") or []
+            registry_identity_payload = (candidate_entity.metadata_json or {}).get("registry_identity") or {}
+            industry_signature_payload = (candidate_entity.metadata_json or {}).get("industry_signature") or {}
+            alias_rows = aliases_by_entity.get(candidate_entity.id, [])
+            entity_aliases_payload = [
+                {
+                    "alias_name": alias.alias_name,
+                    "alias_website": alias.alias_website,
+                    "merge_confidence": alias.merge_confidence,
+                    "merge_reason": alias.merge_reason,
+                }
+                for alias in alias_rows
+            ]
+            origin_rows = origins_by_entity.get(candidate_entity.id, [])
+            entity_origins_payload = [
+                {
+                    "origin_type": origin.origin_type,
+                    "origin_url": origin.origin_url,
+                    "source_run_id": origin.source_run_id,
+                    "metadata": origin.metadata_json or {},
+                }
+                for origin in origin_rows
+            ]
+            expansion_provenance_payload = [
+                {
+                    "seed_entity": (origin.metadata_json or {}).get("seed_entity_name"),
+                    "query_type": (origin.metadata_json or {}).get("query_type"),
+                    "country": (origin.metadata_json or {}).get("country"),
+                    "query": (origin.metadata_json or {}).get("query"),
+                }
+                for origin in origin_rows
+                if isinstance(origin.metadata_json, dict) and (origin.metadata_json or {}).get("query_type")
+            ]
+            if candidate_entity.registry_id:
+                registry_ids_payload.append(candidate_entity.registry_id)
+
         legal_hint = None
         if vendor:
             for tag in vendor.tags_custom or []:
@@ -2182,15 +2403,22 @@ async def export_report_snapshot(
                 "identity": {
                     "name": company_name,
                     "website": website,
+                    "official_website": identity_meta.get("official_website") or website,
+                    "input_website": identity_meta.get("input_website"),
+                    "identity_confidence": identity_meta.get("identity_confidence"),
+                    "identity_sources": identity_meta.get("identity_sources") or [],
                     "country": country,
                     "legal_entity_hints": legal_hint,
+                    "entity_id": candidate_entity.id if candidate_entity else None,
                 },
                 "screening": {
                     "status": screening.screening_status,
                     "total_score": total_score,
                     "component_scores": component_scores,
                     "penalties": penalties,
+                    "reason_codes": reject_reasons,
                     "reject_reasons": reject_reasons,
+                    "evidence_mix": source_summary.get("source_type_counts") or {},
                 },
                 "size": {
                     "employee_estimate": {
@@ -2271,20 +2499,44 @@ async def export_report_snapshot(
                     "principal_risk": principal_risk,
                     "next_diligence_question": next_question,
                 },
+                "first_party_enrichment": {
+                    "method": first_party_enrichment.get("method"),
+                    "tier": first_party_enrichment.get("tier"),
+                    "pages_crawled": int(first_party_enrichment.get("pages_crawled") or 0),
+                    "signals_extracted": int(first_party_enrichment.get("signals_extracted") or 0),
+                    "customer_evidence_count": int(first_party_enrichment.get("customer_evidence_count") or 0),
+                    "page_types": first_party_enrichment.get("page_types") if isinstance(first_party_enrichment.get("page_types"), dict) else {},
+                    "error": first_party_enrichment.get("error"),
+                },
+                "entity_id": candidate_entity.id if candidate_entity else None,
+                "origins": entity_origins_payload,
+                "aliases": entity_aliases_payload,
+                "merge_rationale": merge_rationale,
+                "registry_ids": registry_ids_payload,
+                "registry_identity": registry_identity_payload,
+                "industry_signature": industry_signature_payload,
+                "expansion_provenance": expansion_provenance_payload,
                 "source_pills": deduped_pills,
             }
         )
 
     companies.sort(
         key=lambda row: (
-            0 if row["screening"]["status"] == "kept" else 1,
+            0 if row["screening"]["status"] == "kept" else (1 if row["screening"]["status"] == "review" else 2),
             -float(row["screening"]["total_score"] or 0.0),
         )
     )
 
+    origin_mix_distribution: Dict[str, int] = {}
+    for edge_list in origins_by_entity.values():
+        for edge in edge_list:
+            origin_type = edge.origin_type or "unknown"
+            origin_mix_distribution[origin_type] = origin_mix_distribution.get(origin_type, 0) + 1
+
     diagnostics = {
         "screening_totals": {
             "kept": len([row for row in companies if row["screening"]["status"] == "kept"]),
+            "review": len([row for row in companies if row["screening"]["status"] == "review"]),
             "rejected": len([row for row in companies if row["screening"]["status"] == "rejected"]),
         },
         "filter_reason_counts": reject_reason_counts,
@@ -2294,6 +2546,30 @@ async def export_report_snapshot(
             "companies_with_source_pills": len([row for row in companies if row["source_pills"]]),
         },
         "source_quality_distribution": source_type_distribution,
+        "origin_mix_distribution": origin_mix_distribution,
+        "dedupe_quality_metrics": {
+            "entities_with_aliases": len([entity_id for entity_id, aliases in aliases_by_entity.items() if len(aliases) > 1]),
+            "total_entities": len(entity_map),
+        },
+        "registry_expansion_yield": {
+            "entities_with_registry_id": len([entity for entity in entity_map.values() if entity.registry_id]),
+            "registry_identity_candidates_count": int(latest_discovery_job_result.get("registry_identity_candidates_count", 0)),
+            "registry_identity_mapped_count": int(latest_discovery_job_result.get("registry_identity_mapped_count", 0)),
+            "registry_queries_by_country": latest_discovery_job_result.get("registry_queries_by_country", {}),
+            "registry_raw_hits_by_country": latest_discovery_job_result.get("registry_raw_hits_by_country", {}),
+            "registry_neighbors_kept_pre_dedupe": int(latest_discovery_job_result.get("registry_neighbors_kept_pre_dedupe", 0)),
+            "registry_neighbors_unique_post_dedupe": int(latest_discovery_job_result.get("registry_neighbors_unique_post_dedupe", 0)),
+            "registry_reject_reason_breakdown": latest_discovery_job_result.get("registry_reject_reason_breakdown", {}),
+        },
+        "first_party_crawl_stats": {
+            "attempted_count": int(latest_discovery_job_result.get("first_party_crawl_attempted_count", 0)),
+            "success_count": int(latest_discovery_job_result.get("first_party_crawl_success_count", 0)),
+            "failed_count": int(latest_discovery_job_result.get("first_party_crawl_failed_count", 0)),
+            "deep_count": int(latest_discovery_job_result.get("first_party_crawl_deep_count", 0)),
+            "light_count": int(latest_discovery_job_result.get("first_party_crawl_light_count", 0)),
+            "fallback_count": int(latest_discovery_job_result.get("first_party_crawl_fallback_count", 0)),
+            "pages_total": int(latest_discovery_job_result.get("first_party_crawl_pages_total", 0)),
+        },
     }
 
     return {
@@ -2334,6 +2610,9 @@ async def export_report_snapshot(
             ],
         },
         "companies": companies,
+        "companies_kept": [row for row in companies if row["screening"]["status"] == "kept"],
+        "companies_review": [row for row in companies if row["screening"]["status"] == "review"],
+        "companies_rejected": [row for row in companies if row["screening"]["status"] == "rejected"],
         "diagnostics": diagnostics,
     }
 

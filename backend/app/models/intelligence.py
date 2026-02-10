@@ -1,4 +1,4 @@
-"""Comparator intelligence models for source ingestion, claims, and screening."""
+"""Comparator intelligence models for source ingestion, canonical entities, claims, and screening."""
 from datetime import datetime
 
 from sqlalchemy import Column, Integer, String, DateTime, JSON, Float, ForeignKey, Text, Boolean
@@ -51,6 +51,104 @@ class VendorMention(Base):
     source_run = relationship("ComparatorSourceRun")
 
 
+class CandidateEntity(Base):
+    """Canonical candidate entity assembled from multi-source discovery signals."""
+
+    __tablename__ = "candidate_entities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
+
+    canonical_name = Column(String(300), nullable=False, index=True)
+    canonical_website = Column(String(1000), nullable=True)
+    canonical_domain = Column(String(255), nullable=True, index=True)
+    country = Column(String(32), nullable=True, index=True)
+
+    identity_confidence = Column(String(20), nullable=False, default="low")
+    identity_error = Column(String(255), nullable=True)
+
+    registry_country = Column(String(16), nullable=True)
+    registry_id = Column(String(128), nullable=True, index=True)
+    registry_source = Column(String(120), nullable=True)
+
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    workspace = relationship("Workspace", overlaps="candidate_entities")
+    aliases = relationship(
+        "CandidateEntityAlias",
+        back_populates="entity",
+        cascade="all, delete-orphan",
+    )
+    origins = relationship(
+        "CandidateOriginEdge",
+        back_populates="entity",
+        cascade="all, delete-orphan",
+    )
+    screenings = relationship("VendorScreening", back_populates="candidate_entity")
+
+
+class CandidateEntityAlias(Base):
+    """Alias attached to a canonical candidate entity."""
+
+    __tablename__ = "candidate_entity_aliases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_id = Column(Integer, ForeignKey("candidate_entities.id"), nullable=False, index=True)
+
+    alias_name = Column(String(300), nullable=True, index=True)
+    alias_website = Column(String(1000), nullable=True, index=True)
+    source_name = Column(String(120), nullable=True)
+    merge_confidence = Column(Float, nullable=False, default=0.0)
+    merge_reason = Column(String(255), nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    entity = relationship("CandidateEntity", back_populates="aliases")
+
+
+class CandidateOriginEdge(Base):
+    """Origin/provenance edge for a canonical candidate entity."""
+
+    __tablename__ = "candidate_origin_edges"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_id = Column(Integer, ForeignKey("candidate_entities.id"), nullable=False, index=True)
+
+    origin_type = Column(String(40), nullable=False, index=True)
+    origin_url = Column(String(1000), nullable=True)
+    source_run_id = Column(Integer, ForeignKey("comparator_source_runs.id"), nullable=True, index=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    entity = relationship("CandidateEntity", back_populates="origins")
+    source_run = relationship("ComparatorSourceRun")
+
+
+class RegistryQueryLog(Base):
+    """Per-query registry diagnostics for identity mapping and neighbor expansion."""
+
+    __tablename__ = "registry_query_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
+
+    run_id = Column(String(40), nullable=False, index=True)
+    seed_entity_name = Column(String(300), nullable=True, index=True)
+    query_type = Column(String(40), nullable=False, index=True)  # identity_map | neighbor_expand
+    country = Column(String(16), nullable=False, index=True)  # FR | UK
+    source_name = Column(String(120), nullable=False)
+    query = Column(String(300), nullable=False)
+
+    raw_hits = Column(Integer, nullable=False, default=0)
+    kept_hits = Column(Integer, nullable=False, default=0)
+    reject_reasons_json = Column(JSON, default=dict)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    workspace = relationship("Workspace", back_populates="registry_query_logs")
+
+
 class VendorScreening(Base):
     """Evidence-weighted screening decision for kept vs rejected candidates."""
 
@@ -59,10 +157,11 @@ class VendorScreening(Base):
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
     vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=True, index=True)
+    candidate_entity_id = Column(Integer, ForeignKey("candidate_entities.id"), nullable=True, index=True)
 
     candidate_name = Column(String(300), nullable=False)
     candidate_website = Column(String(1000), nullable=True)
-    screening_status = Column(String(20), nullable=False, index=True)  # kept | rejected
+    screening_status = Column(String(20), nullable=False, index=True)  # kept | review | rejected
     total_score = Column(Float, nullable=False, default=0.0)
 
     component_scores_json = Column(JSON, default=dict)
@@ -75,6 +174,7 @@ class VendorScreening(Base):
 
     workspace = relationship("Workspace", overlaps="vendor_screenings")
     vendor = relationship("Vendor", overlaps="screenings")
+    candidate_entity = relationship("CandidateEntity", back_populates="screenings")
     claims = relationship(
         "VendorClaim",
         back_populates="screening",
