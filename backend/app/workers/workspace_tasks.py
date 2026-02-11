@@ -219,6 +219,44 @@ def _fail_discovery_job(job_id: int, message: str) -> None:
         db.close()
 
 
+def _is_deadlock_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    deadlock_markers = (
+        "deadlock detected",
+        "psycopg2.errors.deadlockdetected",
+        "lock timeout",
+        "serialization failure",
+    )
+    return any(marker in text for marker in deadlock_markers)
+
+
+def _expire_stale_running_discovery_jobs(db, exclude_job_id: Optional[int] = None) -> int:
+    timeout_seconds = max(60, int(settings.discovery_global_timeout_seconds))
+    cutoff = datetime.utcnow() - timedelta(seconds=timeout_seconds)
+    stale_jobs = (
+        db.query(Job)
+        .filter(
+            Job.job_type == JobType.discovery_universe,
+            Job.state == JobState.running,
+            Job.started_at.isnot(None),
+            Job.started_at < cutoff,
+        )
+        .all()
+    )
+    stale_count = 0
+    for stale_job in stale_jobs:
+        if exclude_job_id is not None and stale_job.id == exclude_job_id:
+            continue
+        stale_job.state = JobState.failed
+        stale_job.error_message = "stale_run_timeout_cleanup"
+        stale_job.finished_at = datetime.utcnow()
+        stale_job.progress_message = "Failed by stale run cleanup"
+        stale_count += 1
+    if stale_count:
+        db.commit()
+    return stale_count
+
+
 def normalize_domain(url: str | None) -> str | None:
     """Extract and normalize domain from URL."""
     if not url:
@@ -4464,10 +4502,19 @@ def generate_context_pack_v2(job_id: int):
             return {"success": True, "product_pages": product_pages_total}
             
         except Exception as e:
-            job.state = JobState.failed
-            job.error_message = str(e)
-            job.finished_at = datetime.utcnow()
-            db.commit()
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            failed_job = db.query(Job).filter(Job.id == job_id).first()
+            if failed_job:
+                failed_job.state = JobState.failed
+                failed_job.error_message = str(e)
+                failed_job.finished_at = datetime.utcnow()
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
             return {"error": str(e)}
             
     finally:
@@ -5226,6 +5273,7 @@ def _run_discovery_universe_monolith(job_id: int):
             ranked_scoring_entities = sorted(canonical_entities, key=_candidate_priority_score, reverse=True)
             scoring_entities = ranked_scoring_entities[:max_scoring_entities]
             scoring_entities_skipped_count = max(0, len(ranked_scoring_entities) - len(scoring_entities))
+            scoring_write_batch_size = 5
             if scoring_entities_skipped_count > 0:
                 job.progress_message = (
                     f"Scoring {len(scoring_entities)} canonical candidates "
@@ -5236,7 +5284,8 @@ def _run_discovery_universe_monolith(job_id: int):
             db.commit()
             enrichment_stage_started = _stage_started()
 
-            for entity in scoring_entities:
+            scoring_total = max(1, len(scoring_entities))
+            for entity_index, entity in enumerate(scoring_entities, start=1):
                 official_website = str(entity.get("canonical_website") or "").strip() or None
                 official_domain = normalize_domain(official_website)
                 first_party_domains = _normalize_domain_list(entity.get("first_party_domains") or [])
@@ -5889,6 +5938,10 @@ def _run_discovery_universe_monolith(job_id: int):
                 evidence_sufficiency_counts[decision.evidence_sufficiency] = (
                     evidence_sufficiency_counts.get(decision.evidence_sufficiency, 0) + 1
                 )
+                if entity_index % scoring_write_batch_size == 0 or entity_index == scoring_total:
+                    job.progress = 0.55 + (0.35 * (entity_index / scoring_total))
+                    job.progress_message = f"Scored {entity_index}/{scoring_total} canonical candidates..."
+                    db.commit()
             _stage_finished(
                 "stage_first_party_enrichment_parallel",
                 enrichment_stage_started,
@@ -6143,6 +6196,25 @@ def run_discovery_universe(job_id: int):
         if job.state in {JobState.completed, JobState.failed}:
             return {"error": f"Job already terminal: {job.state.value}"}
 
+        stale_runs_failed = _expire_stale_running_discovery_jobs(db, exclude_job_id=job_id)
+        superseded_runs = (
+            db.query(Job)
+            .filter(
+                Job.job_type == JobType.discovery_universe,
+                Job.workspace_id == job.workspace_id,
+                Job.state == JobState.running,
+                Job.id != job_id,
+            )
+            .all()
+        )
+        for prior_job in superseded_runs:
+            prior_job.state = JobState.failed
+            prior_job.error_message = f"superseded_by_new_run:{job_id}"
+            prior_job.finished_at = datetime.utcnow()
+            prior_job.progress_message = "Superseded by newer discovery run"
+        if superseded_runs:
+            db.commit()
+
         job.state = JobState.running
         if not job.started_at:
             job.started_at = datetime.utcnow()
@@ -6158,6 +6230,8 @@ def run_discovery_universe(job_id: int):
         ctx["pipeline_started_at"] = datetime.utcnow().isoformat()
         ctx["stage_time_ms"] = ctx.get("stage_time_ms") if isinstance(ctx.get("stage_time_ms"), dict) else {}
         ctx["timeout_events"] = ctx.get("timeout_events") if isinstance(ctx.get("timeout_events"), list) else []
+        ctx["stale_runs_failed_count"] = int(stale_runs_failed)
+        ctx["superseded_runs_count"] = int(len(superseded_runs))
         _save_discovery_context(job_id, ctx)
 
         pipeline = chain(
@@ -6303,14 +6377,35 @@ def stage_first_party_enrichment_parallel(_previous: Optional[dict[str, Any]], j
         db.close()
 
 
-@celery_app.task(name="app.workers.workspace_tasks.stage_scoring_claims_persist")
-def stage_scoring_claims_persist(_previous: Optional[dict[str, Any]], job_id: int):
+@celery_app.task(
+    name="app.workers.workspace_tasks.stage_scoring_claims_persist",
+    bind=True,
+    max_retries=2,
+)
+def stage_scoring_claims_persist(self, _previous: Optional[dict[str, Any]], job_id: int):
     started = time.perf_counter()
     try:
         result = _run_discovery_universe_monolith(job_id)
+        if isinstance(result, dict) and result.get("error"):
+            raise RuntimeError(str(result.get("error")))
         _record_stage_metric(job_id, "stage_scoring_claims_persist", started, settings.stage_scoring_timeout_seconds)
         return result
     except Exception as exc:
+        if _is_deadlock_error(exc) and self.request.retries < self.max_retries:
+            retry_delay = min(60, 5 * (2 ** self.request.retries))
+            db = SessionLocal()
+            try:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job and job.state != JobState.completed:
+                    job.state = JobState.running
+                    job.progress_message = (
+                        f"Retrying scoring persistence after transient lock error "
+                        f"({self.request.retries + 1}/{self.max_retries})"
+                    )
+                    db.commit()
+            finally:
+                db.close()
+            raise self.retry(exc=exc, countdown=retry_delay)
         _fail_discovery_job(job_id, f"stage_scoring_claims_persist_failed:{exc}")
         raise
 
