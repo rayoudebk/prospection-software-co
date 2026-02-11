@@ -21,6 +21,20 @@ import {
 import { StepHeader } from "@/components/StepHeader";
 import clsx from "clsx";
 
+const REPORT_CLASSIFICATION_LABELS: Record<string, string> = {
+  good_target: "Good target",
+  borderline_watchlist: "Borderline / Watchlist",
+  not_good_target: "Not good",
+  insufficient_evidence: "Insufficient evidence",
+};
+
+function reportClassificationClass(classification?: string | null) {
+  if (classification === "good_target") return "badge-success";
+  if (classification === "borderline_watchlist") return "badge-warning";
+  if (classification === "not_good_target") return "badge-danger";
+  return "badge-neutral";
+}
+
 function SourcePill({ claim }: { claim: ReportClaim }) {
   if (!claim.source) {
     return (
@@ -44,9 +58,7 @@ function SourcePill({ claim }: { claim: ReportClaim }) {
   );
 }
 
-function CardSection({ card, mode }: { card: ReportCard; mode: "compete" | "complement" }) {
-  const score = mode === "compete" ? card.compete_score : card.complement_score;
-
+function CardSection({ card }: { card: ReportCard }) {
   return (
     <div className="bg-steel-50 border border-steel-200 p-5 space-y-4">
       <div className="flex items-start justify-between gap-3">
@@ -72,11 +84,56 @@ function CardSection({ card, mode }: { card: ReportCard; mode: "compete" | "comp
             </a>
           )}
         </div>
-        <div className="text-right">
-          <div className="text-xs uppercase tracking-wide text-steel-500">{mode} score</div>
-          <div className="text-2xl font-semibold text-oxford">{score.toFixed(1)}</div>
-        </div>
+        <span className={clsx("badge", reportClassificationClass(card.decision_classification))}>
+          {REPORT_CLASSIFICATION_LABELS[card.decision_classification || "insufficient_evidence"] || "Insufficient evidence"}
+        </span>
       </div>
+
+      {card.reason_highlights && card.reason_highlights.length > 0 && (
+        <div>
+          <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Decision Rationale</div>
+          <div className="space-y-1">
+            {card.reason_highlights.slice(0, 5).map((reason, idx) => (
+              <div key={`${card.vendor_id}-reason-${idx}`} className="text-sm text-steel-700">
+                - {reason}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {card.known_unknowns && card.known_unknowns.length > 0 && (
+        <div>
+          <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Known Unknowns</div>
+          <div className="flex flex-wrap gap-2">
+            {card.known_unknowns.slice(0, 6).map((item, idx) => (
+              <span
+                key={`${card.vendor_id}-unknown-${idx}`}
+                className="px-2 py-0.5 text-xs bg-warning/10 text-warning border border-warning/30"
+              >
+                {item}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {card.evidence_quality_summary && Object.keys(card.evidence_quality_summary).length > 0 && (
+        <div>
+          <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Evidence Quality</div>
+          <div className="text-sm text-steel-700 space-y-1">
+            {"freshness_ratio" in card.evidence_quality_summary && (
+              <div>
+                Freshness ratio:{" "}
+                {Math.round(Number(card.evidence_quality_summary.freshness_ratio || 0) * 100)}%
+              </div>
+            )}
+            {"total_evidence" in card.evidence_quality_summary && (
+              <div>Total evidence items: {String(card.evidence_quality_summary.total_evidence)}</div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div>
         <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Brick Mapping</div>
@@ -239,7 +296,7 @@ export default function ReportPage() {
         icon={FileSpreadsheet}
         step={4}
         title="Static Report"
-        subtitle="Generate immutable snapshot cards for SME targets with compete/complement lenses and source-backed filing metrics when coverage is reliable."
+        subtitle="Generate immutable snapshot cards with classification-first narratives, reason highlights, and source-backed filing metrics when coverage is reliable."
       />
 
       <div className="bg-steel-50 border border-steel-200 p-4 space-y-4">
@@ -377,7 +434,7 @@ export default function ReportPage() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {sortedCards.map((card) => (
-                <CardSection key={card.vendor_id} card={card} mode={mode} />
+                <CardSection key={card.vendor_id} card={card} />
               ))}
             </div>
           )}

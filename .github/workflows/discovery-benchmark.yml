@@ -1,0 +1,67 @@
+name: Discovery Benchmark
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [gemini_only, multi_provider, external_tools_on]
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+      FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+      JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Backend Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pytest
+
+      - name: Backend Unit Tests
+        run: |
+          pytest -q backend/tests
+
+      - name: Generate Baseline Metrics
+        run: |
+          python backend/scripts/discovery_replay_benchmark.py \
+            --corpus backend/benchmarks/corpus/sample_replay.json \
+            --out backend/benchmarks/baseline_metrics.json
+
+      - name: Generate Candidate Metrics
+        run: |
+          python backend/scripts/discovery_replay_benchmark.py \
+            --corpus backend/benchmarks/corpus/sample_replay.json \
+            --out backend/benchmarks/${{ matrix.profile }}_candidate_metrics.json
+
+      - name: Compare and Gate
+        run: |
+          python backend/scripts/discovery_compare_reports.py \
+            --baseline backend/benchmarks/baseline_metrics.json \
+            --candidate backend/benchmarks/${{ matrix.profile }}_candidate_metrics.json \
+            --thresholds backend/benchmarks/thresholds.json \
+            --out backend/benchmarks/${{ matrix.profile }}_compare_report.json
+
+      - name: Upload Benchmark Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: discovery-benchmark-${{ matrix.profile }}
+          path: |
+            backend/benchmarks/baseline_metrics.json
+            backend/benchmarks/${{ matrix.profile }}_candidate_metrics.json
+            backend/benchmarks/${{ matrix.profile }}_compare_report.json

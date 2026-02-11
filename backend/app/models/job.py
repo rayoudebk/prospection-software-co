@@ -23,6 +23,7 @@ class JobType(enum.Enum):
 
     # Static report generation
     generate_report_snapshot = "generate_report_snapshot"
+    monitoring_delta = "monitoring_delta"
     
     # Legacy (keep for backwards compat)
     landscape = "landscape"

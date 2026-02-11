@@ -48,8 +48,73 @@ class UnifiedCrawler:
         """Log progress if callback is set."""
         if self.progress_callback:
             self.progress_callback(message)
+
+    @staticmethod
+    def _normalize_url(raw_url: str) -> str:
+        normalized = raw_url.strip()
+        if not normalized:
+            return ""
+        if not normalized.startswith(("http://", "https://")):
+            normalized = f"https://{normalized}"
+        parsed = urlparse(normalized)
+        if not parsed.netloc:
+            return ""
+        scheme = parsed.scheme or "https"
+        path = parsed.path or ""
+        query = f"?{parsed.query}" if parsed.query else ""
+        return f"{scheme}://{parsed.netloc}{path}{query}"
+
+    @staticmethod
+    def _is_deep_path(url: str) -> bool:
+        parsed = urlparse(url)
+        path = (parsed.path or "").strip()
+        return bool(path and path not in {"/", ""})
+
+    @staticmethod
+    def _path_depth(url: str) -> int:
+        parsed = urlparse(url)
+        path = (parsed.path or "").strip("/")
+        return len(path.split("/")) if path else 0
+
+    @staticmethod
+    def _url_priority_score(url: str) -> int:
+        lowered = url.lower()
+        score = 0
+        high_signal_tokens = (
+            "/customers",
+            "/customer",
+            "/case-study",
+            "/case/",
+            "/client",
+            "/solutions",
+            "/solution",
+            "/product",
+            "/platform",
+            "/integration",
+            "/services",
+            "/about",
+            "/company",
+            "/security",
+            "/compliance",
+            "/pricing",
+            "/blog",
+            "/news",
+            "/press",
+        )
+        for token in high_signal_tokens:
+            if token in lowered:
+                score += 8
+        if lowered.endswith((".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".pdf", ".zip", ".mp4")):
+            score -= 100
+        if "?" in lowered:
+            score -= 2
+        return score
     
-    async def crawl_for_context(self, url: str) -> ContextPack:
+    async def crawl_for_context(
+        self,
+        url: str,
+        start_urls: Optional[List[str]] = None,
+    ) -> ContextPack:
         """
         Crawl a company website and build a context pack.
         
@@ -62,16 +127,42 @@ class UnifiedCrawler:
         
         Args:
             url: Starting URL (can be domain or specific page)
+            start_urls: Optional explicit URLs to force include during selection.
         
         Returns:
             Complete ContextPack with pages, signals, and markdown
         """
         # Normalize URL
-        if not url.startswith(("http://", "https://")):
-            url = f"https://{url}"
-        
+        url = self._normalize_url(url)
+        if not url:
+            raise ValueError("Invalid starting URL")
+
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        forced_start_urls: List[str] = []
+        if self._is_deep_path(url):
+            forced_start_urls.append(url)
+        for raw in start_urls or []:
+            normalized = self._normalize_url(raw)
+            if not normalized:
+                continue
+            candidate = urlparse(normalized)
+            if candidate.netloc != parsed.netloc:
+                continue
+            if not self._is_deep_path(normalized):
+                continue
+            forced_start_urls.append(normalized)
+        # Preserve order while deduping.
+        deduped_forced_starts: List[str] = []
+        seen_forced: set[str] = set()
+        for forced_url in forced_start_urls:
+            key = forced_url.lower()
+            if key in seen_forced:
+                continue
+            seen_forced.add(key)
+            deduped_forced_starts.append(forced_url)
+        forced_start_urls = deduped_forced_starts
         
         self._log(f"Starting crawl for {base_url}...")
         
@@ -88,17 +179,65 @@ class UnifiedCrawler:
             self._log("Phase 1: Discovering URLs...")
             discovery = URLDiscovery(client, self.progress_callback)
             discovered_urls = await discovery.discover_urls(base_url)
-            
+            for forced_url in forced_start_urls:
+                discovered_urls.add(forced_url)
+
             if not discovered_urls:
                 # Fallback: at least try the starting URL
                 discovered_urls = {url}
             
             self._log(f"Discovered {len(discovered_urls)} URLs")
+
+            # Build a deterministic prioritized preview list so broad sites do not fan out to 100+ previews.
+            prioritized_preview_urls: List[str] = []
+            seen_preview_urls: set[str] = set()
+
+            def _append_preview_url(candidate_url: str) -> None:
+                normalized_candidate = self._normalize_url(candidate_url)
+                if not normalized_candidate:
+                    return
+                key = normalized_candidate.lower()
+                if key in seen_preview_urls:
+                    return
+                seen_preview_urls.add(key)
+                prioritized_preview_urls.append(normalized_candidate)
+
+            _append_preview_url(base_url)
+            _append_preview_url(url)
+            for forced_url in forced_start_urls:
+                _append_preview_url(forced_url)
+
+            remaining_urls = [
+                candidate_url
+                for candidate_url in discovered_urls
+                if self._normalize_url(candidate_url).lower() not in seen_preview_urls
+            ]
+            remaining_urls.sort(
+                key=lambda candidate_url: (
+                    -self._url_priority_score(candidate_url),
+                    self._path_depth(candidate_url),
+                    len(candidate_url),
+                )
+            )
+            for candidate_url in remaining_urls:
+                _append_preview_url(candidate_url)
+
+            preview_fetch_cap = min(
+                MAX_PAGES_TO_CRAWL * 4,
+                max(30, self.max_pages * 6),
+            )
+            preview_fetch_cap = max(
+                len(forced_start_urls) + 2,
+                preview_fetch_cap,
+            )
             
             # Phase 2: Preview + Scoring
             self._log("Phase 2: Fetching previews and scoring...")
             preview_fetcher = PreviewFetcher(client, self.progress_callback)
-            previews = await preview_fetcher.fetch_previews(discovered_urls)
+            previews = await preview_fetcher.fetch_previews(
+                prioritized_preview_urls,
+                max_urls=preview_fetch_cap,
+            )
             
             if not previews:
                 # Fallback: create minimal preview from starting URL
@@ -123,6 +262,25 @@ class UnifiedCrawler:
                 scored_previews,
                 max_pages=self.max_pages
             )
+            selected_by_url = {preview.url.lower(): preview for preview in selected_previews}
+            preview_lookup = {preview.url.lower(): preview for preview in previews}
+            for forced_url in forced_start_urls:
+                key = forced_url.lower()
+                if key in selected_by_url:
+                    continue
+                selected_previews.append(
+                    preview_lookup.get(
+                        key,
+                        PagePreview(
+                            url=forced_url,
+                            title="",
+                            meta_description="",
+                            h1="",
+                            headings=[],
+                            path_depth=self._path_depth(forced_url),
+                        ),
+                    )
+                )
             self._log(f"Selected {len(selected_previews)} pages for deep extraction")
             
             # Phase 4: Deep Extraction

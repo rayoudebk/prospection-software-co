@@ -1,0 +1,47 @@
+{
+  "baseline": {
+    "runs": 1,
+    "runtime_ms": {
+      "avg": 494200.0,
+      "p95": 494200.0,
+      "max": 494200.0
+    },
+    "quality": {
+      "high_quality_runs": 0,
+      "degraded_runs": 1,
+      "high_quality_rate": 0.0
+    },
+    "ranking": {
+      "avg_ranking_eligible_count": 8.0,
+      "avg_citation_sentence_count": 31.0
+    }
+  },
+  "candidate": {
+    "runs": 1,
+    "runtime_ms": {
+      "avg": 494200.0,
+      "p95": 494200.0,
+      "max": 494200.0
+    },
+    "quality": {
+      "high_quality_runs": 0,
+      "degraded_runs": 1,
+      "high_quality_rate": 0.0
+    },
+    "ranking": {
+      "avg_ranking_eligible_count": 8.0,
+      "avg_citation_sentence_count": 31.0
+    }
+  },
+  "diff": {
+    "quality_drop_pct": -0.0,
+    "p95_runtime_regression_pct": 0.0
+  },
+  "thresholds": {
+    "max_quality_drop_pct": 5.0,
+    "max_p95_runtime_regression_pct": 10.0
+  },
+  "gate_passed": true,
+  "quality_gate_passed": true,
+  "runtime_gate_passed": true
+}

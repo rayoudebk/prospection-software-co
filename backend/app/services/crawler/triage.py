@@ -4,9 +4,8 @@ import json
 from typing import List, Dict, Optional, Callable
 from collections import defaultdict
 
-from google import genai
-
-from app.config import get_settings
+from app.services.llm.orchestrator import LLMOrchestrator
+from app.services.llm.types import LLMRequest, LLMStage
 from .models import PagePreview, LLMTriageResult
 from .constants import COVERAGE_QUOTAS, PAGE_TYPE_PATTERNS
 
@@ -16,20 +15,12 @@ class LLMTriage:
     
     def __init__(self, progress_callback: Optional[Callable[[str], None]] = None):
         self.progress_callback = progress_callback
-        self._client = None
+        self._orchestrator = LLMOrchestrator()
     
     def _log(self, message: str) -> None:
         """Log progress if callback is set."""
         if self.progress_callback:
             self.progress_callback(message)
-    
-    def _get_client(self):
-        """Lazy-load Gemini client."""
-        if self._client is None:
-            settings = get_settings()
-            if settings.gemini_api_key:
-                self._client = genai.Client(api_key=settings.gemini_api_key)
-        return self._client
     
     def triage_previews(
         self,
@@ -47,13 +38,6 @@ class LLMTriage:
             Selected previews respecting category quotas
         """
         self._log("Triaging pages with LLM...")
-        
-        client = self._get_client()
-        
-        if client is None:
-            # Fallback to heuristic selection
-            self._log("No Gemini API key, using heuristic triage...")
-            return self._heuristic_triage(previews, max_pages)
         
         # Get LLM classifications
         triage_results = self._llm_classify_pages(previews[:100])  # Limit to top 100
@@ -78,14 +62,15 @@ class LLMTriage:
         previews: List[PagePreview]
     ) -> List[LLMTriageResult]:
         """Use LLM to classify pages based on previews."""
-        client = self._get_client()
-        if not client:
-            return []
-        
         # Format previews for prompt
         preview_lines = []
         for i, p in enumerate(previews):
-            headings_str = ", ".join(p.headings[:5]) if p.headings else "none"
+            sanitized_headings = [
+                str(heading).strip()
+                for heading in (p.headings or [])
+                if heading is not None and str(heading).strip()
+            ]
+            headings_str = ", ".join(sanitized_headings[:5]) if sanitized_headings else "none"
             preview_lines.append(
                 f"{i+1}. URL: {p.url}\n"
                 f"   Title: {p.title}\n"
@@ -132,12 +117,16 @@ Return ONLY a JSON array:
 Include ALL {len(previews)} pages in your response."""
 
         try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt,
+            response = self._orchestrator.run_stage(
+                LLMRequest(
+                    stage=LLMStage.crawler_triage,
+                    prompt=prompt,
+                    timeout_seconds=45,
+                    use_web_search=False,
+                    expect_json=True,
+                )
             )
-            
-            response_text = response.text.strip()
+            response_text = str(response.text or "").strip()
             
             # Extract JSON array
             start_idx = response_text.find("[")

@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from typing import List, Set, Optional, Callable, Tuple
+from typing import List, Set, Optional, Callable, Tuple, Iterable
 from urllib.parse import urlparse
 
 import httpx
@@ -50,13 +50,30 @@ class PreviewFetcher:
             return ""
         return str(text).strip() if strip else str(text)
     
-    async def fetch_previews(self, urls: Set[str]) -> List[PagePreview]:
+    async def fetch_previews(
+        self,
+        urls: Iterable[str],
+        max_urls: Optional[int] = None,
+    ) -> List[PagePreview]:
         """
         Fetch lightweight previews for a set of URLs.
         
         Extracts only: title, meta description, h1, first 10 h2/h3 headings.
         """
-        urls_list = list(urls)[:MAX_PAGES_TO_PREVIEW]
+        seen: set[str] = set()
+        urls_list: List[str] = []
+        for raw in urls:
+            normalized = str(raw or "").strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            urls_list.append(normalized)
+
+        effective_max = MAX_PAGES_TO_PREVIEW if max_urls is None else max(1, int(max_urls))
+        urls_list = urls_list[:effective_max]
         previews = []
         
         self._log(f"Fetching previews for {len(urls_list)} URLs...")

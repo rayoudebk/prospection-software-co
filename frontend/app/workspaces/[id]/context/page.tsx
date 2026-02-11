@@ -26,6 +26,24 @@ import { StepHeader } from "@/components/StepHeader";
 import ReactMarkdown from "react-markdown";
 import clsx from "clsx";
 
+function normalizeUrlInput(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const candidate = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+    ? trimmed
+    : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    const query = parsed.search || "";
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}${query}`;
+  } catch {
+    return null;
+  }
+}
+
 export default function ContextPackPage() {
   const params = useParams();
   const workspaceId = Number(params.id);
@@ -38,12 +56,17 @@ export default function ContextPackPage() {
   const [buyerUrl, setBuyerUrl] = useState("");
   const [referenceUrls, setReferenceUrls] = useState<string[]>([]);
   const [newReferenceUrl, setNewReferenceUrl] = useState("");
+  const [referenceUrlError, setReferenceUrlError] = useState<string | null>(null);
+  const [evidenceUrls, setEvidenceUrls] = useState<string[]>([]);
+  const [newEvidenceUrl, setNewEvidenceUrl] = useState("");
+  const [evidenceUrlError, setEvidenceUrlError] = useState<string | null>(null);
 
   // Initialize from profile after async hydration.
   useEffect(() => {
     if (profile) {
       setBuyerUrl(profile.buyer_company_url || "");
       setReferenceUrls(profile.reference_vendor_urls || []);
+      setEvidenceUrls(profile.reference_evidence_urls || []);
     }
   }, [profile]);
 
@@ -56,18 +79,50 @@ export default function ContextPackPage() {
     await updateProfile.mutateAsync({
       buyer_company_url: buyerUrl,
       reference_vendor_urls: referenceUrls,
+      reference_evidence_urls: evidenceUrls,
     });
   };
 
   const handleAddReference = () => {
-    if (newReferenceUrl && referenceUrls.length < 3) {
-      setReferenceUrls([...referenceUrls, newReferenceUrl]);
-      setNewReferenceUrl("");
+    const normalized = normalizeUrlInput(newReferenceUrl);
+    if (!normalized) {
+      setReferenceUrlError("Enter a valid URL.");
+      return;
     }
+    if (referenceUrls.some((url) => url.toLowerCase() === normalized.toLowerCase())) {
+      setReferenceUrlError("That competitor URL is already added.");
+      return;
+    }
+    if (referenceUrls.length >= 3) {
+      setReferenceUrlError("You can only add up to 3 reference competitors.");
+      return;
+    }
+    setReferenceUrls([...referenceUrls, normalized]);
+    setNewReferenceUrl("");
+    setReferenceUrlError(null);
   };
 
   const handleRemoveReference = (index: number) => {
     setReferenceUrls(referenceUrls.filter((_, i) => i !== index));
+  };
+
+  const handleAddEvidence = () => {
+    const normalized = normalizeUrlInput(newEvidenceUrl);
+    if (!normalized) {
+      setEvidenceUrlError("Enter a valid proof-page URL.");
+      return;
+    }
+    if (evidenceUrls.some((url) => url.toLowerCase() === normalized.toLowerCase())) {
+      setEvidenceUrlError("That evidence URL is already added.");
+      return;
+    }
+    setEvidenceUrls([...evidenceUrls, normalized]);
+    setNewEvidenceUrl("");
+    setEvidenceUrlError(null);
+  };
+
+  const handleRemoveEvidence = (index: number) => {
+    setEvidenceUrls(evidenceUrls.filter((_, i) => i !== index));
   };
 
   if (isLoading) {
@@ -166,7 +221,10 @@ export default function ContextPackPage() {
                 <input
                   type="url"
                   value={newReferenceUrl}
-                  onChange={(e) => setNewReferenceUrl(e.target.value)}
+                  onChange={(e) => {
+                    setNewReferenceUrl(e.target.value);
+                    setReferenceUrlError(null);
+                  }}
                   placeholder="https://reference-competitor.com"
                   className="input text-sm"
                 />
@@ -178,6 +236,58 @@ export default function ContextPackPage() {
                   <Plus className="w-4 h-4" />
                 </button>
               </div>
+            )}
+            {referenceUrlError && (
+              <p className="text-xs text-danger mt-2">{referenceUrlError}</p>
+            )}
+          </div>
+
+          {/* Evidence URLs */}
+          <div className="mb-6">
+            <label className="label">
+              Evidence Links (proof pages)
+            </label>
+            <p className="text-xs text-steel-500 mt-1 mb-2">
+              Add direct proof pages (case studies, partnership/newsroom links, customer pages) for better depth scoring.
+            </p>
+            <div className="space-y-2 mb-2">
+              {evidenceUrls.map((url, index) => (
+                <div
+                  key={`${url}-${index}`}
+                  className="flex items-center gap-2 px-3 py-2 bg-steel-50 border border-steel-200"
+                >
+                  <Globe className="w-4 h-4 text-steel-400" />
+                  <span className="flex-1 text-sm truncate">{url}</span>
+                  <button
+                    onClick={() => handleRemoveEvidence(index)}
+                    className="text-steel-400 hover:text-danger"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={newEvidenceUrl}
+                onChange={(e) => {
+                  setNewEvidenceUrl(e.target.value);
+                  setEvidenceUrlError(null);
+                }}
+                placeholder="https://vendor.com/blog/customer-proof"
+                className="input text-sm"
+              />
+              <button
+                onClick={handleAddEvidence}
+                disabled={!newEvidenceUrl}
+                className="btn-secondary px-3 disabled:opacity-50"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            </div>
+            {evidenceUrlError && (
+              <p className="text-xs text-danger mt-2">{evidenceUrlError}</p>
             )}
           </div>
 
@@ -196,6 +306,7 @@ export default function ContextPackPage() {
                 await updateProfile.mutateAsync({
                   buyer_company_url: buyerUrl,
                   reference_vendor_urls: referenceUrls,
+                  reference_evidence_urls: evidenceUrls,
                 });
                 jobRunner.run();
               }}

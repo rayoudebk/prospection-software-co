@@ -43,6 +43,13 @@ class ReportSnapshotItem(Base):
     compete_score = Column(Float, default=0.0)
     complement_score = Column(Float, default=0.0)
     lens_breakdown_json = Column(JSON, default=dict)
+    decision_classification = Column(
+        String(40),
+        nullable=True,
+        index=True,
+    )
+    reason_codes_json = Column(JSON, default=dict)
+    evidence_summary_json = Column(JSON, default=dict)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

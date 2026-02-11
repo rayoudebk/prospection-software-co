@@ -11,6 +11,7 @@ from app.models.vendor import Vendor, VendorDossier, VendorStatus
 from app.models.job import Job, JobType, JobState, JobProvider
 from app.models.workspace_evidence import WorkspaceEvidence
 from app.models.report import ReportSnapshot, ReportSnapshotItem, VendorFact
+from app.models.workspace_feedback import WorkspaceFeedbackEvent
 from app.models.intelligence import (
     ComparatorSourceRun,
     CandidateEntity,
@@ -21,6 +22,8 @@ from app.models.intelligence import (
     VendorScreening,
     VendorClaim,
 )
+from app.models.claims_graph import ClaimGraphNode, ClaimGraphEdge, ClaimGraphEdgeEvidence
+from app.models.evaluation import EvaluationRun, EvaluationSampleResult
 
 __all__ = [
     # Legacy models (kept for backwards compat)
@@ -31,6 +34,9 @@ __all__ = [
     "Job", "JobType", "JobState", "JobProvider",
     "WorkspaceEvidence",
     "ReportSnapshot", "ReportSnapshotItem", "VendorFact",
+    "WorkspaceFeedbackEvent",
     "ComparatorSourceRun", "CandidateEntity", "CandidateEntityAlias", "CandidateOriginEdge", "RegistryQueryLog",
     "VendorMention", "VendorScreening", "VendorClaim",
+    "ClaimGraphNode", "ClaimGraphEdge", "ClaimGraphEdgeEvidence",
+    "EvaluationRun", "EvaluationSampleResult",
 ]

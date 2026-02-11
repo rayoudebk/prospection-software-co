@@ -1,0 +1,19 @@
+[
+  {
+    "workspace_id": 1,
+    "screening_run_id": "20260210T143724",
+    "run_quality_tier": "degraded",
+    "quality_gate_passed": false,
+    "degraded_reasons": ["llm_discovery_failed"],
+    "stage_time_ms": {
+      "stage_seed_ingest": 9200,
+      "stage_llm_discovery_fanout": 121000,
+      "stage_registry_identity_expand": 48000,
+      "stage_first_party_enrichment_parallel": 312000,
+      "stage_scoring_claims_persist": 312000,
+      "pipeline_total_ms": 494200
+    },
+    "ranking_eligible_count": 8,
+    "citation_sentence_count": 31
+  }
+]

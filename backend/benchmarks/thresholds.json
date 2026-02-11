@@ -1,0 +1,4 @@
+{
+  "max_quality_drop_pct": 5.0,
+  "max_p95_runtime_regression_pct": 10.0
+}

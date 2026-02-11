@@ -51,8 +51,15 @@ class PagePreview:
     @property
     def combined_text(self) -> str:
         """Combine all text fields for keyword matching."""
-        parts = [self.url, self.title, self.meta_description, self.h1]
-        parts.extend(self.headings)
+        parts: List[str] = []
+        for value in [self.url, self.title, self.meta_description, self.h1]:
+            text = str(value or "").strip()
+            if text:
+                parts.append(text)
+        for heading in self.headings or []:
+            text = str(heading or "").strip()
+            if text:
+                parts.append(text)
         return " ".join(parts)
 
 

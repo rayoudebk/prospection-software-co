@@ -1,17 +1,21 @@
 """Celery tasks for workspace-based workflow."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from dataclasses import asdict
+from datetime import datetime, timedelta
+import json
 import re
 from difflib import SequenceMatcher
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 import unicodedata
 import httpx
+import redis
 from selectolax.parser import HTMLParser
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from celery import chain
 
 from app.workers.celery_app import celery_app
 from app.config import get_settings
@@ -50,6 +54,20 @@ from app.services.reporting import (
     normalize_country,
     source_label_for_url,
 )
+from app.services.evidence_policy import (
+    DEFAULT_EVIDENCE_POLICY,
+    claim_group_for_dimension,
+    infer_source_kind,
+    infer_source_tier,
+    normalize_policy,
+    valid_through_from_claim_group,
+)
+from app.services.decision_engine import evaluate_decision
+from app.services.claims_graph import rebuild_workspace_claims_graph
+from app.services.llm.orchestrator import LLMOrchestrator
+from app.services.llm.types import LLMRequest, LLMStage, LLMOrchestrationError
+from app.services.retrieval.crawl_connectors import fetch_page_fast
+from app.services.retrieval.search_connectors import discover_candidates_from_external_search
 
 MIN_PUBLIC_PRICE_USD = 250.0
 MIN_SOFTWARE_HEAVINESS = 3
@@ -61,19 +79,20 @@ MAX_PENALTY_POINTS = 35.0
 MAX_IDENTITY_FETCHES_PER_RUN = 600
 IDENTITY_RESOLUTION_TIMEOUT_SECONDS = 4
 IDENTITY_RESOLUTION_CONCURRENCY = 20
-FIRST_PARTY_FETCH_BUDGET = 40
+FIRST_PARTY_FETCH_BUDGET = 48
 FIRST_PARTY_FETCH_TIMEOUT_SECONDS = 4
 FIRST_PARTY_MAX_SIGNALS = 6
-FIRST_PARTY_CRAWL_BUDGET = 35
-FIRST_PARTY_CRAWL_DEEP_BUDGET = 15
+FIRST_PARTY_CRAWL_BUDGET = 42
+FIRST_PARTY_CRAWL_DEEP_BUDGET = 18
+FIRST_PARTY_HINT_CRAWL_BUDGET = 18
 FIRST_PARTY_CRAWL_LIGHT_MAX_PAGES = 5
 FIRST_PARTY_CRAWL_DEEP_MAX_PAGES = 10
 FIRST_PARTY_CRAWL_MAX_REASONS = 16
 FIRST_PARTY_CRAWL_DEEP_PRIORITY_THRESHOLD = 95.0
 PRE_SCORE_UNIVERSE_CAP = 500
 
-REGISTRY_MAX_QUERIES = 300
-REGISTRY_MAX_ACCEPTED_NEIGHBORS = 250
+REGISTRY_MAX_QUERIES = 360
+REGISTRY_MAX_ACCEPTED_NEIGHBORS = 300
 REGISTRY_MAX_RAW_HITS_PER_QUERY = 10
 REGISTRY_MAX_NEIGHBORS_PER_ENTITY = 3
 REGISTRY_IDENTITY_TOP_SEEDS = 120
@@ -81,10 +100,10 @@ REGISTRY_IDENTITY_MIN_SCORE = 0.68
 REGISTRY_IDENTITY_BRAND_MATCH_MIN_SCORE = 0.62
 REGISTRY_NEIGHBOR_MIN_SCORE = 28.0
 REGISTRY_EXPANSION_COUNTRIES = {"FR", "UK", "DE"}
-REGISTRY_MAX_DE_QUERIES = 8
+REGISTRY_MAX_DE_QUERIES = 10
 REGISTRY_DE_ERROR_BREAKER = 3
-REGISTRY_IDENTITY_MAX_SECONDS = 180
-REGISTRY_NEIGHBOR_MAX_SECONDS = 240
+REGISTRY_IDENTITY_MAX_SECONDS = 216
+REGISTRY_NEIGHBOR_MAX_SECONDS = 288
 
 HARD_FAIL_REASONS = {
     "go_to_market_b2c",
@@ -103,6 +122,14 @@ WEALTH_BENCHMARK_SEEDS = [
     {"name": "SimCorp", "website": "https://www.simcorp.com", "hq_country": "DK"},
     {"name": "Upvest", "website": "https://upvest.co", "hq_country": "DE"},
 ]
+
+WEALTH_BENCHMARK_EVIDENCE_URLS = {
+    "upvest.co": [
+        "https://upvest.co/blog/liqid-enters-partnership-with-upvest-for-its-eltif-offering",
+        "https://upvest.co/blog/zopa-bank-partners-with-upvest",
+        "https://upvest.co/blog/boerse-stuttgart-and-upvest",
+    ]
+}
 
 WEALTH_CONTEXT_TOKENS = {
     "wealth",
@@ -155,6 +182,41 @@ B2C_TOKENS = {
 settings = get_settings()
 sync_engine = create_engine(settings.database_url_sync, echo=settings.debug)
 SessionLocal = sessionmaker(bind=sync_engine)
+
+
+def _discovery_context_key(job_id: int) -> str:
+    return f"discovery:pipeline:job:{int(job_id)}"
+
+
+def _load_discovery_context(job_id: int) -> dict[str, Any]:
+    client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    raw = client.get(_discovery_context_key(job_id))
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_discovery_context(job_id: int, payload: dict[str, Any], ttl_seconds: int = 86400) -> None:
+    client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    client.setex(_discovery_context_key(job_id), max(60, int(ttl_seconds)), json.dumps(payload))
+
+
+def _fail_discovery_job(job_id: int, message: str) -> None:
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return
+        job.state = JobState.failed
+        job.error_message = str(message)[:1000]
+        job.finished_at = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
 
 
 def normalize_domain(url: str | None) -> str | None:
@@ -210,6 +272,10 @@ def _is_registry_profile_domain(domain: Optional[str]) -> bool:
         return False
     lowered = domain.lower()
     return any(lowered == item or lowered.endswith(f".{item}") for item in REGISTRY_PROFILE_DOMAINS)
+
+
+def _is_non_first_party_profile_domain(domain: Optional[str]) -> bool:
+    return _is_aggregator_domain(domain) or _is_registry_profile_domain(domain)
 
 
 def _first_non_empty(*values: Any) -> Optional[str]:
@@ -369,9 +435,9 @@ def _resolve_candidate_identity(
     cache_key = website.lower()
     cached = identity_cache.get(cache_key)
     if cached is None:
-        if input_domain and _is_aggregator_domain(input_domain) and allow_network_resolution:
+        if input_domain and _is_non_first_party_profile_domain(input_domain) and allow_network_resolution:
             cached = resolve_external_website_from_profile(website)
-        elif input_domain and _is_aggregator_domain(input_domain):
+        elif input_domain and _is_non_first_party_profile_domain(input_domain):
             cached = {
                 "profile_url": website,
                 "official_website": None,
@@ -392,22 +458,36 @@ def _resolve_candidate_identity(
     resolved = str(cached.get("official_website") or "").strip()
     if resolved and not resolved.startswith(("http://", "https://")):
         resolved = f"https://{resolved}"
-    resolved_domain = normalize_domain(resolved) if resolved else input_domain
+    resolved_domain = normalize_domain(resolved) if resolved else None
+    if resolved_domain and _is_non_first_party_profile_domain(resolved_domain):
+        resolved = ""
+        resolved_domain = None
+
+    final_website = resolved or (
+        website
+        if input_domain and not _is_non_first_party_profile_domain(input_domain)
+        else ""
+    )
+    final_domain = normalize_domain(final_website) if final_website else None
+    identity_confidence = str(cached.get("identity_confidence", "low") or "low")
+    if not final_website:
+        identity_confidence = "low"
 
     candidate["original_website"] = website
-    candidate["website"] = resolved or website
+    candidate["website"] = final_website or None
+    candidate["official_website_url"] = final_website or None
     candidate["identity"] = {
         "input_website": website,
-        "official_website": resolved or website,
+        "official_website": final_website or None,
         "input_domain": input_domain,
-        "canonical_domain": resolved_domain,
-        "identity_confidence": cached.get("identity_confidence", "low"),
+        "canonical_domain": final_domain or input_domain,
+        "identity_confidence": identity_confidence,
         "identity_sources": [cached.get("profile_url")] if cached.get("profile_url") else [],
         "captured_at": cached.get("captured_at"),
         "error": cached.get("error"),
     }
     if not candidate.get("hq_country"):
-        inferred_country = _infer_country_from_domain(resolved_domain or input_domain)
+        inferred_country = _infer_country_from_domain(final_domain or input_domain)
         if inferred_country:
             candidate["hq_country"] = inferred_country
     return candidate
@@ -532,7 +612,7 @@ def _name_similarity(a: str, b: str) -> float:
 def _domains_conflict(domain_a: Optional[str], domain_b: Optional[str]) -> bool:
     if not domain_a or not domain_b:
         return False
-    if _is_aggregator_domain(domain_a) or _is_aggregator_domain(domain_b):
+    if _is_non_first_party_profile_domain(domain_a) or _is_non_first_party_profile_domain(domain_b):
         return False
     return domain_a != domain_b
 
@@ -582,29 +662,72 @@ def _origin_entries(candidate: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _apply_identity_payload(candidate: dict[str, Any], payload: dict[str, Any]) -> None:
-    website = str(candidate.get("website") or "").strip()
-    normalized_input = website if website.startswith(("http://", "https://")) else (f"https://{website}" if website else "")
+    existing_official = str(
+        candidate.get("official_website_url")
+        or candidate.get("website")
+        or ""
+    ).strip()
+    discovery_seed = str(
+        candidate.get("discovery_url")
+        or candidate.get("profile_url")
+        or payload.get("profile_url")
+        or existing_official
+        or ""
+    ).strip()
+    normalized_input = (
+        discovery_seed
+        if discovery_seed.startswith(("http://", "https://"))
+        else (f"https://{discovery_seed}" if discovery_seed else "")
+    )
     input_domain = normalize_domain(normalized_input)
 
     resolved = str(payload.get("official_website") or "").strip()
     if resolved and not resolved.startswith(("http://", "https://")):
         resolved = f"https://{resolved}"
-    resolved_domain = normalize_domain(resolved) if resolved else input_domain
 
-    candidate["original_website"] = normalized_input or website
-    candidate["website"] = resolved or normalized_input or website
+    existing_domain = normalize_domain(existing_official)
+    final_official = resolved or (
+        existing_official
+        if existing_domain and not _is_non_first_party_profile_domain(existing_domain)
+        else None
+    )
+    final_domain = normalize_domain(final_official) if final_official else None
+    if final_domain and _is_non_first_party_profile_domain(final_domain):
+        final_official = None
+        final_domain = None
+
+    # Persist explicit separation between discovery/profile URL and first-party official URL.
+    if normalized_input:
+        if _is_non_first_party_profile_domain(input_domain):
+            candidate["profile_url"] = normalized_input
+            candidate["discovery_url"] = candidate.get("discovery_url") or normalized_input
+        elif not candidate.get("discovery_url"):
+            candidate["discovery_url"] = normalized_input
+    candidate["official_website_url"] = final_official
+    candidate["original_website"] = normalized_input or existing_official
+    candidate["website"] = final_official
+
+    first_party_domains = _normalize_domain_list(candidate.get("first_party_domains") or [])
+    if final_domain and final_domain not in first_party_domains:
+        first_party_domains.append(final_domain)
+    candidate["first_party_domains"] = first_party_domains
+
+    identity_confidence = str(payload.get("identity_confidence", "low") or "low")
+    if not final_official:
+        identity_confidence = "low"
+
     candidate["identity"] = {
-        "input_website": normalized_input or website or None,
-        "official_website": resolved or normalized_input or website or None,
+        "input_website": normalized_input or None,
+        "official_website": final_official,
         "input_domain": input_domain,
-        "canonical_domain": resolved_domain,
-        "identity_confidence": payload.get("identity_confidence", "low"),
+        "canonical_domain": final_domain or input_domain,
+        "identity_confidence": identity_confidence,
         "identity_sources": [payload.get("profile_url")] if payload.get("profile_url") else [],
         "captured_at": payload.get("captured_at"),
         "error": payload.get("error"),
     }
     if not candidate.get("hq_country"):
-        inferred_country = _infer_country_from_domain(resolved_domain or input_domain)
+        inferred_country = _infer_country_from_domain(final_domain or input_domain)
         if inferred_country:
             candidate["hq_country"] = inferred_country
 
@@ -619,8 +742,14 @@ def _resolve_identities_for_candidates(
     aggregator_urls: list[str] = []
     aggregator_seen: set[str] = set()
     for candidate in candidates:
-        website = str(candidate.get("website") or "").strip()
-        if not website:
+        identity_url = str(
+            candidate.get("website")
+            or candidate.get("official_website_url")
+            or candidate.get("profile_url")
+            or candidate.get("discovery_url")
+            or ""
+        ).strip()
+        if not identity_url:
             payload = {
                 "profile_url": None,
                 "official_website": None,
@@ -630,7 +759,7 @@ def _resolve_identities_for_candidates(
             }
             _apply_identity_payload(candidate, payload)
             continue
-        normalized = website if website.startswith(("http://", "https://")) else f"https://{website}"
+        normalized = identity_url if identity_url.startswith(("http://", "https://")) else f"https://{identity_url}"
         domain = normalize_domain(normalized)
         if not domain:
             payload = {
@@ -642,7 +771,7 @@ def _resolve_identities_for_candidates(
             }
             _apply_identity_payload(candidate, payload)
             continue
-        if not _is_aggregator_domain(domain):
+        if not _is_non_first_party_profile_domain(domain):
             payload = {
                 "profile_url": normalized,
                 "official_website": normalized,
@@ -684,12 +813,18 @@ def _resolve_identities_for_candidates(
                 resolved_payloads[source_url.lower()] = result
 
     for candidate in candidates:
-        website = str(candidate.get("website") or "").strip()
-        if not website:
+        identity_url = str(
+            candidate.get("website")
+            or candidate.get("official_website_url")
+            or candidate.get("profile_url")
+            or candidate.get("discovery_url")
+            or ""
+        ).strip()
+        if not identity_url:
             continue
-        normalized = website if website.startswith(("http://", "https://")) else f"https://{website}"
+        normalized = identity_url if identity_url.startswith(("http://", "https://")) else f"https://{identity_url}"
         domain = normalize_domain(normalized)
-        if not domain or not _is_aggregator_domain(domain):
+        if not domain or not _is_non_first_party_profile_domain(domain):
             continue
         if normalized.lower() in resolved_payloads:
             _apply_identity_payload(candidate, resolved_payloads[normalized.lower()])
@@ -744,6 +879,9 @@ def _merge_candidate_into_entity(
     website = str(candidate.get("website") or "").strip() or None
     domain = normalize_domain(website)
     candidate_name = str(candidate.get("name") or "").strip()
+    discovery_url = str(candidate.get("discovery_url") or candidate.get("profile_url") or "").strip() or None
+    entity_type = str(candidate.get("entity_type") or "company").strip().lower() or "company"
+    solution_name = str(candidate.get("solution_name") or "").strip() or None
 
     entity["alias_names"] = _dedupe_strings(entity.get("alias_names", []) + ([candidate_name] if candidate_name else []))
     entity["alias_websites"] = _dedupe_strings(entity.get("alias_websites", []) + ([website] if website else []))
@@ -762,6 +900,50 @@ def _merge_candidate_into_entity(
     entity["reference_input"] = bool(entity.get("reference_input")) or bool(candidate.get("reference_input"))
     entity["merged_candidates_count"] = int(entity.get("merged_candidates_count") or 1) + 1
     entity["merge_confidence"] = max(float(entity.get("merge_confidence") or 0.0), merge_confidence)
+    if not entity.get("discovery_primary_url") and discovery_url:
+        entity["discovery_primary_url"] = discovery_url
+
+    first_party_domains = _normalize_domain_list(entity.get("first_party_domains") or [])
+    for item in _normalize_domain_list(candidate.get("first_party_domains") or []):
+        if item not in first_party_domains:
+            first_party_domains.append(item)
+    if domain and not _is_non_first_party_profile_domain(domain) and domain not in first_party_domains:
+        first_party_domains.append(domain)
+    entity["first_party_domains"] = first_party_domains
+
+    if entity.get("entity_type") != "company" and entity_type == "company":
+        entity["entity_type"] = "company"
+    elif not entity.get("entity_type"):
+        entity["entity_type"] = entity_type
+
+    if solution_name:
+        current_solutions = entity.get("solutions") if isinstance(entity.get("solutions"), list) else []
+        candidate_solution = {
+            "name": solution_name,
+            "solution_slug": str(candidate.get("solution_slug") or "").strip() or None,
+            "profile_url": str(candidate.get("profile_url") or "").strip() or None,
+            "listing_url": str(candidate.get("listing_url") or "").strip() or None,
+        }
+        dedupe_key = (
+            str(candidate_solution.get("name") or "").lower(),
+            str(candidate_solution.get("solution_slug") or "").lower(),
+        )
+        deduped_solutions: list[dict[str, Any]] = []
+        seen_solution_keys: set[tuple[str, str]] = set()
+        for existing in current_solutions + [candidate_solution]:
+            if not isinstance(existing, dict):
+                continue
+            key = (
+                str(existing.get("name") or "").lower(),
+                str(existing.get("solution_slug") or "").lower(),
+            )
+            if key in seen_solution_keys:
+                continue
+            seen_solution_keys.add(key)
+            deduped_solutions.append(existing)
+        if dedupe_key not in seen_solution_keys:
+            deduped_solutions.append(candidate_solution)
+        entity["solutions"] = deduped_solutions[:50]
 
     entity_registry_id = str(entity.get("registry_id") or "").strip()
     candidate_registry_id = _registry_identifier(candidate)
@@ -795,8 +977,8 @@ def _merge_candidate_into_entity(
         entity["identity_error"] = identity.get("error")
 
     current_domain = normalize_domain(entity.get("canonical_website"))
-    if domain and not _is_aggregator_domain(domain):
-        if not current_domain or _is_aggregator_domain(current_domain):
+    if domain and not _is_non_first_party_profile_domain(domain):
+        if not current_domain or _is_non_first_party_profile_domain(current_domain):
             entity["canonical_website"] = website
             entity["canonical_domain"] = domain
             if candidate_name:
@@ -812,6 +994,7 @@ def _collapse_candidates_to_entities(
     entities: list[dict[str, Any]] = []
     domain_to_entity: dict[str, int] = {}
     registry_to_entity: dict[str, int] = {}
+    slug_to_entity: dict[str, int] = {}
     suspected_duplicates: list[dict[str, Any]] = []
 
     for candidate in candidates:
@@ -820,6 +1003,7 @@ def _collapse_candidates_to_entities(
             continue
         website = str(candidate.get("website") or "").strip() or None
         domain = normalize_domain(website)
+        company_slug = str(candidate.get("company_slug") or "").strip().lower() or None
         registry_id = _registry_identifier(candidate)
         country = _canonical_country(candidate)
         identity = candidate.get("identity") if isinstance(candidate.get("identity"), dict) else {}
@@ -842,6 +1026,10 @@ def _collapse_candidates_to_entities(
             matched_index = registry_to_entity[registry_id]
             merge_reason = "registry_id_exact"
             merge_confidence = 1.0
+        elif company_slug and company_slug in slug_to_entity:
+            matched_index = slug_to_entity[company_slug]
+            merge_reason = "company_slug_exact"
+            merge_confidence = 0.98
         else:
             best_ratio = 0.0
             for idx, entity in enumerate(entities):
@@ -888,6 +1076,9 @@ def _collapse_candidates_to_entities(
             "canonical_name": name,
             "canonical_website": website,
             "canonical_domain": domain,
+            "discovery_primary_url": str(candidate.get("discovery_url") or candidate.get("profile_url") or "")[:1000] or None,
+            "entity_type": str(candidate.get("entity_type") or "company").strip().lower() or "company",
+            "company_slug": company_slug,
             "country": country,
             "identity_confidence": identity.get("identity_confidence", "low"),
             "identity_error": identity.get("error"),
@@ -910,6 +1101,19 @@ def _collapse_candidates_to_entities(
             "normalized_name": name_norm,
             "merged_candidates_count": 1,
             "merge_confidence": 1.0,
+            "first_party_domains": _normalize_domain_list(candidate.get("first_party_domains") or []),
+            "solutions": (
+                [
+                    {
+                        "name": str(candidate.get("solution_name") or "").strip(),
+                        "solution_slug": str(candidate.get("solution_slug") or "").strip() or None,
+                        "profile_url": str(candidate.get("profile_url") or "").strip() or None,
+                        "listing_url": str(candidate.get("listing_url") or "").strip() or None,
+                    }
+                ]
+                if str(candidate.get("solution_name") or "").strip()
+                else []
+            ),
             "registry_identity": candidate.get("registry_identity") if isinstance(candidate.get("registry_identity"), dict) else {},
             "industry_signature": candidate.get("industry_signature") if isinstance(candidate.get("industry_signature"), dict) else {},
         }
@@ -917,6 +1121,8 @@ def _collapse_candidates_to_entities(
         entity_idx = len(entities) - 1
         if domain and not _is_aggregator_domain(domain) and not _is_registry_profile_domain(domain):
             domain_to_entity[domain] = entity_idx
+        if company_slug:
+            slug_to_entity[company_slug] = entity_idx
         if registry_id:
             registry_to_entity[registry_id] = entity_idx
 
@@ -928,6 +1134,10 @@ def _collapse_candidates_to_entities(
         entity["registry_ids"] = _dedupe_strings(entity.get("registry_ids", []))
         if not isinstance(entity.get("registry_identity"), dict):
             entity["registry_identity"] = {}
+        entity["first_party_domains"] = _normalize_domain_list(entity.get("first_party_domains") or [])
+        if not isinstance(entity.get("solutions"), list):
+            entity["solutions"] = []
+        entity["entity_type"] = str(entity.get("entity_type") or "company").strip().lower() or "company"
         entity["industry_signature"] = _merge_industry_signatures(
             entity.get("industry_signature") if isinstance(entity.get("industry_signature"), dict) else {},
             {},
@@ -1581,12 +1791,15 @@ def _select_registry_identity_seed_entities(
     entities: list[dict[str, Any]],
     top_n: int = REGISTRY_IDENTITY_TOP_SEEDS,
 ) -> list[dict[str, Any]]:
-    ranked_directory = [
+    ranked_seeds = [
         entity for entity in entities
-        if "directory_seed" in set(entity.get("origin_types") or [])
+        if set(entity.get("origin_types") or []).intersection(
+            {"directory_seed", "reference_seed", "benchmark_seed"}
+        )
+        and str(entity.get("entity_type") or "company").strip().lower() == "company"
     ]
-    ranked_directory.sort(key=_candidate_priority_score, reverse=True)
-    return ranked_directory[:top_n]
+    ranked_seeds.sort(key=_candidate_priority_score, reverse=True)
+    return ranked_seeds[:top_n]
 
 
 def _run_registry_search(country: str, query: str) -> tuple[list[dict[str, Any]], Optional[str], str]:
@@ -1683,12 +1896,18 @@ def _apply_registry_identity_map(
     de_query_count = 0
     de_error_count = 0
     de_disabled = False
-    deadline = time.monotonic() + max(30, REGISTRY_IDENTITY_MAX_SECONDS)
+    identity_top_n = max(10, int(getattr(settings, "registry_identity_top_seeds", REGISTRY_IDENTITY_TOP_SEEDS)))
+    query_budget = max(1, int(getattr(settings, "registry_max_queries", REGISTRY_MAX_QUERIES)))
+    de_query_limit = max(1, int(getattr(settings, "registry_max_de_queries", REGISTRY_MAX_DE_QUERIES)))
+    identity_deadline_seconds = max(
+        30,
+        int(getattr(settings, "registry_identity_max_seconds", REGISTRY_IDENTITY_MAX_SECONDS)),
+    )
+    deadline = time.monotonic() + identity_deadline_seconds
     timed_out = False
 
-    identity_seed_entities = _select_registry_identity_seed_entities(entities, top_n=REGISTRY_IDENTITY_TOP_SEEDS)
+    identity_seed_entities = _select_registry_identity_seed_entities(entities, top_n=identity_top_n)
     candidates_count = len(identity_seed_entities)
-    query_budget = max(1, REGISTRY_MAX_QUERIES)
 
     for entity in identity_seed_entities:
         if time.monotonic() > deadline:
@@ -1717,7 +1936,7 @@ def _apply_registry_identity_map(
                 break
             if country == "DE" and de_disabled:
                 continue
-            if country == "DE" and de_query_count >= REGISTRY_MAX_DE_QUERIES:
+            if country == "DE" and de_query_count >= de_query_limit:
                 continue
             queries = _registry_queries_for_entity(entity_name, industry_signature=None)
             if country == "DE":
@@ -1729,7 +1948,7 @@ def _apply_registry_identity_map(
                     break
                 if query_budget <= 0:
                     break
-                if country == "DE" and de_query_count >= REGISTRY_MAX_DE_QUERIES:
+                if country == "DE" and de_query_count >= de_query_limit:
                     break
                 query_budget -= 1
                 if country == "DE":
@@ -1860,8 +2079,23 @@ def _expand_registry_neighbors(
     de_query_count = 0
     de_error_count = 0
     de_disabled = False
-    deadline = time.monotonic() + max(30, REGISTRY_NEIGHBOR_MAX_SECONDS)
+    effective_max_queries = max(1, int(getattr(settings, "registry_max_queries", max_queries)))
+    effective_max_neighbors = max(1, int(getattr(settings, "registry_max_accepted_neighbors", max_neighbors)))
+    de_query_limit = max(1, int(getattr(settings, "registry_max_de_queries", REGISTRY_MAX_DE_QUERIES)))
+    neighbor_deadline_seconds = max(
+        30,
+        int(getattr(settings, "registry_neighbor_max_seconds", REGISTRY_NEIGHBOR_MAX_SECONDS)),
+    )
+    deadline = time.monotonic() + neighbor_deadline_seconds
     timed_out = False
+    neighbors_with_first_party_website_count = 0
+    neighbors_dropped_missing_official_website_count = 0
+    origin_screening_counts: dict[str, int] = {
+        "seed_entities_considered": 0,
+        "records_screened": 0,
+        "records_accepted": 0,
+        "records_rejected": 0,
+    }
 
     ranked_entities = sorted(entities, key=_candidate_priority_score, reverse=True)
 
@@ -1870,8 +2104,10 @@ def _expand_registry_neighbors(
             timed_out = True
             errors.append("registry_neighbor_timeout")
             break
-        if len(accepted) >= max_neighbors or query_count >= max_queries:
+        if len(accepted) >= effective_max_neighbors or query_count >= effective_max_queries:
             break
+        if str(seed_entity.get("entity_type") or "company").strip().lower() != "company":
+            continue
 
         seed_identity = seed_entity.get("registry_identity") if isinstance(seed_entity.get("registry_identity"), dict) else {}
         seed_country = normalize_country(seed_identity.get("country") or seed_entity.get("registry_country") or seed_entity.get("country"))
@@ -1879,6 +2115,7 @@ def _expand_registry_neighbors(
             continue
         if seed_country == "DE" and de_disabled:
             continue
+        origin_screening_counts["seed_entities_considered"] = origin_screening_counts.get("seed_entities_considered", 0) + 1
 
         seed_name = str(seed_entity.get("canonical_name") or "").strip()
         if not seed_name:
@@ -1919,9 +2156,9 @@ def _expand_registry_neighbors(
                 timed_out = True
                 errors.append("registry_neighbor_timeout")
                 break
-            if len(accepted) >= max_neighbors or query_count >= max_queries:
+            if len(accepted) >= effective_max_neighbors or query_count >= effective_max_queries:
                 break
-            if seed_country == "DE" and de_query_count >= REGISTRY_MAX_DE_QUERIES:
+            if seed_country == "DE" and de_query_count >= de_query_limit:
                 break
             query_count += 1
             if seed_country == "DE":
@@ -1942,24 +2179,35 @@ def _expand_registry_neighbors(
             query_kept = 0
             query_rejects: dict[str, int] = {}
             for record in records:
-                if len(accepted) >= max_neighbors:
+                if len(accepted) >= effective_max_neighbors:
                     break
+                origin_screening_counts["records_screened"] = origin_screening_counts.get("records_screened", 0) + 1
                 candidate_name = str(record.get("name") or "").strip()
                 registry_id = str(record.get("registry_id") or "").strip()
                 website = str(record.get("website") or "").strip()
+                normalized_website = website if website.startswith(("http://", "https://")) else (f"https://{website}" if website else "")
+                website_domain = normalize_domain(normalized_website) if normalized_website else None
                 key = (
                     seed_country,
                     registry_id or _normalize_name_for_matching(candidate_name),
-                    website.lower(),
+                    normalized_website.lower(),
                 )
                 if key in seen_neighbor_keys:
                     reject_reason_counts["duplicate_candidate"] = reject_reason_counts.get("duplicate_candidate", 0) + 1
                     query_rejects["duplicate_candidate"] = query_rejects.get("duplicate_candidate", 0) + 1
+                    origin_screening_counts["records_rejected"] = origin_screening_counts.get("records_rejected", 0) + 1
                     continue
 
-                if not candidate_name or not (registry_id or website):
+                if not candidate_name:
                     reject_reason_counts["missing_identity"] = reject_reason_counts.get("missing_identity", 0) + 1
                     query_rejects["missing_identity"] = query_rejects.get("missing_identity", 0) + 1
+                    origin_screening_counts["records_rejected"] = origin_screening_counts.get("records_rejected", 0) + 1
+                    continue
+                if not normalized_website or not website_domain or _is_non_first_party_profile_domain(website_domain):
+                    reject_reason_counts["missing_official_website"] = reject_reason_counts.get("missing_official_website", 0) + 1
+                    query_rejects["missing_official_website"] = query_rejects.get("missing_official_website", 0) + 1
+                    neighbors_dropped_missing_official_website_count += 1
+                    origin_screening_counts["records_rejected"] = origin_screening_counts.get("records_rejected", 0) + 1
                     continue
                 record_is_active_value = record.get("is_active")
                 if isinstance(record_is_active_value, bool):
@@ -1969,17 +2217,21 @@ def _expand_registry_neighbors(
                 if not record_is_active:
                     reject_reason_counts["inactive_status"] = reject_reason_counts.get("inactive_status", 0) + 1
                     query_rejects["inactive_status"] = query_rejects.get("inactive_status", 0) + 1
+                    origin_screening_counts["records_rejected"] = origin_screening_counts.get("records_rejected", 0) + 1
                     continue
 
                 score, score_breakdown, signals = _score_registry_neighbor(seed_entity, record)
                 if score < REGISTRY_NEIGHBOR_MIN_SCORE:
                     reject_reason_counts["score_below_threshold"] = reject_reason_counts.get("score_below_threshold", 0) + 1
                     query_rejects["score_below_threshold"] = query_rejects.get("score_below_threshold", 0) + 1
+                    origin_screening_counts["records_rejected"] = origin_screening_counts.get("records_rejected", 0) + 1
                     continue
 
                 seen_neighbor_keys.add(key)
                 kept_pre_dedupe += 1
                 query_kept += 1
+                neighbors_with_first_party_website_count += 1
+                origin_screening_counts["records_accepted"] = origin_screening_counts.get("records_accepted", 0) + 1
                 citation_url = str(record.get("registry_url") or "").strip()
                 industry_signature = _normalize_industry_signature(
                     record.get("industry_codes") or [],
@@ -1988,7 +2240,10 @@ def _expand_registry_neighbors(
                 candidates_for_seed.append(
                     {
                         "name": candidate_name,
-                        "website": record.get("website") or citation_url,
+                        "website": normalized_website,
+                        "official_website_url": normalized_website,
+                        "discovery_url": citation_url,
+                        "first_party_domains": [website_domain] if website_domain else [],
                         "hq_country": seed_country,
                         "likely_verticals": [],
                         "employee_estimate": None,
@@ -2080,6 +2335,9 @@ def _expand_registry_neighbors(
         "registry_de_disabled": de_disabled,
         "registry_neighbors_kept_pre_dedupe": kept_pre_dedupe,
         "registry_neighbors_kept_count": len(accepted),
+        "registry_neighbors_with_first_party_website_count": neighbors_with_first_party_website_count,
+        "registry_neighbors_dropped_missing_official_website_count": neighbors_dropped_missing_official_website_count,
+        "registry_origin_screening_counts": origin_screening_counts,
         "registry_reject_reason_breakdown": reject_reason_counts,
         "registry_neighbors_timed_out": timed_out,
         "registry_errors": errors[:100],
@@ -2090,6 +2348,9 @@ def _expand_registry_neighbors(
 def _candidate_priority_score(entity: dict[str, Any]) -> float:
     origin_types = set(entity.get("origin_types") or [])
     score = 0.0
+    entity_type = str(entity.get("entity_type") or "company").strip().lower()
+    if entity_type == "solution":
+        score -= 25.0
     if "reference_seed" in origin_types:
         score += 100.0
     if "benchmark_seed" in origin_types:
@@ -2483,6 +2744,7 @@ def _extract_first_party_signals_from_crawl(
     website: str,
     candidate_name: str,
     max_pages: int,
+    hint_urls: Optional[list[str]] = None,
 ) -> tuple[list[dict[str, str]], list[str], dict[str, Any], Optional[str]]:
     """Crawl first-party pages and extract richer buy-side signals."""
     normalized = website.strip()
@@ -2492,8 +2754,23 @@ def _extract_first_party_signals_from_crawl(
         normalized = f"https://{normalized}"
 
     domain = normalize_domain(normalized)
-    if not domain or _is_aggregator_domain(domain) or _is_registry_profile_domain(domain):
+    if not domain or _is_non_first_party_profile_domain(domain):
         return [], [], {"method": "crawler", "pages_crawled": 0}, "invalid_domain"
+
+    normalized_hint_urls: list[str] = []
+    hint_seen: set[str] = set()
+    for raw_hint in hint_urls or []:
+        normalized_hint = _normalize_hint_url(raw_hint)
+        if not normalized_hint:
+            continue
+        hint_domain = normalize_domain(normalized_hint)
+        if hint_domain != domain:
+            continue
+        key = normalized_hint.lower()
+        if key in hint_seen:
+            continue
+        hint_seen.add(key)
+        normalized_hint_urls.append(normalized_hint)
 
     try:
         from app.services.crawler import UnifiedCrawler
@@ -2508,8 +2785,41 @@ def _extract_first_party_signals_from_crawl(
             max_pages=max_pages,
             timeout=max(FIRST_PARTY_FETCH_TIMEOUT_SECONDS, 10),
         )
-        context_pack = loop.run_until_complete(crawler.crawl_for_context(normalized))
+        context_pack = loop.run_until_complete(
+            crawler.crawl_for_context(
+                normalized,
+                start_urls=normalized_hint_urls,
+            )
+        )
     except Exception as exc:
+        fast = fetch_page_fast(normalized)
+        fast_content = str(fast.get("content") or "").strip()
+        if fast_content:
+            snippet = re.sub(r"\s+", " ", fast_content)[:700]
+            dimension = _classify_first_party_dimension(snippet) or "company_profile"
+            return (
+                [
+                    {
+                        "text": snippet,
+                        "citation_url": normalized,
+                        "dimension": dimension,
+                    }
+                ],
+                [],
+                {
+                    "method": "external_fast_fetch",
+                    "provider": fast.get("provider"),
+                    "pages_crawled": 1,
+                    "signals_extracted": 1,
+                    "customer_evidence_count": 0,
+                    "page_types": {"external_fast_fetch": 1},
+                    "max_pages_requested": max_pages,
+                    "hint_urls_used": normalized_hint_urls[:20],
+                    "hint_urls_used_count": len(normalized_hint_urls),
+                    "hint_pages_crawled": 0,
+                },
+                None,
+            )
         return [], [], {"method": "crawler", "pages_crawled": 0}, f"first_party_crawl_failed:{exc}"
     finally:
         try:
@@ -2519,6 +2829,33 @@ def _extract_first_party_signals_from_crawl(
         asyncio.set_event_loop(None)
 
     if context_pack is None:
+        fast = fetch_page_fast(normalized)
+        fast_content = str(fast.get("content") or "").strip()
+        if fast_content:
+            snippet = re.sub(r"\s+", " ", fast_content)[:700]
+            return (
+                [
+                    {
+                        "text": snippet,
+                        "citation_url": normalized,
+                        "dimension": _classify_first_party_dimension(snippet) or "company_profile",
+                    }
+                ],
+                [],
+                {
+                    "method": "external_fast_fetch",
+                    "provider": fast.get("provider"),
+                    "pages_crawled": 1,
+                    "signals_extracted": 1,
+                    "customer_evidence_count": 0,
+                    "page_types": {"external_fast_fetch": 1},
+                    "max_pages_requested": max_pages,
+                    "hint_urls_used": normalized_hint_urls[:20],
+                    "hint_urls_used_count": len(normalized_hint_urls),
+                    "hint_pages_crawled": 0,
+                },
+                None,
+            )
         return [], [], {"method": "crawler", "pages_crawled": 0}, "first_party_crawl_empty"
 
     reasons: list[dict[str, str]] = []
@@ -2625,6 +2962,15 @@ def _extract_first_party_signals_from_crawl(
             }
         ]
 
+    hint_pages_crawled = 0
+    hint_url_keys = [url.lower() for url in normalized_hint_urls]
+    for page in context_pack.pages or []:
+        page_url = str(getattr(page, "url", "") or "").strip().lower()
+        if not page_url:
+            continue
+        if any(page_url == hint_url or page_url.startswith(f"{hint_url}/") for hint_url in hint_url_keys):
+            hint_pages_crawled += 1
+
     meta = {
         "method": "crawler",
         "pages_crawled": len(context_pack.pages or []),
@@ -2632,6 +2978,9 @@ def _extract_first_party_signals_from_crawl(
         "customer_evidence_count": len(context_pack.customer_evidence or []),
         "page_types": page_types,
         "max_pages_requested": max_pages,
+        "hint_urls_used": normalized_hint_urls[:20],
+        "hint_urls_used_count": len(normalized_hint_urls),
+        "hint_pages_crawled": hint_pages_crawled,
     }
     return deduped_reasons, deduped_capabilities, meta, None
 
@@ -2648,7 +2997,7 @@ def _extract_first_party_signals(
         normalized = f"https://{normalized}"
 
     domain = normalize_domain(normalized)
-    if not domain or _is_aggregator_domain(domain):
+    if not domain or _is_non_first_party_profile_domain(domain):
         return [], "invalid_domain"
 
     headers = {
@@ -2782,10 +3131,28 @@ def _extract_first_party_signals(
     return [], "first_party_fetch_failed:unknown"
 
 
-def _source_type_for_url(url: str, candidate_domain: Optional[str]) -> str:
+def _normalize_domain_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        host = normalize_domain(str(value or "").strip())
+        if not host or host in seen:
+            continue
+        seen.add(host)
+        normalized.append(host)
+    return normalized
+
+
+def _source_type_for_url(
+    url: str,
+    candidate_domain: Optional[str],
+    first_party_domains: Optional[list[str]] = None,
+) -> str:
     lowered = url.lower()
     host = normalize_domain(url) or ""
-    if "thewealthmosaic.com" in lowered:
+    if any(token in lowered for token in ("thewealthmosaic.com", "crunchbase.com", "g2.com", "capterra.com")):
         return "directory_comparator"
     if any(
         pattern in lowered
@@ -2798,9 +3165,13 @@ def _source_type_for_url(url: str, candidate_domain: Optional[str]) -> str:
             "annuaire-entreprises.data.gouv.fr",
             "gleif.org",
             "handelsregister.de",
+            "unternehmensregister.de",
         )
     ):
         return "official_registry_filing"
+    normalized_first_party = _normalize_domain_list(first_party_domains or [])
+    if normalized_first_party and any(host == domain or host.endswith(f".{domain}") for domain in normalized_first_party):
+        return "first_party_website"
     if candidate_domain and (host == candidate_domain or host.endswith(f".{candidate_domain}")):
         return "first_party_website"
     return "trusted_third_party"
@@ -3010,10 +3381,19 @@ def _score_buy_side_candidate(
     penalty_total = min(MAX_PENALTY_POINTS, penalty_total)
     final_score = max(0.0, weighted_score - penalty_total)
     candidate_domain = normalize_domain(str(candidate.get("website") or ""))
+    first_party_domains = _normalize_domain_list(candidate.get("first_party_domains") or [])
     source_type_counts: dict[str, int] = {}
     for reason in reasons:
         source_url = str(reason.get("citation_url") or "")
-        source_type = _source_type_for_url(source_url, candidate_domain) if source_url else "unknown"
+        source_type = (
+            _source_type_for_url(
+                source_url,
+                candidate_domain,
+                first_party_domains=first_party_domains,
+            )
+            if source_url
+            else "unknown"
+        )
         source_type_counts[source_type] = source_type_counts.get(source_type, 0) + 1
 
     has_first_party_evidence = source_type_counts.get("first_party_website", 0) > 0
@@ -3065,8 +3445,11 @@ def _merge_candidates_by_domain(candidates: list[dict[str, Any]]) -> list[dict[s
     for candidate in candidates:
         website = candidate.get("website")
         domain = normalize_domain(website) if website else None
+        company_slug = str(candidate.get("company_slug") or "").strip().lower()
         name_key = str(candidate.get("name", "")).strip().lower()
-        if domain and any(domain == agg or domain.endswith(f".{agg}") for agg in aggregator_domains):
+        if company_slug:
+            key = f"slug:{company_slug}"
+        elif domain and any(domain == agg or domain.endswith(f".{agg}") for agg in aggregator_domains):
             key = f"name:{name_key}"
         else:
             key = domain or f"name:{name_key}"
@@ -3084,6 +3467,18 @@ def _merge_candidates_by_domain(candidates: list[dict[str, Any]]) -> list[dict[s
         existing["capability_signals"] = _dedupe_strings(
             [str(c) for c in existing_caps + new_caps if isinstance(c, str)]
         )
+        existing["first_party_domains"] = _dedupe_strings(
+            [str(d) for d in (existing.get("first_party_domains") or []) + (candidate.get("first_party_domains") or []) if str(d).strip()]
+        )
+        if not existing.get("official_website_url") and candidate.get("official_website_url"):
+            existing["official_website_url"] = candidate.get("official_website_url")
+            existing["website"] = candidate.get("official_website_url")
+        if not existing.get("discovery_url") and candidate.get("discovery_url"):
+            existing["discovery_url"] = candidate.get("discovery_url")
+        if existing.get("entity_type") != "company" and str(candidate.get("entity_type") or "") == "company":
+            existing["entity_type"] = "company"
+        if not existing.get("solution_name") and candidate.get("solution_name"):
+            existing["solution_name"] = candidate.get("solution_name")
         if not existing.get("hq_country") and candidate.get("hq_country"):
             existing["hq_country"] = candidate.get("hq_country")
     return list(merged.values())
@@ -3095,7 +3490,20 @@ def _seed_candidates_from_mentions(mentions: list[dict[str, Any]]) -> list[dict[
         company_name = str(mention.get("company_name") or "").strip()
         if not company_name:
             continue
-        company_url = mention.get("company_url")
+        profile_url = str(mention.get("profile_url") or mention.get("company_url") or mention.get("listing_url") or "").strip() or None
+        listing_url = str(mention.get("listing_url") or profile_url or "").strip() or None
+        official_website_url = str(mention.get("official_website_url") or "").strip() or None
+        if official_website_url and not official_website_url.startswith(("http://", "https://")):
+            official_website_url = f"https://{official_website_url}"
+        if official_website_url and _is_non_first_party_profile_domain(normalize_domain(official_website_url)):
+            official_website_url = None
+        entity_type = str(mention.get("entity_type") or "company").strip().lower() or "company"
+        company_slug = str(mention.get("company_slug") or "").strip() or None
+        solution_slug = str(mention.get("solution_slug") or "").strip() or None
+        solution_title = str((mention.get("provenance") or {}).get("solution_title") or "").strip() or None
+        solution_name = solution_title or (
+            solution_slug.replace("-", " ").replace("_", " ").title() if solution_slug else None
+        )
         snippets = mention.get("listing_text_snippets") or []
         snippet_text = str(snippets[0]) if snippets else "Listed as comparator in domain directory."
         combined_listing_text = " ".join(
@@ -3103,13 +3511,26 @@ def _seed_candidates_from_mentions(mentions: list[dict[str, Any]]) -> list[dict[
         )
         inferred_country = (
             _infer_country_from_text(combined_listing_text)
-            or _infer_country_from_domain(normalize_domain(company_url))
+            or _infer_country_from_domain(normalize_domain(official_website_url or profile_url))
             or "Unknown"
         )
+        first_party_domains: list[str] = []
+        official_domain = normalize_domain(official_website_url)
+        if official_domain and not _is_non_first_party_profile_domain(official_domain):
+            first_party_domains = [official_domain]
         seeded.append(
             {
                 "name": company_name,
-                "website": company_url,
+                "website": official_website_url,
+                "official_website_url": official_website_url,
+                "discovery_url": profile_url or listing_url,
+                "profile_url": profile_url,
+                "listing_url": listing_url,
+                "entity_type": entity_type,
+                "company_slug": company_slug,
+                "solution_slug": solution_slug,
+                "solution_name": solution_name,
+                "first_party_domains": first_party_domains,
                 "hq_country": inferred_country,
                 "likely_verticals": [],
                 "employee_estimate": None,
@@ -3118,18 +3539,24 @@ def _seed_candidates_from_mentions(mentions: list[dict[str, Any]]) -> list[dict[
                 "_origins": [
                     {
                         "origin_type": "directory_seed",
-                        "origin_url": str(mention.get("listing_url") or company_url or ""),
+                        "origin_url": str(listing_url or profile_url or ""),
                         "source_name": str(mention.get("source_name") or "wealth_mosaic"),
                         "source_run_id": mention.get("source_run_id"),
                         "metadata": {
                             "category_tags": mention.get("category_tags") or [],
+                            "profile_url": profile_url,
+                            "official_website_url": official_website_url,
+                            "company_slug": company_slug,
+                            "solution_slug": solution_slug,
+                            "entity_type": entity_type,
+                            "solution_name": solution_name,
                         },
                     }
                 ],
                 "why_relevant": [
                     {
                         "text": snippet_text[:700],
-                        "citation_url": str(mention.get("listing_url") or company_url or ""),
+                        "citation_url": str(listing_url or profile_url or ""),
                         "dimension": "directory_context",
                     }
                 ],
@@ -3147,11 +3574,18 @@ def _seed_candidates_from_reference_urls(reference_urls: list[str] | None) -> li
         domain = normalize_domain(website)
         if not domain:
             continue
+        normalized_website = website if website.startswith(("http://", "https://")) else f"https://{website}"
+        parsed = urlparse(normalized_website)
+        canonical_website = f"{parsed.scheme or 'https'}://{parsed.netloc}" if parsed.netloc else normalized_website
         name_token = domain.split(".")[0].replace("-", " ").replace("_", " ").strip().title()
         seeded.append(
             {
                 "name": name_token or domain,
-                "website": website if website.startswith(("http://", "https://")) else f"https://{website}",
+                "website": canonical_website,
+                "official_website_url": canonical_website,
+                "discovery_url": normalized_website,
+                "entity_type": "company",
+                "first_party_domains": [domain],
                 "hq_country": _infer_country_from_domain(domain) or "Unknown",
                 "likely_verticals": [],
                 "employee_estimate": None,
@@ -3161,7 +3595,7 @@ def _seed_candidates_from_reference_urls(reference_urls: list[str] | None) -> li
                 "_origins": [
                     {
                         "origin_type": "reference_seed",
-                        "origin_url": website if website.startswith(("http://", "https://")) else f"https://{website}",
+                        "origin_url": normalized_website,
                         "source_name": "user_reference",
                         "source_run_id": None,
                         "metadata": {},
@@ -3170,7 +3604,7 @@ def _seed_candidates_from_reference_urls(reference_urls: list[str] | None) -> li
                 "why_relevant": [
                     {
                         "text": "Reference comparator provided as explicit user input.",
-                        "citation_url": website if website.startswith(("http://", "https://")) else f"https://{website}",
+                        "citation_url": normalized_website,
                         "dimension": "reference_input",
                     }
                 ],
@@ -3220,6 +3654,10 @@ def _seed_candidates_from_benchmark_list() -> list[dict[str, Any]]:
             {
                 "name": name,
                 "website": normalized_website,
+                "official_website_url": normalized_website,
+                "discovery_url": normalized_website,
+                "entity_type": "company",
+                "first_party_domains": [normalize_domain(normalized_website)] if normalize_domain(normalized_website) else [],
                 "hq_country": str(benchmark.get("hq_country") or _infer_country_from_domain(normalize_domain(normalized_website)) or "Unknown"),
                 "likely_verticals": [],
                 "employee_estimate": None,
@@ -3249,11 +3687,186 @@ def _seed_candidates_from_benchmark_list() -> list[dict[str, Any]]:
     return seeded
 
 
+def _build_discovery_prompt_for_orchestrator(
+    context_pack: str,
+    taxonomy_bricks: list[dict[str, Any]],
+    geo_scope: dict[str, Any],
+    vertical_focus: list[str],
+    comparator_mentions: list[dict[str, Any]],
+) -> str:
+    brick_names = [str(b.get("name") or "").strip() for b in (taxonomy_bricks or []) if str(b.get("name") or "").strip()]
+    region = str((geo_scope or {}).get("region") or "EU+UK")
+    include_countries = [str(c).strip() for c in ((geo_scope or {}).get("include_countries") or []) if str(c).strip()]
+    verticals = [str(v).strip() for v in (vertical_focus or []) if str(v).strip()]
+
+    seed_lines: list[str] = []
+    for mention in (comparator_mentions or [])[:30]:
+        name = str(mention.get("company_name") or "").strip()
+        url = str(mention.get("company_url") or mention.get("official_website_url") or "").strip()
+        if not name:
+            continue
+        if url:
+            seed_lines.append(f"- {name} ({url})")
+        else:
+            seed_lines.append(f"- {name}")
+    seeds_text = "\n".join(seed_lines) if seed_lines else "- No directory seeds."
+
+    return f"""You are an M&A research analyst. Return ONLY a JSON array of B2B financial software companies.
+
+Buyer context:
+{context_pack[:3500] if context_pack else "No buyer context provided."}
+
+Target filters:
+- Region: {region}
+- Include countries: {", ".join(include_countries) if include_countries else "auto"}
+- Verticals: {", ".join(verticals) if verticals else "wealth, asset management, securities, investment tech"}
+- Capability bricks: {", ".join(brick_names[:15]) if brick_names else "n/a"}
+
+Comparator seeds:
+{seeds_text}
+
+Output schema:
+[
+  {{
+    "name": "Company Name",
+    "website": "https://example.com",
+    "hq_country": "DE",
+    "likely_verticals": ["wealth_manager"],
+    "employee_estimate": 120,
+    "capability_signals": ["Portfolio management"],
+    "qualification": {{"go_to_market": "b2b_enterprise", "target_customer": "asset_managers"}},
+    "why_relevant": [
+      {{"text":"Evidence text", "citation_url":"https://...", "dimension":"capability"}}
+    ]
+  }}
+]
+
+Constraints:
+- 15-25 companies.
+- Every company must have at least one why_relevant item with a citation_url.
+- Prefer first-party pages or official filings/regulatory sources.
+- Exclude mega incumbents (Bloomberg, FIS, Fiserv, Broadridge, SS&C, Refinitiv).
+- Return JSON only.
+"""
+
+
+def _parse_discovery_candidates_from_text(raw_text: str) -> list[dict[str, Any]]:
+    text = str(raw_text or "").strip()
+    if not text:
+        return []
+    payload: Any = None
+    try:
+        payload = json.loads(text)
+    except Exception:
+        start_idx = text.find("[")
+        end_idx = text.rfind("]") + 1
+        if start_idx != -1 and end_idx > start_idx:
+            try:
+                payload = json.loads(text[start_idx:end_idx])
+            except Exception:
+                payload = None
+    if isinstance(payload, dict):
+        for key in ("candidates", "companies", "items", "results", "data"):
+            if isinstance(payload.get(key), list):
+                payload = payload.get(key)
+                break
+    if not isinstance(payload, list):
+        return []
+
+    validated: list[dict[str, Any]] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        website = str(row.get("website") or "").strip()
+        if not name or not website:
+            continue
+        validated.append(
+            {
+                "name": name,
+                "website": website,
+                "hq_country": str(row.get("hq_country") or "Unknown").strip() or "Unknown",
+                "likely_verticals": row.get("likely_verticals") if isinstance(row.get("likely_verticals"), list) else [],
+                "employee_estimate": row.get("employee_estimate"),
+                "capability_signals": row.get("capability_signals") if isinstance(row.get("capability_signals"), list) else [],
+                "qualification": row.get("qualification") if isinstance(row.get("qualification"), dict) else {},
+                "why_relevant": row.get("why_relevant") if isinstance(row.get("why_relevant"), list) else [],
+            }
+        )
+    return validated
+
+
+def _normalize_hint_url(url: str | None) -> Optional[str]:
+    raw = str(url or "").strip()
+    if not raw:
+        return None
+    normalized = raw if raw.startswith(("http://", "https://")) else f"https://{raw}"
+    try:
+        parsed = urlparse(normalized)
+    except Exception:
+        return None
+    host = str(parsed.netloc or "").strip().lower()
+    if not host:
+        return None
+    path = parsed.path or "/"
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.scheme or 'https'}://{host}{path}{query}"
+
+
+def _is_path_level_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    path = str(parsed.path or "").strip()
+    return bool(path and path not in {"", "/"})
+
+
+def _build_first_party_hint_url_map(
+    profile: Optional[CompanyProfile],
+    include_benchmark_hints: bool,
+) -> dict[str, list[str]]:
+    hint_map: dict[str, list[str]] = {}
+
+    def register(raw_url: str | None, require_path: bool = False) -> None:
+        normalized = _normalize_hint_url(raw_url)
+        if not normalized:
+            return
+        if require_path and not _is_path_level_url(normalized):
+            return
+        domain = normalize_domain(normalized)
+        if not domain or _is_non_first_party_profile_domain(domain):
+            return
+        existing = hint_map.setdefault(domain, [])
+        if normalized.lower() in {item.lower() for item in existing}:
+            return
+        existing.append(normalized)
+
+    if profile:
+        for url in (profile.reference_evidence_urls or []):
+            register(url)
+        for url in (profile.reference_vendor_urls or []):
+            register(url, require_path=True)
+
+    if include_benchmark_hints:
+        for urls in WEALTH_BENCHMARK_EVIDENCE_URLS.values():
+            for url in urls:
+                register(url)
+
+    return {domain: urls[:20] for domain, urls in hint_map.items()}
+
+
 def _build_mention_indexes(mentions: list[dict[str, Any]]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
     by_domain: dict[str, list[dict[str, Any]]] = {}
     by_name: dict[str, list[dict[str, Any]]] = {}
     for mention in mentions:
-        domain = normalize_domain(str(mention.get("company_url") or ""))
+        domain = normalize_domain(
+            str(
+                mention.get("official_website_url")
+                or mention.get("company_url")
+                or ""
+            )
+        )
         if domain:
             by_domain.setdefault(domain, []).append(mention)
         name = str(mention.get("company_name") or "").strip().lower()
@@ -3281,7 +3894,12 @@ def _match_mentions_for_candidate(
     if candidate_url:
         for bucket in mentions_by_domain.values():
             for mention in bucket:
-                mention_url = str(mention.get("company_url") or "").strip().lower()
+                mention_url = str(
+                    mention.get("official_website_url")
+                    or mention.get("company_url")
+                    or mention.get("profile_url")
+                    or ""
+                ).strip().lower()
                 if mention_url and mention_url == candidate_url:
                     matches.append(mention)
     name_key = str(candidate.get("name") or "").strip().lower()
@@ -3309,9 +3927,18 @@ def _build_claim_records(
     candidate: dict[str, Any],
     trusted_reasons: list[dict[str, str]],
     matched_mentions: list[dict[str, Any]],
+    policy: Optional[dict[str, Any]] = None,
+    source_evidence_ids: Optional[dict[str, int]] = None,
+    first_party_domains: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     candidate_domain = normalize_domain(str(candidate.get("website") or ""))
+    effective_policy = normalize_policy(policy or DEFAULT_EVIDENCE_POLICY)
+    evidence_id_by_url = {
+        str(key).strip().lower(): value
+        for key, value in (source_evidence_ids or {}).items()
+        if str(key).strip() and value is not None
+    }
 
     def add_claim(dimension: str, text: str, source_url: str, confidence: str = "medium", claim_key: Optional[str] = None):
         source_url = str(source_url or "").strip()
@@ -3320,6 +3947,13 @@ def _build_claim_records(
             return
         if not is_trusted_source_url(source_url):
             return
+        source_type = _source_type_for_url(source_url, candidate_domain, first_party_domains=first_party_domains)
+        source_tier = infer_source_tier(source_url, source_type, candidate_domain)
+        claim_group = claim_group_for_dimension(dimension, claim_key)
+        ttl_days, valid_through = valid_through_from_claim_group(
+            claim_group=claim_group,
+            policy=effective_policy,
+        )
         parsed_key, numeric_value, numeric_unit, period = _numeric_from_claim_text(claim_text)
         records.append(
             {
@@ -3327,11 +3961,18 @@ def _build_claim_records(
                 "vendor_id": vendor_id,
                 "screening_id": screening_id,
                 "dimension": (dimension or "evidence")[:64],
+                "claim_group": claim_group,
+                "claim_status": "fact",
                 "claim_key": (claim_key or parsed_key),
                 "claim_text": claim_text[:3000],
                 "source_url": source_url[:1000],
-                "source_type": _source_type_for_url(source_url, candidate_domain),
+                "source_type": source_type,
+                "source_tier": source_tier,
+                "source_evidence_id": evidence_id_by_url.get(source_url.lower()),
                 "confidence": confidence,
+                "contradiction_group_id": None,
+                "freshness_ttl_days": ttl_days,
+                "valid_through": valid_through,
                 "numeric_value": numeric_value,
                 "numeric_unit": numeric_unit,
                 "period": period,
@@ -3360,7 +4001,12 @@ def _build_claim_records(
             )
 
     website = str(candidate.get("website") or "").strip()
-    if website and is_trusted_source_url(website):
+    website_source_type = _source_type_for_url(
+        website,
+        candidate_domain,
+        first_party_domains=first_party_domains,
+    ) if website else "unknown"
+    if website and is_trusted_source_url(website) and website_source_type == "first_party_website":
         add_claim(
             dimension="company_profile",
             text=f"First-party company website: {website}",
@@ -3380,8 +4026,204 @@ def _build_claim_records(
         key = record.get("claim_key")
         if key and key in conflicting_keys:
             record["is_conflicting"] = True
+            record["claim_status"] = "contradicted"
+            record["contradiction_group_id"] = f"{key}:numeric_conflict"
 
     return records
+
+
+CLAIM_TIER_ORDER = {
+    "tier0_registry": 0,
+    "tier1_vendor": 1,
+    "tier2_partner_customer": 2,
+    "tier3_third_party": 3,
+    "tier4_discovery": 4,
+}
+
+CLAIM_GROUP_PRIORITY = {
+    "vertical_workflow": 0,
+    "product_depth": 1,
+    "traction": 2,
+    "ecosystem_defensibility": 3,
+    "identity_scope": 4,
+}
+
+
+def _select_top_claim(claim_records: list[dict[str, Any]]) -> dict[str, Any]:
+    valid_claims = [
+        claim
+        for claim in claim_records
+        if isinstance(claim, dict)
+        and str(claim.get("source_url") or "").strip()
+        and str(claim.get("source_tier") or "").strip()
+    ]
+    if not valid_claims:
+        return {}
+
+    def rank_key(claim: dict[str, Any]) -> tuple[int, int, int]:
+        tier = str(claim.get("source_tier") or "tier4_discovery")
+        group = str(claim.get("claim_group") or "product_depth")
+        claim_text_len = len(str(claim.get("claim_text") or ""))
+        return (
+            CLAIM_TIER_ORDER.get(tier, 99),
+            CLAIM_GROUP_PRIORITY.get(group, 99),
+            -claim_text_len,
+        )
+
+    best = sorted(valid_claims, key=rank_key)[0]
+    return {
+        "text": str(best.get("claim_text") or "")[:600],
+        "claim_type": str(best.get("dimension") or "evidence"),
+        "source_url": str(best.get("source_url") or "")[:1000],
+        "source_tier": str(best.get("source_tier") or "tier4_discovery"),
+        "source_kind": infer_source_kind(
+            str(best.get("source_url") or ""),
+            str(best.get("source_type") or ""),
+            None,
+        ),
+        "captured_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _normalize_source_url_for_citation(url: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    normalized = raw if raw.startswith(("http://", "https://")) else f"https://{raw}"
+    try:
+        parsed = urlparse(normalized)
+    except Exception:
+        return normalized.lower()
+    host = str(parsed.netloc or "").strip().lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = str(parsed.path or "").strip()
+    if not path:
+        path = "/"
+    elif path != "/":
+        path = path.rstrip("/")
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.scheme or 'https'}://{host}{path}{query}".lower()
+
+
+def _build_citation_summary_v1(
+    claim_records: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    trusted_claims = [
+        claim
+        for claim in claim_records
+        if isinstance(claim, dict)
+        and str(claim.get("claim_text") or "").strip()
+        and str(claim.get("source_url") or "").strip()
+        and is_trusted_source_url(str(claim.get("source_url") or "").strip())
+    ]
+    if not trusted_claims:
+        return None
+
+    source_pills: list[dict[str, Any]] = []
+    sentence_rows: list[dict[str, Any]] = []
+    pill_id_by_key: dict[tuple[str, str], str] = {}
+    sentence_idx_by_text: dict[str, int] = {}
+    now_iso = datetime.utcnow().isoformat()
+
+    for claim in trusted_claims:
+        source_url = str(claim.get("source_url") or "").strip()[:1000]
+        claim_text = str(claim.get("claim_text") or "").strip()[:700]
+        if not source_url or not claim_text:
+            continue
+        claim_group = str(
+            claim.get("claim_group")
+            or claim_group_for_dimension(claim.get("dimension"), claim.get("claim_key"))
+            or "product_depth"
+        )
+        normalized_url = _normalize_source_url_for_citation(source_url)
+        pill_key = (normalized_url, claim_group)
+        pill_id = pill_id_by_key.get(pill_key)
+        if not pill_id:
+            pill_id = f"p{len(source_pills) + 1}"
+            pill_id_by_key[pill_key] = pill_id
+            source_type = str(claim.get("source_type") or "")
+            source_tier = str(claim.get("source_tier") or infer_source_tier(source_url, source_type, normalize_domain(source_url)))
+            source_kind = infer_source_kind(source_url, source_type, normalize_domain(source_url))
+            source_pills.append(
+                {
+                    "pill_id": pill_id,
+                    "label": source_label_for_url(source_url),
+                    "url": source_url,
+                    "source_tier": source_tier,
+                    "source_kind": source_kind,
+                    "captured_at": str(claim.get("captured_at") or now_iso),
+                    "claim_group": claim_group,
+                }
+            )
+
+        sentence_key = claim_text.lower()
+        if sentence_key in sentence_idx_by_text:
+            sentence_idx = sentence_idx_by_text[sentence_key]
+            pills = sentence_rows[sentence_idx]["citation_pill_ids"]
+            if pill_id not in pills:
+                pills.append(pill_id)
+            continue
+
+        sentence_idx_by_text[sentence_key] = len(sentence_rows)
+        sentence_rows.append(
+            {
+                "id": f"s{len(sentence_rows) + 1}",
+                "text": claim_text,
+                "citation_pill_ids": [pill_id],
+            }
+        )
+
+    if not source_pills or not sentence_rows:
+        return None
+
+    valid_pill_ids = {pill["pill_id"] for pill in source_pills}
+    cited_sentences = [
+        {
+            "id": sentence["id"],
+            "text": sentence["text"],
+            "citation_pill_ids": [
+                pill_id for pill_id in sentence["citation_pill_ids"]
+                if pill_id in valid_pill_ids
+            ],
+        }
+        for sentence in sentence_rows
+    ]
+    cited_sentences = [
+        sentence for sentence in cited_sentences if sentence["citation_pill_ids"]
+    ]
+    if not cited_sentences:
+        return None
+
+    return {
+        "version": "v1",
+        "sentences": cited_sentences,
+        "source_pills": source_pills,
+    }
+
+
+def _is_ranking_eligible_candidate(
+    candidate: dict[str, Any],
+    decision_classification: str,
+    claim_records: list[dict[str, Any]],
+) -> bool:
+    entity_type = str(candidate.get("entity_type") or "company").strip().lower()
+    official_website = str(candidate.get("official_website_url") or candidate.get("website") or "").strip()
+    if entity_type != "company":
+        return False
+    if not official_website:
+        return False
+    official_domain = normalize_domain(official_website)
+    if not official_domain or _is_non_first_party_profile_domain(official_domain):
+        return False
+    if decision_classification == "not_good_target":
+        return False
+    has_tier1 = any(
+        str(claim.get("source_tier") or "") == "tier1_vendor"
+        for claim in claim_records
+        if isinstance(claim, dict)
+    )
+    return has_tier1
 
 
 @celery_app.task(name="app.workers.workspace_tasks.generate_context_pack_v2")
@@ -3557,12 +4399,33 @@ def generate_context_pack_v2(job_id: int):
             db.commit()
             
             try:
-                gemini = GeminiWorkspaceClient()
-                summary = gemini.summarize_context_pack(raw_markdown, profile.buyer_company_url or "")
-                profile.buyer_context_summary = summary
+                summary_prompt = (
+                    "Summarize the buyer context in <= 250 words.\n"
+                    "Focus on ICP, product capabilities, distribution, and constraints.\n"
+                    "Return plain text only.\n\n"
+                    f"Buyer URL: {profile.buyer_company_url or ''}\n\n"
+                    f"Context:\n{raw_markdown[:14000]}"
+                )
+                summary_response = LLMOrchestrator().run_stage(
+                    LLMRequest(
+                        stage=LLMStage.context_summary,
+                        prompt=summary_prompt,
+                        timeout_seconds=60,
+                        use_web_search=False,
+                        expect_json=False,
+                        metadata={"workspace_id": workspace.id, "job_id": job.id},
+                    )
+                )
+                profile.buyer_context_summary = str(summary_response.text or "").strip()[:8000]
             except Exception as e:
-                print(f"Error generating summary: {e}")
-                profile.buyer_context_summary = raw_markdown[:2000]
+                print(f"Error generating orchestrated summary: {e}")
+                try:
+                    gemini = GeminiWorkspaceClient()
+                    summary = gemini.summarize_context_pack(raw_markdown, profile.buyer_company_url or "")
+                    profile.buyer_context_summary = summary
+                except Exception as legacy_exc:
+                    print(f"Error generating summary: {legacy_exc}")
+                    profile.buyer_context_summary = raw_markdown[:2000]
             
             # Update profile
             profile.context_pack_markdown = raw_markdown
@@ -3611,8 +4474,203 @@ def generate_context_pack_v2(job_id: int):
         db.close()
 
 
-@celery_app.task(name="app.workers.workspace_tasks.run_discovery_universe")
-def run_discovery_universe(job_id: int):
+@celery_app.task(name="app.workers.workspace_tasks.run_monitoring_delta")
+def run_monitoring_delta(job_id: int):
+    """Refresh watchlist candidates based on stale evidence or material claim deltas."""
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return {"error": "Job not found"}
+
+        job.state = JobState.running
+        job.started_at = datetime.utcnow()
+        job.progress = 0.05
+        job.progress_message = "Evaluating watchlist monitoring triggers..."
+        db.commit()
+
+        workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
+        if not workspace:
+            job.state = JobState.failed
+            job.error_message = "Workspace not found"
+            job.finished_at = datetime.utcnow()
+            db.commit()
+            return {"error": "Workspace not found"}
+
+        monitor_cfg = job.result_json if isinstance(job.result_json, dict) else {}
+        effective_policy = normalize_policy(workspace.decision_policy_json or DEFAULT_EVIDENCE_POLICY)
+        max_vendors = int(monitor_cfg.get("max_vendors") or 80)
+        stale_only = bool(monitor_cfg.get("stale_only", False))
+        tracked_classes = set(
+            monitor_cfg.get("classifications")
+            or ["borderline_watchlist", "insufficient_evidence"]
+        )
+
+        screenings = (
+            db.query(VendorScreening)
+            .filter(VendorScreening.workspace_id == workspace.id)
+            .order_by(VendorScreening.created_at.desc())
+            .all()
+        )
+        latest_by_vendor: dict[int, VendorScreening] = {}
+        for screening in screenings:
+            if screening.vendor_id and screening.vendor_id not in latest_by_vendor:
+                latest_by_vendor[screening.vendor_id] = screening
+
+        candidate_rows = [
+            screening
+            for screening in latest_by_vendor.values()
+            if str(screening.decision_classification or "insufficient_evidence") in tracked_classes
+        ][:max_vendors]
+
+        now = datetime.utcnow()
+        triggered: list[dict[str, Any]] = []
+        enrich_job_ids: list[int] = []
+
+        total = max(1, len(candidate_rows))
+        for index, screening in enumerate(candidate_rows):
+            vendor_id = screening.vendor_id
+            if not vendor_id:
+                continue
+
+            evidence_rows = (
+                db.query(WorkspaceEvidence)
+                .filter(WorkspaceEvidence.workspace_id == workspace.id, WorkspaceEvidence.vendor_id == vendor_id)
+                .order_by(WorkspaceEvidence.captured_at.desc())
+                .all()
+            )
+            claim_rows = (
+                db.query(VendorClaim)
+                .filter(VendorClaim.workspace_id == workspace.id, VendorClaim.vendor_id == vendor_id)
+                .all()
+            )
+
+            stale_evidence = [
+                row for row in evidence_rows if row.valid_through and not is_fresh(row.valid_through, as_of=now)
+            ]
+            stale_claims = [
+                row for row in claim_rows if row.valid_through and not is_fresh(row.valid_through, as_of=now)
+            ]
+            missing_ttl_evidence = [
+                row
+                for row in evidence_rows
+                if row.valid_through is None and row.captured_at and (now - row.captured_at).days > 365
+            ]
+            new_evidence_since_screen = len(
+                [
+                    row
+                    for row in evidence_rows
+                    if row.captured_at and screening.created_at and row.captured_at > screening.created_at
+                ]
+            )
+            new_claims_since_screen = len(
+                [
+                    row
+                    for row in claim_rows
+                    if row.created_at and screening.created_at and row.created_at > screening.created_at
+                ]
+            )
+            contradiction_count = int(screening.unresolved_contradictions_count or 0)
+
+            trigger_reasons: list[str] = []
+            if stale_evidence or stale_claims:
+                trigger_reasons.append("ttl_expired")
+            if missing_ttl_evidence:
+                trigger_reasons.append("legacy_missing_ttl")
+            if new_evidence_since_screen > 0 or new_claims_since_screen > 0:
+                trigger_reasons.append("material_delta")
+            if contradiction_count > 0:
+                trigger_reasons.append("unresolved_contradictions")
+            if screening.evidence_sufficiency == "insufficient" and not evidence_rows:
+                trigger_reasons.append("insufficient_no_evidence")
+
+            if stale_only:
+                should_refresh = bool(stale_evidence or stale_claims or missing_ttl_evidence)
+            else:
+                should_refresh = bool(trigger_reasons)
+
+            if not should_refresh:
+                job.progress = 0.05 + (0.7 * (index + 1) / total)
+                job.progress_message = f"Checked {index + 1}/{total} watchlist vendors"
+                db.commit()
+                continue
+
+            enrich_job = Job(
+                workspace_id=workspace.id,
+                vendor_id=vendor_id,
+                job_type=JobType.enrich_full,
+                state=JobState.queued,
+                provider=JobProvider.gemini_flash,
+                result_json={
+                    "triggered_by": "monitoring_delta",
+                    "monitoring_job_id": job.id,
+                    "trigger_reasons": trigger_reasons,
+                },
+            )
+            db.add(enrich_job)
+            db.flush()
+            enrich_job_ids.append(enrich_job.id)
+            triggered.append(
+                {
+                    "vendor_id": vendor_id,
+                    "classification": screening.decision_classification,
+                    "trigger_reasons": trigger_reasons,
+                    "stale_evidence_count": len(stale_evidence) + len(stale_claims) + len(missing_ttl_evidence),
+                    "new_signal_count": new_evidence_since_screen + new_claims_since_screen,
+                }
+            )
+
+            job.progress = 0.05 + (0.7 * (index + 1) / total)
+            job.progress_message = f"Checked {index + 1}/{total} watchlist vendors"
+            db.commit()
+
+        for enrich_job_id in enrich_job_ids:
+            run_enrich_vendor.delay(enrich_job_id)
+
+        claims_graph_metrics = rebuild_workspace_claims_graph(db, workspace.id)
+        job.state = JobState.completed
+        job.progress = 1.0
+        job.progress_message = "Monitoring delta complete"
+        job.result_json = {
+            "watchlist_candidates_checked": len(candidate_rows),
+            "triggered_vendor_count": len(triggered),
+            "triggered_vendor_ids": [entry["vendor_id"] for entry in triggered],
+            "triggered": triggered[:200],
+            "enrichment_job_ids": enrich_job_ids,
+            "policy_version": effective_policy.get("version"),
+            "claims_graph_refresh": claims_graph_metrics,
+        }
+        job.finished_at = datetime.utcnow()
+        db.commit()
+        return {"success": True, "triggered_vendor_count": len(triggered)}
+    except Exception as exc:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job:
+            job.state = JobState.failed
+            job.error_message = str(exc)
+            job.finished_at = datetime.utcnow()
+            db.commit()
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.workspace_tasks.run_claims_graph_refresh")
+def run_claims_graph_refresh(workspace_id: int):
+    """Refresh claims graph snapshot for a workspace."""
+    db = SessionLocal()
+    try:
+        metrics = rebuild_workspace_claims_graph(db, workspace_id)
+        db.commit()
+        return {"success": True, "workspace_id": workspace_id, "metrics": metrics}
+    except Exception as exc:
+        db.rollback()
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+def _run_discovery_universe_monolith(job_id: int):
     """Run discovery to find candidate universe."""
     from app.services.gemini_workspace import GeminiWorkspaceClient
 
@@ -3639,19 +4697,45 @@ def run_discovery_universe(job_id: int):
             job.finished_at = datetime.utcnow()
             db.commit()
             return {"error": "Missing workspace data"}
+        effective_policy = normalize_policy(workspace.decision_policy_json or DEFAULT_EVIDENCE_POLICY)
 
         try:
+            pipeline_started = time.perf_counter()
             screening_run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
             source_coverage: dict[str, Any] = {}
+            stage_time_ms: dict[str, int] = {}
+            timeout_events: list[dict[str, Any]] = []
+            model_attempt_trace: list[dict[str, Any]] = []
+
+            def _stage_started() -> float:
+                return time.perf_counter()
+
+            def _stage_finished(stage_name: str, started_at: float, timeout_seconds: int) -> None:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                stage_time_ms[stage_name] = duration_ms
+                if duration_ms > max(1, int(timeout_seconds)) * 1000:
+                    timeout_events.append(
+                        {
+                            "stage": stage_name,
+                            "duration_ms": duration_ms,
+                            "timeout_seconds": int(timeout_seconds),
+                        }
+                    )
 
             job.progress = 0.2
             job.progress_message = "Ingesting comparator directories..."
             db.commit()
 
+            seed_stage_started = _stage_started()
             mention_records: list[dict[str, Any]] = []
             comparator_errors: list[str] = []
-            if "wealth_mosaic" in SOURCE_REGISTRY:
-                source_result = ingest_source("wealth_mosaic")
+            source_names = [
+                source_name
+                for source_name in ["wealth_mosaic", "partner_graph_seed", "conference_exhibitors_seed"]
+                if source_name in SOURCE_REGISTRY
+            ]
+            for source_name in source_names:
+                source_result = ingest_source(source_name)
                 run_row = ComparatorSourceRun(
                     workspace_id=workspace.id,
                     source_name=source_result["source_name"],
@@ -3661,12 +4745,22 @@ def run_discovery_universe(job_id: int):
                     metadata_json={
                         "pages_crawled": source_result.get("pages_crawled", 0),
                         "errors": source_result.get("errors", []),
+                        "source_tier": "tier4_discovery",
                     },
                 )
                 db.add(run_row)
                 db.flush()
 
                 for mention in source_result.get("mentions", []):
+                    profile_url = str(
+                        mention.get("profile_url")
+                        or mention.get("company_url")
+                        or mention.get("listing_url")
+                        or source_result["source_url"]
+                    ).strip()
+                    official_website_url = str(mention.get("official_website_url") or "").strip() or None
+                    if official_website_url and _is_non_first_party_profile_domain(normalize_domain(official_website_url)):
+                        official_website_url = None
                     record = VendorMention(
                         workspace_id=workspace.id,
                         source_run_id=run_row.id,
@@ -3674,15 +4768,28 @@ def run_discovery_universe(job_id: int):
                         listing_url=str(mention.get("listing_url") or source_result["source_url"]),
                         company_name=str(mention.get("company_name") or "")[:300],
                         company_url=str(mention.get("company_url") or "")[:1000] or None,
+                        profile_url=profile_url[:1000] if profile_url else None,
+                        official_website_url=official_website_url[:1000] if official_website_url else None,
+                        company_slug=str(mention.get("company_slug") or "")[:180] or None,
+                        solution_slug=str(mention.get("solution_slug") or "")[:220] or None,
+                        entity_type=str(mention.get("entity_type") or "company")[:32] or "company",
                         category_tags=mention.get("category_tags") or [],
                         listing_text_snippets=mention.get("listing_text_snippets") or [],
-                        provenance_json=mention.get("provenance") or {},
+                        provenance_json={
+                            **(mention.get("provenance") or {}),
+                            "source_tier": "tier4_discovery",
+                        },
                     )
                     db.add(record)
                     mention_records.append(
                         {
                             "company_name": record.company_name,
                             "company_url": record.company_url,
+                            "profile_url": record.profile_url,
+                            "official_website_url": record.official_website_url,
+                            "company_slug": record.company_slug,
+                            "solution_slug": record.solution_slug,
+                            "entity_type": record.entity_type,
                             "listing_url": record.listing_url,
                             "category_tags": record.category_tags or [],
                             "listing_text_snippets": record.listing_text_snippets or [],
@@ -3691,12 +4798,13 @@ def run_discovery_universe(job_id: int):
                         }
                     )
                 comparator_errors.extend(source_result.get("errors", []))
-                source_coverage["wealth_mosaic"] = {
+                source_coverage[source_name] = {
                     "mentions": len(source_result.get("mentions", [])),
                     "pages_crawled": source_result.get("pages_crawled", 0),
                     "errors": source_result.get("errors", []),
                 }
                 db.commit()
+            _stage_finished("stage_seed_ingest", seed_stage_started, settings.stage_seed_ingest_timeout_seconds)
 
             mentions_by_domain, mentions_by_name = _build_mention_indexes(mention_records)
 
@@ -3704,19 +4812,108 @@ def run_discovery_universe(job_id: int):
             job.progress_message = "Searching and expanding candidate universe..."
             db.commit()
 
+            llm_stage_started = _stage_started()
             llm_candidates: list[dict[str, Any]] = []
+            external_search_candidates: list[dict[str, Any]] = []
+            external_search_errors: list[str] = []
             llm_error: Optional[str] = None
             try:
-                gemini = GeminiWorkspaceClient()
-                llm_candidates = gemini.run_discovery_universe(
+                prompt = _build_discovery_prompt_for_orchestrator(
                     context_pack=profile.context_pack_markdown or "",
                     taxonomy_bricks=taxonomy.bricks or [],
                     geo_scope=profile.geo_scope or {},
                     vertical_focus=taxonomy.vertical_focus or [],
                     comparator_mentions=mention_records[:120],
                 )
+                llm_response = LLMOrchestrator().run_stage(
+                    LLMRequest(
+                        stage=LLMStage.discovery_retrieval,
+                        prompt=prompt,
+                        timeout_seconds=max(60, int(settings.stage_llm_discovery_timeout_seconds)),
+                        use_web_search=True,
+                        expect_json=True,
+                        metadata={"workspace_id": workspace.id, "job_id": job.id},
+                    )
+                )
+                model_attempt_trace.extend([asdict(attempt) for attempt in llm_response.attempts])
+                llm_candidates = _parse_discovery_candidates_from_text(llm_response.text)
+                if not llm_candidates and str(llm_response.text or "").strip():
+                    repair_prompt = (
+                        "Normalize the following malformed candidate payload into a valid JSON array with keys: "
+                        "name, website, hq_country, likely_verticals, employee_estimate, capability_signals, "
+                        "qualification, why_relevant.\nReturn JSON only.\n\n"
+                        f"{str(llm_response.text)[:22000]}"
+                    )
+                    repaired = LLMOrchestrator().run_stage(
+                        LLMRequest(
+                            stage=LLMStage.structured_normalization,
+                            prompt=repair_prompt,
+                            timeout_seconds=max(30, int(settings.stage_llm_discovery_timeout_seconds // 2)),
+                            use_web_search=False,
+                            expect_json=True,
+                            metadata={"workspace_id": workspace.id, "job_id": job.id, "repair": True},
+                        )
+                    )
+                    model_attempt_trace.extend([asdict(attempt) for attempt in repaired.attempts])
+                    llm_candidates = _parse_discovery_candidates_from_text(repaired.text)
             except Exception as exc:
                 llm_error = str(exc)
+                if isinstance(exc, LLMOrchestrationError):
+                    model_attempt_trace.extend([asdict(attempt) for attempt in exc.attempts])
+                try:
+                    gemini = GeminiWorkspaceClient()
+                    llm_candidates = gemini.run_discovery_universe(
+                        context_pack=profile.context_pack_markdown or "",
+                        taxonomy_bricks=taxonomy.bricks or [],
+                        geo_scope=profile.geo_scope or {},
+                        vertical_focus=taxonomy.vertical_focus or [],
+                        comparator_mentions=mention_records[:120],
+                    )
+                    if llm_candidates:
+                        llm_error = None
+                        model_attempt_trace.append(
+                            {
+                                "stage": "discovery_retrieval",
+                                "provider": "gemini",
+                                "model": "gemini-2.0-flash",
+                                "latency_ms": 0,
+                                "status": "success_legacy_fallback",
+                                "retry_count": 0,
+                                "error_class": None,
+                                "error_message": None,
+                                "started_at": datetime.utcnow().isoformat(),
+                                "ended_at": datetime.utcnow().isoformat(),
+                            }
+                        )
+                except Exception as fallback_exc:
+                    llm_error = f"{llm_error};legacy_fallback_failed:{fallback_exc}" if llm_error else str(fallback_exc)
+
+            try:
+                vertical_hint = ", ".join([str(v) for v in (taxonomy.vertical_focus or [])[:3]])
+                external_query = f"{vertical_hint or 'wealth management software'} {(profile.geo_scope or {}).get('region') or 'EU+UK'}"
+                external_search_result = discover_candidates_from_external_search(
+                    external_query,
+                    cap=max(5, int(settings.external_search_candidates_cap)),
+                )
+                external_search_candidates = [
+                    row for row in (external_search_result.get("candidates") or [])
+                    if isinstance(row, dict)
+                ]
+                external_search_errors = [
+                    str(item) for item in (external_search_result.get("errors") or [])
+                    if str(item).strip()
+                ]
+            except Exception as exc:
+                external_search_errors = [f"external_search_failed:{exc}"]
+            source_coverage["external_search"] = {
+                "candidates": len(external_search_candidates),
+                "errors": external_search_errors[:10],
+            }
+            _stage_finished(
+                "stage_llm_discovery_fanout",
+                llm_stage_started,
+                settings.stage_llm_discovery_timeout_seconds,
+            )
 
             seeded_candidates = _seed_candidates_from_mentions(mention_records)
             reference_seeded_candidates = _seed_candidates_from_reference_urls(
@@ -3725,6 +4922,10 @@ def run_discovery_universe(job_id: int):
             benchmark_seeded_candidates: list[dict[str, Any]] = []
             if _should_add_wealth_benchmark_seeds(profile, taxonomy, mention_records):
                 benchmark_seeded_candidates = _seed_candidates_from_benchmark_list()
+            first_party_hint_urls_by_domain = _build_first_party_hint_url_map(
+                profile=profile,
+                include_benchmark_hints=bool(benchmark_seeded_candidates),
+            )
             source_coverage["benchmark_seeds"] = {
                 "seeded_candidates": len(benchmark_seeded_candidates),
                 "enabled": bool(benchmark_seeded_candidates),
@@ -3732,12 +4933,28 @@ def run_discovery_universe(job_id: int):
             for candidate in llm_candidates:
                 if not isinstance(candidate, dict):
                     continue
+                website = str(candidate.get("website") or "").strip()
+                if website and not website.startswith(("http://", "https://")):
+                    website = f"https://{website}"
+                website_domain = normalize_domain(website)
+                candidate["website"] = website or None
+                candidate["official_website_url"] = website or None
+                candidate["discovery_url"] = candidate.get("discovery_url") or website or None
+                candidate["entity_type"] = str(candidate.get("entity_type") or "company").strip().lower() or "company"
+                if website_domain and not _is_non_first_party_profile_domain(website_domain):
+                    candidate["first_party_domains"] = _dedupe_strings(
+                        [str(v) for v in (candidate.get("first_party_domains") or []) + [website_domain]]
+                    )
+                else:
+                    candidate["first_party_domains"] = _dedupe_strings(
+                        [str(v) for v in (candidate.get("first_party_domains") or []) if str(v).strip()]
+                    )
                 candidate.setdefault(
                     "_origins",
                     [
                         {
                             "origin_type": "llm_seed",
-                            "origin_url": str(candidate.get("website") or ""),
+                            "origin_url": str(candidate.get("discovery_url") or candidate.get("website") or ""),
                             "source_name": "gemini_discovery",
                             "source_run_id": None,
                             "metadata": {},
@@ -3747,14 +4964,17 @@ def run_discovery_universe(job_id: int):
 
             raw_candidates: list[dict[str, Any]] = []
             raw_candidates.extend([c for c in llm_candidates if isinstance(c, dict)])
+            raw_candidates.extend([c for c in external_search_candidates if isinstance(c, dict)])
             raw_candidates.extend(seeded_candidates)
             raw_candidates.extend(reference_seeded_candidates)
             raw_candidates.extend(benchmark_seeded_candidates)
             seed_llm_count = len([c for c in llm_candidates if isinstance(c, dict)])
+            seed_external_search_count = len([c for c in external_search_candidates if isinstance(c, dict)])
             seed_directory_count = len(seeded_candidates)
             seed_reference_count = len(reference_seeded_candidates)
             seed_benchmark_count = len(benchmark_seeded_candidates)
 
+            registry_stage_started = _stage_started()
             identity_seed_stats = _resolve_identities_for_candidates(
                 raw_candidates,
                 max_fetches=MAX_IDENTITY_FETCHES_PER_RUN,
@@ -3781,10 +5001,19 @@ def run_discovery_universe(job_id: int):
                 timeout_seconds=IDENTITY_RESOLUTION_TIMEOUT_SECONDS,
                 concurrency=IDENTITY_RESOLUTION_CONCURRENCY,
             )
+            _stage_finished(
+                "stage_registry_identity_expand",
+                registry_stage_started,
+                settings.stage_registry_timeout_seconds,
+            )
 
             all_candidates = raw_candidates + registry_neighbor_candidates
             canonical_entities, canonical_metrics = _collapse_candidates_to_entities(all_candidates)
-            canonical_entities, trimmed_out_count = _trim_entities_for_universe(canonical_entities, cap=PRE_SCORE_UNIVERSE_CAP)
+            pre_score_universe_cap = max(50, int(getattr(settings, "discovery_pre_score_universe_cap", PRE_SCORE_UNIVERSE_CAP)))
+            canonical_entities, trimmed_out_count = _trim_entities_for_universe(
+                canonical_entities,
+                cap=pre_score_universe_cap,
+            )
             registry_neighbors_unique_post_dedupe = len(
                 [
                     entity for entity in canonical_entities
@@ -3793,7 +5022,7 @@ def run_discovery_universe(job_id: int):
             )
 
             job.progress = 0.55
-            job.progress_message = f"Scoring {len(canonical_entities)} canonical candidates..."
+            job.progress_message = "Preparing canonical scoring pool..."
             db.commit()
 
             # Reset canonical entity tables for this workspace (latest run snapshot).
@@ -3829,6 +5058,10 @@ def run_discovery_universe(job_id: int):
                     canonical_name=str(entity.get("canonical_name") or "")[:300],
                     canonical_website=str(entity.get("canonical_website") or "")[:1000] or None,
                     canonical_domain=normalize_domain(entity.get("canonical_website")),
+                    discovery_primary_url=str(entity.get("discovery_primary_url") or "")[:1000] or None,
+                    entity_type=str(entity.get("entity_type") or "company")[:32] or "company",
+                    first_party_domains_json=entity.get("first_party_domains") if isinstance(entity.get("first_party_domains"), list) else [],
+                    solutions_json=entity.get("solutions") if isinstance(entity.get("solutions"), list) else [],
                     country=normalize_country(entity.get("country")),
                     identity_confidence=str(entity.get("identity_confidence") or "low")[:20],
                     identity_error=(str(entity.get("identity_error") or "")[:255] or None),
@@ -3842,6 +5075,10 @@ def run_discovery_universe(job_id: int):
                         "merge_confidence": float(entity.get("merge_confidence") or 0.0),
                         "registry_identity": entity.get("registry_identity") if isinstance(entity.get("registry_identity"), dict) else {},
                         "industry_signature": entity.get("industry_signature") if isinstance(entity.get("industry_signature"), dict) else {},
+                        "entity_type": str(entity.get("entity_type") or "company"),
+                        "first_party_domains": entity.get("first_party_domains") if isinstance(entity.get("first_party_domains"), list) else [],
+                        "solutions": entity.get("solutions") if isinstance(entity.get("solutions"), list) else [],
+                        "discovery_primary_url": entity.get("discovery_primary_url"),
                         "suspected_duplicates": canonical_metrics.get("suspected_duplicates", []),
                     },
                 )
@@ -3920,6 +5157,18 @@ def run_discovery_universe(job_id: int):
                     existing_by_domain[domain] = vendor
                 existing_by_name[vendor.name.strip().lower()] = vendor
 
+            registry_neighbors_with_first_party_website_count = int(
+                registry_expansion_metrics.get("registry_neighbors_with_first_party_website_count", 0)
+            )
+            registry_neighbors_dropped_missing_official_website_count = int(
+                registry_expansion_metrics.get("registry_neighbors_dropped_missing_official_website_count", 0)
+            )
+            registry_origin_screening_counts = (
+                registry_expansion_metrics.get("registry_origin_screening_counts", {})
+                if isinstance(registry_expansion_metrics.get("registry_origin_screening_counts"), dict)
+                else {}
+            )
+
             created_vendors = 0
             updated_existing = 0
             kept_count = 0
@@ -3929,13 +5178,39 @@ def run_discovery_universe(job_id: int):
             filter_reason_counts: dict[str, int] = {}
             penalties_count: dict[str, int] = {}
             claims_created = 0
+            decision_class_counts: dict[str, int] = {}
+            evidence_sufficiency_counts: dict[str, int] = {}
+            ranking_eligible_count = 0
+            solution_entity_screening_count = 0
             first_party_reason_cache: dict[str, list[dict[str, str]]] = {}
             first_party_capability_cache: dict[str, list[str]] = {}
             first_party_meta_cache: dict[str, dict[str, Any]] = {}
             first_party_error_cache: dict[str, str] = {}
-            first_party_fetch_budget = FIRST_PARTY_FETCH_BUDGET
-            first_party_crawl_budget = FIRST_PARTY_CRAWL_BUDGET
-            first_party_crawl_deep_budget = FIRST_PARTY_CRAWL_DEEP_BUDGET
+            first_party_fetch_budget_default = max(0, int(getattr(settings, "first_party_fetch_budget", FIRST_PARTY_FETCH_BUDGET)))
+            first_party_crawl_budget_default = max(0, int(getattr(settings, "first_party_crawl_budget", FIRST_PARTY_CRAWL_BUDGET)))
+            first_party_crawl_deep_budget_default = max(
+                0,
+                int(getattr(settings, "first_party_crawl_deep_budget", FIRST_PARTY_CRAWL_DEEP_BUDGET)),
+            )
+            first_party_hint_crawl_budget_default = max(
+                0,
+                int(getattr(settings, "first_party_hint_crawl_budget", FIRST_PARTY_HINT_CRAWL_BUDGET)),
+            )
+            first_party_crawl_light_max_pages = max(
+                1,
+                int(getattr(settings, "first_party_crawl_light_max_pages", FIRST_PARTY_CRAWL_LIGHT_MAX_PAGES)),
+            )
+            first_party_crawl_deep_max_pages = max(
+                first_party_crawl_light_max_pages,
+                int(getattr(settings, "first_party_crawl_deep_max_pages", FIRST_PARTY_CRAWL_DEEP_MAX_PAGES)),
+            )
+            first_party_min_priority_for_crawl = float(
+                getattr(settings, "first_party_min_priority_for_crawl", 0.0)
+            )
+            first_party_fetch_budget = first_party_fetch_budget_default
+            first_party_crawl_budget = first_party_crawl_budget_default
+            first_party_crawl_deep_budget = min(first_party_crawl_budget, first_party_crawl_deep_budget_default)
+            first_party_hint_crawl_budget = first_party_hint_crawl_budget_default
             first_party_crawl_attempted_count = 0
             first_party_crawl_success_count = 0
             first_party_crawl_failed_count = 0
@@ -3943,14 +5218,39 @@ def run_discovery_universe(job_id: int):
             first_party_crawl_light_count = 0
             first_party_crawl_fallback_count = 0
             first_party_crawl_pages_total = 0
+            first_party_hint_urls_used_count = 0
+            first_party_hint_pages_crawled_total = 0
             first_party_crawl_errors: list[str] = []
 
-            scoring_entities = sorted(canonical_entities, key=_candidate_priority_score, reverse=True)
+            max_scoring_entities = max(25, int(getattr(settings, "discovery_scoring_entities_cap", len(canonical_entities))))
+            ranked_scoring_entities = sorted(canonical_entities, key=_candidate_priority_score, reverse=True)
+            scoring_entities = ranked_scoring_entities[:max_scoring_entities]
+            scoring_entities_skipped_count = max(0, len(ranked_scoring_entities) - len(scoring_entities))
+            if scoring_entities_skipped_count > 0:
+                job.progress_message = (
+                    f"Scoring {len(scoring_entities)} canonical candidates "
+                    f"(capped from {len(ranked_scoring_entities)})..."
+                )
+            else:
+                job.progress_message = f"Scoring {len(scoring_entities)} canonical candidates..."
+            db.commit()
+            enrichment_stage_started = _stage_started()
 
             for entity in scoring_entities:
+                official_website = str(entity.get("canonical_website") or "").strip() or None
+                official_domain = normalize_domain(official_website)
+                first_party_domains = _normalize_domain_list(entity.get("first_party_domains") or [])
+                if official_domain and official_domain not in first_party_domains and not _is_non_first_party_profile_domain(official_domain):
+                    first_party_domains.append(official_domain)
                 candidate = {
                     "name": str(entity.get("canonical_name") or "").strip(),
-                    "website": entity.get("canonical_website"),
+                    "website": official_website,
+                    "official_website_url": official_website,
+                    "discovery_url": entity.get("discovery_primary_url"),
+                    "profile_url": entity.get("discovery_primary_url"),
+                    "entity_type": str(entity.get("entity_type") or "company").strip().lower() or "company",
+                    "first_party_domains": first_party_domains,
+                    "solutions": entity.get("solutions") if isinstance(entity.get("solutions"), list) else [],
                     "hq_country": entity.get("country"),
                     "likely_verticals": entity.get("likely_verticals") or [],
                     "employee_estimate": entity.get("employee_estimate"),
@@ -3963,11 +5263,11 @@ def run_discovery_universe(job_id: int):
                     "registry_country": entity.get("registry_country"),
                     "registry_identity": entity.get("registry_identity") if isinstance(entity.get("registry_identity"), dict) else {},
                     "industry_signature": entity.get("industry_signature") if isinstance(entity.get("industry_signature"), dict) else {},
-                    "original_website": entity.get("canonical_website"),
+                    "original_website": entity.get("discovery_primary_url") or entity.get("canonical_website"),
                     "identity": {
-                        "input_website": entity.get("canonical_website"),
+                        "input_website": entity.get("discovery_primary_url") or entity.get("canonical_website"),
                         "official_website": entity.get("canonical_website"),
-                        "canonical_domain": normalize_domain(entity.get("canonical_website")),
+                        "canonical_domain": official_domain,
                         "identity_confidence": entity.get("identity_confidence"),
                         "identity_sources": [origin.get("origin_url") for origin in (entity.get("origins") or []) if origin.get("origin_url")][:3],
                         "captured_at": datetime.utcnow().isoformat(),
@@ -3977,11 +5277,19 @@ def run_discovery_universe(job_id: int):
                 candidate_name = str(candidate.get("name") or "").strip()
                 if not candidate_name:
                     continue
+                is_solution_entity = str(candidate.get("entity_type") or "company") == "solution"
+                if is_solution_entity:
+                    solution_entity_screening_count += 1
                 candidate_domain = normalize_domain(candidate.get("website"))
-                if candidate_domain and not _is_aggregator_domain(candidate_domain):
+                candidate_first_party_domains = _normalize_domain_list(candidate.get("first_party_domains") or [])
+                origin_types = set(entity.get("origin_types") or [])
+                priority_score = _candidate_priority_score(entity)
+                if not is_solution_entity and candidate_domain and not _is_non_first_party_profile_domain(candidate_domain):
                     existing_vendor = existing_by_domain.get(candidate_domain)
-                else:
+                elif not is_solution_entity:
                     existing_vendor = existing_by_name.get(candidate_name.lower())
+                else:
+                    existing_vendor = None
 
                 capability_signals = _extract_capability_signals(candidate)
                 employee_estimate = _extract_employee_estimate(candidate)
@@ -4034,30 +5342,74 @@ def run_discovery_universe(job_id: int):
                 first_party_enrichment_meta: dict[str, Any] = {}
                 candidate_website = str(candidate.get("website") or "").strip()
                 candidate_domain_for_fetch = normalize_domain(candidate_website)
+                candidate_hint_urls = (
+                    first_party_hint_urls_by_domain.get(candidate_domain_for_fetch, [])
+                    if candidate_domain_for_fetch
+                    else []
+                )
                 if (
                     candidate_website
                     and candidate_domain_for_fetch
-                    and not _is_aggregator_domain(candidate_domain_for_fetch)
-                    and not _is_registry_profile_domain(candidate_domain_for_fetch)
+                    and not _is_non_first_party_profile_domain(candidate_domain_for_fetch)
                     and is_trusted_source_url(candidate_website)
                 ):
                     cached_first_party = first_party_reason_cache.get(candidate_domain_for_fetch)
                     cached_capabilities = first_party_capability_cache.get(candidate_domain_for_fetch, [])
                     cached_meta = first_party_meta_cache.get(candidate_domain_for_fetch, {})
                     if cached_first_party is None:
-                        if first_party_crawl_budget > 0:
+                        if candidate_hint_urls and first_party_hint_crawl_budget > 0:
                             first_party_crawl_attempted_count += 1
-                            priority_score = _candidate_priority_score(entity)
+                            first_party_crawl_deep_count += 1
+                            first_party_hint_crawl_budget -= 1
+                            first_party_hint_urls_used_count += len(candidate_hint_urls)
+                            crawled_reasons, crawled_capabilities, crawl_meta, crawl_error = _extract_first_party_signals_from_crawl(
+                                candidate_website,
+                                candidate_name,
+                                max_pages=first_party_crawl_deep_max_pages,
+                                hint_urls=candidate_hint_urls,
+                            )
+                            crawl_meta = crawl_meta if isinstance(crawl_meta, dict) else {}
+                            crawl_meta = {
+                                **crawl_meta,
+                                "tier": "hint",
+                            }
+                            if crawled_reasons:
+                                first_party_crawl_success_count += 1
+                                first_party_crawl_pages_total += int(crawl_meta.get("pages_crawled") or 0)
+                                first_party_hint_pages_crawled_total += int(crawl_meta.get("hint_pages_crawled") or 0)
+                                first_party_reason_cache[candidate_domain_for_fetch] = crawled_reasons
+                                first_party_capability_cache[candidate_domain_for_fetch] = crawled_capabilities
+                                first_party_meta_cache[candidate_domain_for_fetch] = crawl_meta
+                                cached_first_party = crawled_reasons
+                                cached_capabilities = crawled_capabilities
+                                cached_meta = crawl_meta
+                            else:
+                                first_party_crawl_failed_count += 1
+                                if crawl_error:
+                                    first_party_error_cache[candidate_domain_for_fetch] = crawl_error
+                                    first_party_crawl_errors.append(crawl_error)
+                        if (
+                            cached_first_party is None
+                            and first_party_crawl_budget > 0
+                            and (
+                                bool(candidate_hint_urls)
+                                or bool(candidate.get("reference_input"))
+                                or "reference_seed" in origin_types
+                                or "benchmark_seed" in origin_types
+                                or priority_score >= first_party_min_priority_for_crawl
+                            )
+                        ):
+                            first_party_crawl_attempted_count += 1
                             use_deep_crawl = (
                                 first_party_crawl_deep_budget > 0
                                 and (
                                     bool(candidate.get("reference_input"))
-                                    or "reference_seed" in set(entity.get("origin_types") or [])
-                                    or "benchmark_seed" in set(entity.get("origin_types") or [])
+                                    or "reference_seed" in origin_types
+                                    or "benchmark_seed" in origin_types
                                     or priority_score >= FIRST_PARTY_CRAWL_DEEP_PRIORITY_THRESHOLD
                                 )
                             )
-                            max_pages = FIRST_PARTY_CRAWL_DEEP_MAX_PAGES if use_deep_crawl else FIRST_PARTY_CRAWL_LIGHT_MAX_PAGES
+                            max_pages = first_party_crawl_deep_max_pages if use_deep_crawl else first_party_crawl_light_max_pages
                             if use_deep_crawl:
                                 first_party_crawl_deep_budget -= 1
                                 first_party_crawl_deep_count += 1
@@ -4068,6 +5420,7 @@ def run_discovery_universe(job_id: int):
                                 candidate_website,
                                 candidate_name,
                                 max_pages=max_pages,
+                                hint_urls=candidate_hint_urls,
                             )
                             first_party_crawl_budget -= 1
 
@@ -4080,6 +5433,8 @@ def run_discovery_universe(job_id: int):
                             if crawled_reasons:
                                 first_party_crawl_success_count += 1
                                 first_party_crawl_pages_total += int(crawl_meta.get("pages_crawled") or 0)
+                                first_party_hint_pages_crawled_total += int(crawl_meta.get("hint_pages_crawled") or 0)
+                                first_party_hint_urls_used_count += int(crawl_meta.get("hint_urls_used_count") or 0)
                                 first_party_reason_cache[candidate_domain_for_fetch] = crawled_reasons
                                 first_party_capability_cache[candidate_domain_for_fetch] = crawled_capabilities
                                 first_party_meta_cache[candidate_domain_for_fetch] = crawl_meta
@@ -4103,6 +5458,9 @@ def run_discovery_universe(job_id: int):
                                 "tier": "fallback",
                                 "pages_crawled": 1 if fetched_reasons else 0,
                                 "signals_extracted": len(fetched_reasons),
+                                "hint_urls_used": [],
+                                "hint_urls_used_count": 0,
+                                "hint_pages_crawled": 0,
                             }
                             if fetch_error:
                                 first_party_error_cache[candidate_domain_for_fetch] = fetch_error
@@ -4130,11 +5488,16 @@ def run_discovery_universe(job_id: int):
 
                 if candidate.get("website") and is_trusted_source_url(candidate.get("website")):
                     website_url = str(candidate.get("website"))
+                    website_source_type = _source_type_for_url(
+                        website_url,
+                        candidate_domain,
+                        first_party_domains=candidate_first_party_domains,
+                    )
                     has_website_reason = any(
                         str(reason.get("citation_url") or "").strip().lower() == website_url.strip().lower()
                         for reason in trusted_reason_items
                     )
-                    if not has_website_reason:
+                    if not has_website_reason and website_source_type == "first_party_website":
                         trusted_reason_items.append(
                             {
                                 "text": "Company first-party website used as baseline evidence.",
@@ -4160,8 +5523,8 @@ def run_discovery_universe(job_id: int):
                 screening_status = str(score_meta.get("screening_status") or "rejected")
                 if not passed_gate and gate_meta.get("hard_fail"):
                     screening_status = "rejected"
-                if screening_status == "rejected" and not reject_reasons:
-                    reject_reasons.append("score_below_threshold")
+                if is_solution_entity and screening_status == "kept":
+                    screening_status = "review"
                 if screening_status == "kept":
                     kept_count += 1
                 elif screening_status == "review":
@@ -4196,7 +5559,7 @@ def run_discovery_universe(job_id: int):
 
                 vendor_ref: Optional[Vendor] = existing_vendor
 
-                if screening_status in {"kept", "review"}:
+                if screening_status in {"kept", "review"} and not is_solution_entity:
                     target_vendor_status = VendorStatus.kept if screening_status == "kept" else VendorStatus.candidate
                     if vendor_ref is None:
                         vendor_ref = Vendor(
@@ -4213,7 +5576,7 @@ def run_discovery_universe(job_id: int):
                         db.add(vendor_ref)
                         db.flush()
                         created_vendors += 1
-                        if candidate_domain and not _is_aggregator_domain(candidate_domain):
+                        if candidate_domain and not _is_non_first_party_profile_domain(candidate_domain):
                             existing_by_domain[candidate_domain] = vendor_ref
                         existing_by_name[candidate_name.lower()] = vendor_ref
                     else:
@@ -4233,6 +5596,7 @@ def run_discovery_universe(job_id: int):
 
                 if vendor_ref and trusted_reason_items:
                     trusted_evidence_urls: list[str] = []
+                    source_evidence_ids: dict[str, int] = {}
                     for item in trusted_reason_items:
                         citation_url = str(item.get("citation_url") or "").strip()
                         reason_text = str(item.get("text") or "").strip()
@@ -4250,31 +5614,68 @@ def run_discovery_universe(job_id: int):
                         )
                         if exists:
                             trusted_evidence_urls.append(citation_url)
+                            source_evidence_ids[citation_url.lower()] = exists.id
                             continue
-                        db.add(
-                            WorkspaceEvidence(
-                                workspace_id=workspace.id,
-                                vendor_id=vendor_ref.id,
-                                source_url=citation_url,
-                                source_title=source_label_for_url(citation_url),
-                                excerpt_text=reason_text[:1200],
-                                content_type="web",
-                            )
+                        evidence_source_type = _source_type_for_url(
+                            citation_url,
+                            candidate_domain,
+                            first_party_domains=candidate_first_party_domains,
                         )
+                        evidence_source_tier = infer_source_tier(citation_url, evidence_source_type, candidate_domain)
+                        evidence_source_kind = infer_source_kind(citation_url, evidence_source_type, candidate_domain)
+                        claim_group = claim_group_for_dimension(item.get("dimension"), None)
+                        ttl_days, valid_through = valid_through_from_claim_group(
+                            claim_group,
+                            policy=effective_policy,
+                        )
+                        evidence_row = WorkspaceEvidence(
+                            workspace_id=workspace.id,
+                            vendor_id=vendor_ref.id,
+                            source_url=citation_url,
+                            source_title=source_label_for_url(citation_url),
+                            excerpt_text=reason_text[:1200],
+                            content_type="web",
+                            source_tier=evidence_source_tier,
+                            source_kind=evidence_source_kind,
+                            freshness_ttl_days=ttl_days,
+                            valid_through=valid_through,
+                            asserted_by="run_discovery_universe",
+                        )
+                        db.add(evidence_row)
+                        db.flush()
+                        source_evidence_ids[citation_url.lower()] = evidence_row.id
                         trusted_evidence_urls.append(citation_url)
 
                     if not trusted_evidence_urls and vendor_ref.website and is_trusted_source_url(vendor_ref.website):
-                        db.add(
-                            WorkspaceEvidence(
+                        fallback_source_type = _source_type_for_url(
+                            vendor_ref.website,
+                            candidate_domain,
+                            first_party_domains=candidate_first_party_domains,
+                        )
+                        if fallback_source_type == "first_party_website":
+                            fallback_source_tier = infer_source_tier(vendor_ref.website, fallback_source_type, candidate_domain)
+                            fallback_source_kind = infer_source_kind(vendor_ref.website, fallback_source_type, candidate_domain)
+                            ttl_days, valid_through = valid_through_from_claim_group(
+                                "identity_scope",
+                                policy=effective_policy,
+                            )
+                            fallback_row = WorkspaceEvidence(
                                 workspace_id=workspace.id,
                                 vendor_id=vendor_ref.id,
                                 source_url=vendor_ref.website,
                                 source_title=f"{vendor_ref.name} website",
                                 excerpt_text="First-party website baseline source.",
                                 content_type="web",
+                                source_tier=fallback_source_tier,
+                                source_kind=fallback_source_kind,
+                                freshness_ttl_days=ttl_days,
+                                valid_through=valid_through,
+                                asserted_by="run_discovery_universe",
                             )
-                        )
-                        trusted_evidence_urls.append(vendor_ref.website)
+                            db.add(fallback_row)
+                            db.flush()
+                            source_evidence_ids[vendor_ref.website.lower()] = fallback_row.id
+                            trusted_evidence_urls.append(vendor_ref.website)
 
                     if screening_status in {"kept", "review"}:
                         existing_dossier = (
@@ -4315,11 +5716,26 @@ def run_discovery_universe(job_id: int):
                     candidate_entity_id=entity.get("db_entity_id"),
                     candidate_name=candidate_name,
                     candidate_website=str(candidate.get("website") or "")[:1000] or None,
+                    candidate_discovery_url=str(candidate.get("discovery_url") or "")[:1000] or None,
+                    candidate_official_website=str(candidate.get("official_website_url") or candidate.get("website") or "")[:1000] or None,
                     screening_status=screening_status,
                     total_score=total_score,
                     component_scores_json=component_scores,
                     penalties_json=penalties,
                     reject_reasons_json=_dedupe_strings(reject_reasons),
+                    positive_reason_codes_json=[],
+                    caution_reason_codes_json=[],
+                    reject_reason_codes_json=[],
+                    missing_claim_groups_json=[],
+                    unresolved_contradictions_count=0,
+                    decision_classification="insufficient_evidence",
+                    evidence_sufficiency="insufficient",
+                    rationale_summary=None,
+                    rationale_markdown=None,
+                    top_claim_json={},
+                    decision_engine_version=None,
+                    gating_passed=False,
+                    ranking_eligible=False,
                     screening_meta_json={
                         "job_id": job.id,
                         "screening_run_id": screening_run_id,
@@ -4327,6 +5743,11 @@ def run_discovery_universe(job_id: int):
                         "hard_fail_gate": bool(gate_meta.get("hard_fail")),
                         "qualification": candidate.get("qualification") or {},
                         "matched_mentions": len(matched_mentions),
+                        "entity_type": candidate.get("entity_type"),
+                        "first_party_domains": candidate_first_party_domains,
+                        "discovery_url": candidate.get("discovery_url"),
+                        "official_website_url": candidate.get("official_website_url") or candidate.get("website"),
+                        "solutions": candidate.get("solutions") if isinstance(candidate.get("solutions"), list) else [],
                         "candidate_hq_country": candidate.get("hq_country"),
                         "identity": candidate.get("identity") or {},
                         "input_website": candidate.get("original_website"),
@@ -4337,6 +5758,11 @@ def run_discovery_universe(job_id: int):
                         "origin_types": entity.get("origin_types") or [],
                         "registry_identity": entity.get("registry_identity") if isinstance(entity.get("registry_identity"), dict) else {},
                         "industry_signature": entity.get("industry_signature") if isinstance(entity.get("industry_signature"), dict) else {},
+                        "registry_neighbors_with_first_party_website_count": registry_neighbors_with_first_party_website_count,
+                        "registry_neighbors_dropped_missing_official_website_count": registry_neighbors_dropped_missing_official_website_count,
+                        "registry_origin_screening_counts": registry_origin_screening_counts,
+                        "first_party_hint_urls_used_count": int(first_party_enrichment_meta.get("hint_urls_used_count") or 0),
+                        "first_party_hint_pages_crawled_total": int(first_party_enrichment_meta.get("hint_pages_crawled") or 0),
                         "first_party_enrichment": {
                             "method": first_party_enrichment_meta.get("method"),
                             "tier": first_party_enrichment_meta.get("tier"),
@@ -4344,6 +5770,9 @@ def run_discovery_universe(job_id: int):
                             "signals_extracted": int(first_party_enrichment_meta.get("signals_extracted") or 0),
                             "customer_evidence_count": int(first_party_enrichment_meta.get("customer_evidence_count") or 0),
                             "page_types": first_party_enrichment_meta.get("page_types") if isinstance(first_party_enrichment_meta.get("page_types"), dict) else {},
+                            "hint_urls_used": first_party_enrichment_meta.get("hint_urls_used") if isinstance(first_party_enrichment_meta.get("hint_urls_used"), list) else [],
+                            "hint_urls_used_count": int(first_party_enrichment_meta.get("hint_urls_used_count") or 0),
+                            "hint_pages_crawled": int(first_party_enrichment_meta.get("hint_pages_crawled") or 0),
                             "error": first_party_error_cache.get(candidate_domain_for_fetch) if candidate_domain_for_fetch else None,
                         },
                     },
@@ -4359,11 +5788,22 @@ def run_discovery_universe(job_id: int):
                         "has_first_party_evidence": bool(score_meta.get("has_first_party_evidence")),
                         "has_first_party_depth": bool(score_meta.get("has_first_party_depth")),
                         "has_non_directory_corroboration": bool(score_meta.get("has_non_directory_corroboration")),
+                        "entity_type": candidate.get("entity_type"),
+                        "discovery_url": candidate.get("discovery_url"),
+                        "official_website_url": candidate.get("official_website_url") or candidate.get("website"),
+                        "first_party_domains": candidate_first_party_domains,
                         "first_party_enrichment": {
                             "method": first_party_enrichment_meta.get("method"),
                             "tier": first_party_enrichment_meta.get("tier"),
                             "pages_crawled": int(first_party_enrichment_meta.get("pages_crawled") or 0),
+                            "hint_urls_used_count": int(first_party_enrichment_meta.get("hint_urls_used_count") or 0),
+                            "hint_pages_crawled": int(first_party_enrichment_meta.get("hint_pages_crawled") or 0),
                         },
+                        "registry_neighbors_with_first_party_website_count": registry_neighbors_with_first_party_website_count,
+                        "registry_neighbors_dropped_missing_official_website_count": registry_neighbors_dropped_missing_official_website_count,
+                        "registry_origin_screening_counts": registry_origin_screening_counts,
+                        "first_party_hint_urls_used_count": int(first_party_enrichment_meta.get("hint_urls_used_count") or 0),
+                        "first_party_hint_pages_crawled_total": int(first_party_enrichment_meta.get("hint_pages_crawled") or 0),
                         "origin_types": entity.get("origin_types") or [],
                         "expansion_provenance": [
                             (origin.get("metadata") or {})
@@ -4384,10 +5824,88 @@ def run_discovery_universe(job_id: int):
                     candidate=candidate,
                     trusted_reasons=trusted_reason_items,
                     matched_mentions=matched_mentions,
+                    policy=effective_policy,
+                    source_evidence_ids=(source_evidence_ids if vendor_ref and trusted_reason_items else None),
+                    first_party_domains=candidate_first_party_domains,
                 )
                 for record in claim_records:
                     db.add(VendorClaim(**record))
                 claims_created += len(claim_records)
+                citation_summary_v1 = _build_citation_summary_v1(claim_records)
+
+                decision = evaluate_decision(
+                    screening_status=screening_status,
+                    reject_reasons=_dedupe_strings(reject_reasons),
+                    claims=claim_records,
+                    component_scores=component_scores,
+                    source_type_counts=score_meta.get("source_type_counts") or {},
+                    policy=effective_policy,
+                )
+                screening.positive_reason_codes_json = decision.positive_reason_codes
+                screening.caution_reason_codes_json = decision.caution_reason_codes
+                screening.reject_reason_codes_json = decision.reject_reason_codes
+                screening.missing_claim_groups_json = decision.missing_claim_groups
+                screening.unresolved_contradictions_count = decision.unresolved_contradictions_count
+                screening.decision_classification = decision.classification
+                screening.evidence_sufficiency = decision.evidence_sufficiency
+                screening.rationale_summary = decision.rationale_summary
+                screening.rationale_markdown = decision.rationale_markdown
+                top_claim = _select_top_claim(claim_records)
+                if top_claim.get("source_url") and top_claim.get("source_tier"):
+                    screening.top_claim_json = top_claim
+                else:
+                    screening.top_claim_json = {}
+                screening.decision_engine_version = decision.decision_engine_version
+                screening.gating_passed = bool(decision.gating_passed)
+                screening.ranking_eligible = _is_ranking_eligible_candidate(
+                    candidate=candidate,
+                    decision_classification=decision.classification,
+                    claim_records=claim_records,
+                )
+                screening_meta = (
+                    dict(screening.screening_meta_json)
+                    if isinstance(screening.screening_meta_json, dict)
+                    else {}
+                )
+                if citation_summary_v1:
+                    screening_meta["citation_summary_v1"] = citation_summary_v1
+                elif "citation_summary_v1" in screening_meta:
+                    screening_meta.pop("citation_summary_v1", None)
+                screening_meta["registry_neighbors_with_first_party_website_count"] = registry_neighbors_with_first_party_website_count
+                screening_meta["registry_neighbors_dropped_missing_official_website_count"] = (
+                    registry_neighbors_dropped_missing_official_website_count
+                )
+                screening_meta["registry_origin_screening_counts"] = registry_origin_screening_counts
+                screening_meta["first_party_hint_urls_used_count"] = int(
+                    first_party_enrichment_meta.get("hint_urls_used_count") or 0
+                )
+                screening_meta["first_party_hint_pages_crawled_total"] = int(
+                    first_party_enrichment_meta.get("hint_pages_crawled") or 0
+                )
+                screening.screening_meta_json = screening_meta
+                if screening.ranking_eligible:
+                    ranking_eligible_count += 1
+                decision_class_counts[decision.classification] = decision_class_counts.get(decision.classification, 0) + 1
+                evidence_sufficiency_counts[decision.evidence_sufficiency] = (
+                    evidence_sufficiency_counts.get(decision.evidence_sufficiency, 0) + 1
+                )
+            _stage_finished(
+                "stage_first_party_enrichment_parallel",
+                enrichment_stage_started,
+                settings.stage_enrichment_timeout_seconds,
+            )
+            stage_time_ms["stage_scoring_claims_persist"] = stage_time_ms.get(
+                "stage_first_party_enrichment_parallel",
+                0,
+            )
+            if stage_time_ms["stage_scoring_claims_persist"] > max(1, int(settings.stage_scoring_timeout_seconds)) * 1000:
+                timeout_events.append(
+                    {
+                        "stage": "stage_scoring_claims_persist",
+                        "duration_ms": stage_time_ms["stage_scoring_claims_persist"],
+                        "timeout_seconds": int(settings.stage_scoring_timeout_seconds),
+                    }
+                )
 
             registry_queries_by_country: dict[str, int] = {}
             for source in [
@@ -4420,6 +5938,52 @@ def run_discovery_universe(job_id: int):
                     continue
                 for key, value in source.items():
                     registry_raw_hits_by_country[str(key)] = registry_raw_hits_by_country.get(str(key), 0) + int(value)
+            claims_graph_refresh = {"status": "not_run"}
+            try:
+                claims_graph_metrics = rebuild_workspace_claims_graph(db, workspace.id)
+                claims_graph_refresh = {
+                    "status": "rebuilt",
+                    "metrics": claims_graph_metrics,
+                }
+            except Exception as graph_exc:
+                claims_graph_refresh = {
+                    "status": "failed",
+                    "error": str(graph_exc),
+                }
+
+            degraded_reasons: list[str] = []
+            if llm_error:
+                degraded_reasons.append("llm_discovery_error")
+            if seed_llm_count <= 0:
+                degraded_reasons.append("llm_discovery_failed")
+            if claims_created < max(0, int(settings.quality_min_claims_created)):
+                degraded_reasons.append("citation_threshold_not_met")
+            if ranking_eligible_count < max(0, int(settings.quality_min_ranking_eligible_count)):
+                degraded_reasons.append("ranking_threshold_not_met")
+            critical_timeout_stages = {
+                "stage_llm_discovery_fanout",
+                "stage_registry_identity_expand",
+                "stage_first_party_enrichment_parallel",
+            }
+            for event in timeout_events:
+                stage_name = str(event.get("stage") or "")
+                if stage_name in critical_timeout_stages:
+                    degraded_reasons.append(f"{stage_name}_timeout")
+            degraded_reasons = _dedupe_strings(degraded_reasons)
+            pipeline_total_ms = int((time.perf_counter() - pipeline_started) * 1000)
+            stage_time_ms["pipeline_total_ms"] = pipeline_total_ms
+            if pipeline_total_ms > max(1, int(settings.discovery_global_timeout_seconds)) * 1000:
+                degraded_reasons.append("pipeline_global_timeout")
+                timeout_events.append(
+                    {
+                        "stage": "pipeline_total",
+                        "duration_ms": pipeline_total_ms,
+                        "timeout_seconds": int(settings.discovery_global_timeout_seconds),
+                    }
+                )
+                degraded_reasons = _dedupe_strings(degraded_reasons)
+            run_quality_tier = "high_quality" if not degraded_reasons else "degraded"
+            quality_gate_passed = run_quality_tier == "high_quality"
 
             job.state = JobState.completed
             job.progress = 1.0
@@ -4427,11 +5991,13 @@ def run_discovery_universe(job_id: int):
             job.result_json = {
                 "candidates_found": len(canonical_entities),
                 "llm_candidates_found": seed_llm_count,
+                "external_search_candidates_found": seed_external_search_count,
                 "seed_mentions_count": len(mention_records),
                 "seed_directory_count": seed_directory_count,
                 "seed_reference_count": seed_reference_count,
                 "seed_benchmark_count": seed_benchmark_count,
                 "seed_llm_count": seed_llm_count,
+                "seed_external_search_count": seed_external_search_count,
                 "vendors_created": created_vendors,
                 "vendors_updated": updated_existing,
                 "kept_count": kept_count,
@@ -4439,6 +6005,10 @@ def run_discovery_universe(job_id: int):
                 "rejected_count": rejected_count,
                 "untrusted_sources_skipped": untrusted_sources_skipped,
                 "claims_created": claims_created,
+                "decision_class_counts": decision_class_counts,
+                "evidence_sufficiency_counts": evidence_sufficiency_counts,
+                "ranking_eligible_count": ranking_eligible_count,
+                "solution_entity_screening_count": solution_entity_screening_count,
                 "screening_run_id": screening_run_id,
                 "identity_resolved_count": int(identity_seed_stats.get("identity_resolved_count", 0))
                 + int(identity_registry_stats.get("identity_resolved_count", 0)),
@@ -4453,6 +6023,13 @@ def run_discovery_universe(job_id: int):
                 "registry_identity_queries_count": registry_identity_queries_count,
                 "registry_neighbor_queries_count": registry_neighbor_queries_count,
                 "registry_neighbors_kept_count": int(registry_expansion_metrics.get("registry_neighbors_kept_count", 0)),
+                "registry_neighbors_with_first_party_website_count": int(
+                    registry_expansion_metrics.get("registry_neighbors_with_first_party_website_count", 0)
+                ),
+                "registry_neighbors_dropped_missing_official_website_count": int(
+                    registry_expansion_metrics.get("registry_neighbors_dropped_missing_official_website_count", 0)
+                ),
+                "registry_origin_screening_counts": registry_expansion_metrics.get("registry_origin_screening_counts", {}),
                 "registry_identity_candidates_count": int(registry_identity_metrics.get("registry_identity_candidates_count", 0)),
                 "registry_identity_mapped_count": int(registry_identity_metrics.get("registry_identity_mapped_count", 0)),
                 "registry_identity_country_breakdown": registry_identity_metrics.get("registry_identity_country_breakdown", {}),
@@ -4462,9 +6039,13 @@ def run_discovery_universe(job_id: int):
                 "registry_neighbors_unique_post_dedupe": int(registry_neighbors_unique_post_dedupe),
                 "registry_reject_reason_breakdown": registry_expansion_metrics.get("registry_reject_reason_breakdown", {}),
                 "final_universe_count": len(canonical_entities),
+                "pre_score_universe_cap": pre_score_universe_cap,
                 "trimmed_out_count": trimmed_out_count,
-                "first_party_fetch_budget_used": FIRST_PARTY_FETCH_BUDGET - first_party_fetch_budget,
-                "first_party_crawl_budget_used": FIRST_PARTY_CRAWL_BUDGET - first_party_crawl_budget,
+                "scoring_entities_count": len(scoring_entities),
+                "scoring_entities_skipped_count": scoring_entities_skipped_count,
+                "first_party_fetch_budget_used": first_party_fetch_budget_default - first_party_fetch_budget,
+                "first_party_crawl_budget_used": first_party_crawl_budget_default - first_party_crawl_budget,
+                "first_party_hint_crawl_budget_used": first_party_hint_crawl_budget_default - first_party_hint_crawl_budget,
                 "first_party_crawl_attempted_count": first_party_crawl_attempted_count,
                 "first_party_crawl_success_count": first_party_crawl_success_count,
                 "first_party_crawl_failed_count": first_party_crawl_failed_count,
@@ -4472,6 +6053,8 @@ def run_discovery_universe(job_id: int):
                 "first_party_crawl_light_count": first_party_crawl_light_count,
                 "first_party_crawl_fallback_count": first_party_crawl_fallback_count,
                 "first_party_crawl_pages_total": first_party_crawl_pages_total,
+                "first_party_hint_urls_used_count": first_party_hint_urls_used_count,
+                "first_party_hint_pages_crawled_total": first_party_hint_pages_crawled_total,
                 "filter_reason_counts": filter_reason_counts,
                 "penalty_reason_counts": penalties_count,
                 "source_coverage": source_coverage,
@@ -4488,6 +6071,13 @@ def run_discovery_universe(job_id: int):
                     "registry_identity_mapped_count": int(registry_identity_metrics.get("registry_identity_mapped_count", 0)),
                     "registry_identity_country_breakdown": registry_identity_metrics.get("registry_identity_country_breakdown", {}),
                     "registry_neighbors_unique_post_dedupe": int(registry_neighbors_unique_post_dedupe),
+                    "registry_neighbors_with_first_party_website_count": int(
+                        registry_expansion_metrics.get("registry_neighbors_with_first_party_website_count", 0)
+                    ),
+                    "registry_neighbors_dropped_missing_official_website_count": int(
+                        registry_expansion_metrics.get("registry_neighbors_dropped_missing_official_website_count", 0)
+                    ),
+                    "registry_origin_screening_counts": registry_expansion_metrics.get("registry_origin_screening_counts", {}),
                 },
                 "comparator_errors": comparator_errors,
                 "identity_fetch_errors": {
@@ -4498,6 +6088,14 @@ def run_discovery_universe(job_id: int):
                 "first_party_crawl_errors": first_party_crawl_errors[:100],
                 "llm_error": llm_error,
                 "fallback_mode": bool(llm_error),
+                "run_quality_tier": run_quality_tier,
+                "quality_gate_passed": quality_gate_passed,
+                "degraded_reasons": degraded_reasons,
+                "model_attempt_trace": model_attempt_trace[:200],
+                "stage_time_ms": stage_time_ms,
+                "timeout_events": timeout_events,
+                "external_search_errors": external_search_errors[:20],
+                "claims_graph_refresh": claims_graph_refresh,
             }
             job.finished_at = datetime.utcnow()
             db.commit()
@@ -4511,6 +6109,268 @@ def run_discovery_universe(job_id: int):
             db.commit()
             return {"error": str(e)}
 
+    finally:
+        db.close()
+
+
+def _record_stage_metric(job_id: int, stage_name: str, started_at: float, timeout_seconds: int) -> None:
+    ctx = _load_discovery_context(job_id)
+    stage_time_ms = ctx.get("stage_time_ms") if isinstance(ctx.get("stage_time_ms"), dict) else {}
+    timeout_events = ctx.get("timeout_events") if isinstance(ctx.get("timeout_events"), list) else []
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
+    stage_time_ms[stage_name] = duration_ms
+    if duration_ms > max(1, int(timeout_seconds)) * 1000:
+        timeout_events.append(
+            {
+                "stage": stage_name,
+                "duration_ms": duration_ms,
+                "timeout_seconds": int(timeout_seconds),
+            }
+        )
+    ctx["stage_time_ms"] = stage_time_ms
+    ctx["timeout_events"] = timeout_events
+    _save_discovery_context(job_id, ctx)
+
+
+@celery_app.task(name="app.workers.workspace_tasks.run_discovery_universe")
+def run_discovery_universe(job_id: int):
+    """Queue staged discovery pipeline for a workspace job."""
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return {"error": "Job not found"}
+        if job.state in {JobState.completed, JobState.failed}:
+            return {"error": f"Job already terminal: {job.state.value}"}
+
+        job.state = JobState.running
+        if not job.started_at:
+            job.started_at = datetime.utcnow()
+        job.progress = 0.05
+        job.progress_message = "Queued staged discovery pipeline..."
+        db.commit()
+
+        ctx = _load_discovery_context(job_id)
+        if not ctx.get("screening_run_id"):
+            ctx["screening_run_id"] = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+        ctx["job_id"] = job_id
+        ctx["workspace_id"] = job.workspace_id
+        ctx["pipeline_started_at"] = datetime.utcnow().isoformat()
+        ctx["stage_time_ms"] = ctx.get("stage_time_ms") if isinstance(ctx.get("stage_time_ms"), dict) else {}
+        ctx["timeout_events"] = ctx.get("timeout_events") if isinstance(ctx.get("timeout_events"), list) else []
+        _save_discovery_context(job_id, ctx)
+
+        pipeline = chain(
+            stage_seed_ingest.s(job_id),
+            stage_llm_discovery_fanout.s(job_id),
+            stage_registry_identity_expand.s(job_id),
+            stage_first_party_enrichment_parallel.s(job_id),
+            stage_scoring_claims_persist.s(job_id),
+            finalize_discovery_pipeline.s(job_id),
+        )
+        pipeline.apply_async()
+        discovery_watchdog.apply_async(
+            args=[job_id],
+            countdown=max(60, int(settings.discovery_global_timeout_seconds)),
+        )
+        return {"queued": True, "job_id": job_id}
+    except Exception as exc:
+        _fail_discovery_job(job_id, f"pipeline_queue_failed:{exc}")
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.workspace_tasks.stage_seed_ingest")
+def stage_seed_ingest(job_id: int):
+    started = time.perf_counter()
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise RuntimeError("Job not found")
+        workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
+        profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == job.workspace_id).first()
+        taxonomy = db.query(BrickTaxonomy).filter(BrickTaxonomy.workspace_id == job.workspace_id).first()
+        if not workspace or not profile or not taxonomy:
+            raise RuntimeError("Missing workspace/profile/taxonomy")
+        job.progress = 0.2
+        job.progress_message = "Stage 1/5: seed ingest checks complete"
+        db.commit()
+        _record_stage_metric(job_id, "stage_seed_ingest", started, settings.stage_seed_ingest_timeout_seconds)
+        return {"ok": True}
+    except Exception as exc:
+        _fail_discovery_job(job_id, f"stage_seed_ingest_failed:{exc}")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.workspace_tasks.stage_llm_discovery_fanout")
+def stage_llm_discovery_fanout(_previous: Optional[dict[str, Any]], job_id: int):
+    started = time.perf_counter()
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise RuntimeError("Job not found")
+        job.progress = 0.35
+        job.progress_message = "Stage 2/5: LLM provider fanout preflight"
+        db.commit()
+
+        attempts: list[dict[str, Any]] = []
+        try:
+            response = LLMOrchestrator().run_stage(
+                LLMRequest(
+                    stage=LLMStage.discovery_retrieval,
+                    prompt='Return exactly [] as JSON.',
+                    timeout_seconds=max(20, int(settings.stage_llm_discovery_timeout_seconds // 3)),
+                    use_web_search=False,
+                    expect_json=True,
+                    metadata={"preflight": True, "job_id": job_id},
+                )
+            )
+            attempts.extend([asdict(attempt) for attempt in response.attempts])
+        except Exception as exc:
+            if isinstance(exc, LLMOrchestrationError):
+                attempts.extend([asdict(attempt) for attempt in exc.attempts])
+            attempts.append(
+                {
+                    "stage": "discovery_retrieval",
+                    "provider": "pipeline",
+                    "model": "preflight",
+                    "latency_ms": 0,
+                    "status": "preflight_error",
+                    "retry_count": 0,
+                    "error_class": exc.__class__.__name__,
+                    "error_message": str(exc)[:500],
+                    "started_at": datetime.utcnow().isoformat(),
+                    "ended_at": datetime.utcnow().isoformat(),
+                }
+            )
+
+        ctx = _load_discovery_context(job_id)
+        trace = ctx.get("model_attempt_trace_preflight") if isinstance(ctx.get("model_attempt_trace_preflight"), list) else []
+        trace.extend(attempts[:30])
+        ctx["model_attempt_trace_preflight"] = trace[:100]
+        _save_discovery_context(job_id, ctx)
+        _record_stage_metric(job_id, "stage_llm_discovery_fanout", started, settings.stage_llm_discovery_timeout_seconds)
+        return {"ok": True}
+    except Exception as exc:
+        _fail_discovery_job(job_id, f"stage_llm_discovery_fanout_failed:{exc}")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.workspace_tasks.stage_registry_identity_expand")
+def stage_registry_identity_expand(_previous: Optional[dict[str, Any]], job_id: int):
+    started = time.perf_counter()
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise RuntimeError("Job not found")
+        job.progress = 0.45
+        job.progress_message = "Stage 3/5: registry expansion preflight"
+        db.commit()
+        _record_stage_metric(job_id, "stage_registry_identity_expand", started, settings.stage_registry_timeout_seconds)
+        return {"ok": True}
+    except Exception as exc:
+        _fail_discovery_job(job_id, f"stage_registry_identity_expand_failed:{exc}")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.workspace_tasks.stage_first_party_enrichment_parallel")
+def stage_first_party_enrichment_parallel(_previous: Optional[dict[str, Any]], job_id: int):
+    started = time.perf_counter()
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise RuntimeError("Job not found")
+        job.progress = 0.55
+        job.progress_message = "Stage 4/5: first-party enrichment preflight"
+        db.commit()
+        _record_stage_metric(job_id, "stage_first_party_enrichment_parallel", started, settings.stage_enrichment_timeout_seconds)
+        return {"ok": True}
+    except Exception as exc:
+        _fail_discovery_job(job_id, f"stage_first_party_enrichment_parallel_failed:{exc}")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.workspace_tasks.stage_scoring_claims_persist")
+def stage_scoring_claims_persist(_previous: Optional[dict[str, Any]], job_id: int):
+    started = time.perf_counter()
+    try:
+        result = _run_discovery_universe_monolith(job_id)
+        _record_stage_metric(job_id, "stage_scoring_claims_persist", started, settings.stage_scoring_timeout_seconds)
+        return result
+    except Exception as exc:
+        _fail_discovery_job(job_id, f"stage_scoring_claims_persist_failed:{exc}")
+        raise
+
+
+@celery_app.task(name="app.workers.workspace_tasks.finalize_discovery_pipeline")
+def finalize_discovery_pipeline(_previous: Optional[dict[str, Any]], job_id: int):
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return {"error": "Job not found"}
+        ctx = _load_discovery_context(job_id)
+        if job.state == JobState.completed and isinstance(job.result_json, dict):
+            stage_time_ms = ctx.get("stage_time_ms") if isinstance(ctx.get("stage_time_ms"), dict) else {}
+            timeout_events = ctx.get("timeout_events") if isinstance(ctx.get("timeout_events"), list) else []
+            preflight_trace = (
+                ctx.get("model_attempt_trace_preflight")
+                if isinstance(ctx.get("model_attempt_trace_preflight"), list)
+                else []
+            )
+            result = dict(job.result_json)
+            merged_stage = result.get("stage_time_ms") if isinstance(result.get("stage_time_ms"), dict) else {}
+            merged_stage.update({k: int(v) for k, v in stage_time_ms.items() if str(k).strip()})
+            result["stage_time_ms"] = merged_stage
+            merged_timeout = result.get("timeout_events") if isinstance(result.get("timeout_events"), list) else []
+            if timeout_events:
+                merged_timeout.extend(timeout_events)
+            result["timeout_events"] = merged_timeout[:200]
+            if preflight_trace:
+                existing_trace = result.get("model_attempt_trace") if isinstance(result.get("model_attempt_trace"), list) else []
+                result["model_attempt_trace"] = (preflight_trace + existing_trace)[:250]
+            job.result_json = result
+            db.commit()
+        elif job.state == JobState.running:
+            job.state = JobState.failed
+            job.error_message = "Pipeline ended without terminal monolith outcome"
+            job.finished_at = datetime.utcnow()
+            db.commit()
+        return {"job_id": job_id, "status": job.state.value}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.workspace_tasks.fail_discovery_pipeline")
+def fail_discovery_pipeline(job_id: int, reason: str):
+    _fail_discovery_job(job_id, reason)
+    return {"job_id": job_id, "status": "failed", "reason": reason}
+
+
+@celery_app.task(name="app.workers.workspace_tasks.discovery_watchdog")
+def discovery_watchdog(job_id: int):
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return {"error": "Job not found"}
+        if job.state in {JobState.completed, JobState.failed}:
+            return {"job_id": job_id, "status": job.state.value}
+        fail_discovery_pipeline.delay(job_id, "pipeline_watchdog_timeout")
+        return {"job_id": job_id, "status": "failed_by_watchdog"}
     finally:
         db.close()
 
@@ -4544,6 +6404,9 @@ def run_enrich_vendor(job_id: int):
         # Get taxonomy
         taxonomy = db.query(BrickTaxonomy).filter(BrickTaxonomy.workspace_id == job.workspace_id).first()
         taxonomy_bricks = taxonomy.bricks if taxonomy else []
+        workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
+        effective_policy = normalize_policy((workspace.decision_policy_json if workspace else None) or DEFAULT_EVIDENCE_POLICY)
+        candidate_domain = normalize_domain(vendor.website)
         
         try:
             gemini = GeminiWorkspaceClient()
@@ -4605,24 +6468,51 @@ def run_enrich_vendor(job_id: int):
                 for url in module.get("evidence_urls", []):
                     if not is_trusted_source_url(url):
                         continue
+                    source_type = _source_type_for_url(url, candidate_domain)
+                    source_tier = infer_source_tier(url, source_type, candidate_domain)
+                    source_kind = infer_source_kind(url, source_type, candidate_domain)
+                    claim_group = claim_group_for_dimension("product", "module")
+                    ttl_days, valid_through = valid_through_from_claim_group(
+                        claim_group,
+                        policy=effective_policy,
+                    )
                     evidence = WorkspaceEvidence(
                         workspace_id=job.workspace_id,
                         vendor_id=vendor.id,
                         source_url=url,
                         excerpt_text=module.get("description", ""),
                         content_type="web",
-                        brick_ids=module.get("brick_id", "")
+                        brick_ids=module.get("brick_id", ""),
+                        source_tier=source_tier,
+                        source_kind=source_kind,
+                        freshness_ttl_days=ttl_days,
+                        valid_through=valid_through,
+                        asserted_by="run_enrich_vendor",
                     )
                     db.add(evidence)
             
             for customer in dossier_json.get("customers", []):
                 if customer.get("evidence_url") and is_trusted_source_url(customer.get("evidence_url")):
+                    source_url = customer.get("evidence_url", "")
+                    source_type = _source_type_for_url(source_url, candidate_domain)
+                    source_tier = infer_source_tier(source_url, source_type, candidate_domain)
+                    source_kind = infer_source_kind(source_url, source_type, candidate_domain)
+                    claim_group = claim_group_for_dimension("customer", "customer")
+                    ttl_days, valid_through = valid_through_from_claim_group(
+                        claim_group,
+                        policy=effective_policy,
+                    )
                     evidence = WorkspaceEvidence(
                         workspace_id=job.workspace_id,
                         vendor_id=vendor.id,
-                        source_url=customer.get("evidence_url", ""),
+                        source_url=source_url,
                         excerpt_text=f"Customer: {customer.get('name', '')}",
-                        content_type="case_study"
+                        content_type="case_study",
+                        source_tier=source_tier,
+                        source_kind=source_kind,
+                        freshness_ttl_days=ttl_days,
+                        valid_through=valid_through,
+                        asserted_by="run_enrich_vendor",
                     )
                     db.add(evidence)
             
@@ -4660,6 +6550,8 @@ def _extract_reference_tokens(profile: CompanyProfile | None) -> set[str]:
         urls.append(profile.buyer_company_url)
     if profile.reference_vendor_urls:
         urls.extend(profile.reference_vendor_urls)
+    if profile.reference_evidence_urls:
+        urls.extend(profile.reference_evidence_urls)
 
     for url in urls:
         domain = normalize_domain(url)
@@ -4697,6 +6589,7 @@ def generate_static_report(job_id: int, filters: dict | None = None):
             job.finished_at = datetime.utcnow()
             db.commit()
             return {"error": "Missing workspace or taxonomy"}
+        effective_policy = normalize_policy(workspace.decision_policy_json or DEFAULT_EVIDENCE_POLICY)
 
         priority_bricks = set(taxonomy.priority_brick_ids or [])
         if not priority_bricks:
@@ -4729,6 +6622,16 @@ def generate_static_report(job_id: int, filters: dict | None = None):
             .order_by(Vendor.created_at.asc())
             .all()
         )
+        screenings = (
+            db.query(VendorScreening)
+            .filter(VendorScreening.workspace_id == workspace.id)
+            .order_by(VendorScreening.created_at.desc())
+            .all()
+        )
+        latest_screening_by_vendor: dict[int, VendorScreening] = {}
+        for screening in screenings:
+            if screening.vendor_id and screening.vendor_id not in latest_screening_by_vendor:
+                latest_screening_by_vendor[screening.vendor_id] = screening
 
         normalized_filters = {
             "size_bucket_default": "sme_in_range",
@@ -4794,6 +6697,11 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                         source_title="Discovery filing citation",
                         excerpt_text=excerpt_text[:2000],
                         content_type="registry",
+                        source_tier="tier0_registry",
+                        source_kind="registry",
+                        freshness_ttl_days=365,
+                        valid_through=datetime.utcnow() + timedelta(days=365),
+                        asserted_by="generate_static_report",
                     )
                 )
                 filing_claims_created = True
@@ -4916,6 +6824,31 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                     "vendor_id": vendor.id,
                     "compete_score": lens["compete_score"],
                     "complement_score": lens["complement_score"],
+                    "decision_classification": (
+                        latest_screening_by_vendor[vendor.id].decision_classification
+                        if vendor.id in latest_screening_by_vendor
+                        else "insufficient_evidence"
+                    ),
+                    "reason_codes_json": (
+                        {
+                            "positive": latest_screening_by_vendor[vendor.id].positive_reason_codes_json or [],
+                            "caution": latest_screening_by_vendor[vendor.id].caution_reason_codes_json or [],
+                            "reject": latest_screening_by_vendor[vendor.id].reject_reason_codes_json or [],
+                        }
+                        if vendor.id in latest_screening_by_vendor
+                        else {"positive": [], "caution": [], "reject": []}
+                    ),
+                    "evidence_summary_json": {
+                        "evidence_count": len(vendor_evidence),
+                        "freshness_ratio": round(
+                            len([row for row in vendor_evidence if is_fresh(row.valid_through)]) / max(1, len(vendor_evidence)),
+                            4,
+                        ),
+                        "tier_counts": {
+                            tier: len([row for row in vendor_evidence if str(row.source_tier or "") == tier])
+                            for tier in ["tier0_registry", "tier1_vendor", "tier2_partner_customer", "tier3_third_party", "tier4_discovery"]
+                        },
+                    },
                     "lens_breakdown_json": {
                         **lens,
                         "size_bucket": size_bucket,
@@ -4959,15 +6892,18 @@ def generate_static_report(job_id: int, filters: dict | None = None):
         db.flush()
 
         for payload in item_payloads:
-            db.add(
-                ReportSnapshotItem(
-                    report_id=snapshot.id,
-                    vendor_id=payload["vendor_id"],
-                    compete_score=payload["compete_score"],
-                    complement_score=payload["complement_score"],
-                    lens_breakdown_json=payload["lens_breakdown_json"],
+                db.add(
+                    ReportSnapshotItem(
+                        report_id=snapshot.id,
+                        vendor_id=payload["vendor_id"],
+                        compete_score=payload["compete_score"],
+                        complement_score=payload["complement_score"],
+                        decision_classification=payload.get("decision_classification"),
+                        reason_codes_json=payload.get("reason_codes_json") or {},
+                        evidence_summary_json=payload.get("evidence_summary_json") or {},
+                        lens_breakdown_json=payload["lens_breakdown_json"],
+                    )
                 )
-            )
 
         job.state = JobState.completed
         job.progress = 1.0

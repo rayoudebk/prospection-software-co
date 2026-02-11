@@ -14,6 +14,9 @@ from app.models.vendor import Vendor, VendorDossier, VendorStatus
 from app.models.job import Job, JobType, JobState, JobProvider
 from app.models.workspace_evidence import WorkspaceEvidence
 from app.models.report import ReportSnapshot, ReportSnapshotItem, VendorFact
+from app.models.claims_graph import ClaimGraphNode, ClaimGraphEdge, ClaimGraphEdgeEvidence
+from app.models.workspace_feedback import WorkspaceFeedbackEvent
+from app.models.evaluation import EvaluationRun, EvaluationSampleResult
 from app.models.intelligence import (
     CandidateEntity,
     CandidateEntityAlias,
@@ -24,6 +27,14 @@ from app.models.intelligence import (
     VendorScreening,
     VendorClaim,
 )
+from app.services.decision_catalog import get_catalog_payload, reason_text
+from app.services.evidence_policy import (
+    DEFAULT_EVIDENCE_POLICY,
+    claim_group_for_dimension,
+    is_fresh,
+    normalize_policy,
+)
+from app.services.decision_engine import evaluate_decision
 from app.services.reporting import (
     RELIABLE_FILINGS_COUNTRIES,
     build_adjacency_map,
@@ -31,6 +42,7 @@ from app.services.reporting import (
     compute_lens_scores,
     estimate_size_from_signals,
     extract_customers_and_integrations,
+    normalize_domain,
     is_trusted_source_url,
     modules_with_evidence,
     normalize_country,
@@ -38,6 +50,14 @@ from app.services.reporting import (
 )
 
 router = APIRouter()
+
+DIRECTORY_HOST_TOKENS = (
+    "thewealthmosaic.com",
+    "thewealthmosaic.co.uk",
+    "crunchbase.com",
+    "g2.com",
+    "capterra.com",
+)
 
 
 # ============================================================================
@@ -76,6 +96,7 @@ class GeoScope(BaseModel):
 class CompanyProfileUpdate(BaseModel):
     buyer_company_url: Optional[str] = None
     reference_vendor_urls: Optional[List[str]] = None
+    reference_evidence_urls: Optional[List[str]] = None
     geo_scope: Optional[GeoScope] = None
 
 
@@ -85,6 +106,7 @@ class CompanyProfileResponse(BaseModel):
     buyer_company_url: Optional[str]
     buyer_context_summary: Optional[str]
     reference_vendor_urls: List[str]
+    reference_evidence_urls: List[str]
     reference_summaries: Dict[str, str]
     geo_scope: Dict[str, Any]
     context_pack_markdown: Optional[str]
@@ -143,6 +165,9 @@ class VendorResponse(BaseModel):
     workspace_id: int
     name: str
     website: Optional[str]
+    official_website_url: Optional[str] = None
+    discovery_url: Optional[str] = None
+    entity_type: Optional[str] = None
     hq_country: Optional[str]
     operating_countries: List[str]
     tags_vertical: List[str]
@@ -152,6 +177,18 @@ class VendorResponse(BaseModel):
     is_manual: bool
     created_at: datetime
     evidence_count: int = 0
+    decision_classification: Optional[str] = None
+    evidence_sufficiency: Optional[str] = None
+    reason_codes: Dict[str, List[str]] = Field(default_factory=lambda: {"positive": [], "caution": [], "reject": []})
+    rationale_summary: Optional[str] = None
+    top_claim: Dict[str, Any] = Field(default_factory=dict)
+    citation_summary_v1: Optional["CitationSummaryV1"] = None
+    registry_neighbors_with_first_party_website_count: int = 0
+    registry_neighbors_dropped_missing_official_website_count: int = 0
+    registry_origin_screening_counts: Dict[str, int] = Field(default_factory=dict)
+    first_party_hint_urls_used_count: int = 0
+    first_party_hint_pages_crawled_total: int = 0
+    unresolved_contradictions_count: int = 0
 
     class Config:
         from_attributes = True
@@ -230,6 +267,28 @@ class SourcePill(BaseModel):
     captured_at: Optional[str] = None
 
 
+class CitationSentence(BaseModel):
+    id: str
+    text: str
+    citation_pill_ids: List[str] = Field(default_factory=list)
+
+
+class CitationSourcePill(BaseModel):
+    pill_id: str
+    label: str
+    url: str
+    source_tier: str
+    source_kind: str
+    captured_at: Optional[str] = None
+    claim_group: str
+
+
+class CitationSummaryV1(BaseModel):
+    version: str
+    sentences: List[CitationSentence] = Field(default_factory=list)
+    source_pills: List[CitationSourcePill] = Field(default_factory=list)
+
+
 class SourcedValue(BaseModel):
     value: str
     unit: Optional[str] = None
@@ -263,6 +322,36 @@ class ReportCard(BaseModel):
     source_pills: List[SourcePill] = Field(default_factory=list)
     coverage_note: Optional[str] = None
     next_validation_questions: List[str] = Field(default_factory=list)
+    decision_classification: Optional[str] = None
+    reason_highlights: List[str] = Field(default_factory=list)
+    evidence_quality_summary: Dict[str, Any] = Field(default_factory=dict)
+    known_unknowns: List[str] = Field(default_factory=list)
+
+
+class UniverseTopCandidateResponse(BaseModel):
+    vendor_id: Optional[int] = None
+    candidate_entity_id: Optional[int] = None
+    company_name: str
+    official_website_url: Optional[str] = None
+    discovery_sources: List[str] = Field(default_factory=list)
+    entity_type: str = "company"
+    decision_classification: str
+    evidence_sufficiency: str
+    reason_codes: Dict[str, List[str]] = Field(default_factory=lambda: {"positive": [], "caution": [], "reject": []})
+    rationale_summary: Optional[str] = None
+    top_claim: Dict[str, Any] = Field(default_factory=dict)
+    citation_summary_v1: Optional[CitationSummaryV1] = None
+    registry_neighbors_with_first_party_website_count: int = 0
+    registry_neighbors_dropped_missing_official_website_count: int = 0
+    registry_origin_screening_counts: Dict[str, int] = Field(default_factory=dict)
+    first_party_hint_urls_used_count: int = 0
+    first_party_hint_pages_crawled_total: int = 0
+    missing_claim_groups: List[str] = Field(default_factory=list)
+    unresolved_contradictions_count: int = 0
+    ranking_eligible: bool = False
+    run_quality_tier: str = "degraded"
+    quality_gate_passed: bool = False
+    degraded_reasons: List[str] = Field(default_factory=list)
 
 
 class ReportSnapshotResponse(BaseModel):
@@ -294,6 +383,84 @@ class ReportLensResponse(BaseModel):
     items: List[ReportLensItem]
     total_count: int
     counts_by_bucket: Dict[str, int] = Field(default_factory=dict)
+
+
+class VendorDecisionResponse(BaseModel):
+    vendor_id: int
+    workspace_id: int
+    classification: str
+    evidence_sufficiency: str
+    positive_reason_codes: List[str] = Field(default_factory=list)
+    caution_reason_codes: List[str] = Field(default_factory=list)
+    reject_reason_codes: List[str] = Field(default_factory=list)
+    missing_claim_groups: List[str] = Field(default_factory=list)
+    unresolved_contradictions_count: int = 0
+    rationale_summary: Optional[str] = None
+    rationale_markdown: Optional[str] = None
+    decision_engine_version: Optional[str] = None
+    gating_passed: bool = False
+    generated_at: str
+
+
+class EvidencePolicyUpdate(BaseModel):
+    policy: Dict[str, Any]
+
+
+class MonitoringRunRequest(BaseModel):
+    max_vendors: int = 80
+    stale_only: bool = False
+    classifications: List[str] = Field(
+        default_factory=lambda: ["borderline_watchlist", "insufficient_evidence"]
+    )
+
+
+class WorkspaceFeedbackCreate(BaseModel):
+    vendor_id: Optional[int] = None
+    screening_id: Optional[int] = None
+    feedback_type: str = "classification_override"
+    previous_classification: Optional[str] = None
+    new_classification: Optional[str] = None
+    reason_codes: List[str] = Field(default_factory=list)
+    comment: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_by: Optional[str] = None
+
+
+class WorkspaceFeedbackResponse(BaseModel):
+    id: int
+    workspace_id: int
+    vendor_id: Optional[int]
+    screening_id: Optional[int]
+    feedback_type: str
+    previous_classification: Optional[str]
+    new_classification: Optional[str]
+    reason_codes: List[str] = Field(default_factory=list)
+    comment: Optional[str]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_by: Optional[str]
+    created_at: datetime
+
+
+class ClaimsGraphSummaryResponse(BaseModel):
+    workspace_id: int
+    nodes_count: int
+    edges_count: int
+    edge_evidence_count: int
+    relation_type_distribution: Dict[str, int] = Field(default_factory=dict)
+    node_type_distribution: Dict[str, int] = Field(default_factory=dict)
+    generated_at: str
+
+
+class EvaluationReplayRequest(BaseModel):
+    model_version: str = "decision_engine_v1"
+    samples: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class EvaluationReplayResponse(BaseModel):
+    workspace_id: int
+    run_id: int
+    metrics: Dict[str, Any]
+    created_at: str
 
 
 # ============================================================================
@@ -332,6 +499,137 @@ def _safe_domain(url: Optional[str]) -> Optional[str]:
         return host or None
     except Exception:
         return None
+
+
+def _normalize_http_url(url: Optional[str]) -> Optional[str]:
+    raw = str(url or "").strip()
+    if not raw:
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        has_scheme = "://" in raw
+        normalized = raw if has_scheme else f"https://{raw}"
+        parsed = urlparse(normalized)
+        scheme = parsed.scheme.lower()
+        if scheme not in {"http", "https"}:
+            return None
+        if not parsed.netloc:
+            return None
+        if parsed.username or parsed.password:
+            return None
+        query = f"?{parsed.query}" if parsed.query else ""
+        path = parsed.path or ""
+        return f"{scheme}://{parsed.netloc}{path}{query}"
+    except Exception:
+        return None
+
+
+def _clean_url_list(
+    values: Optional[List[str]],
+    *,
+    max_items: int = 50,
+    require_path: bool = False,
+) -> List[str]:
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        normalized = _normalize_http_url(value)
+        if not normalized:
+            continue
+        if require_path:
+            try:
+                from urllib.parse import urlparse
+
+                parsed = urlparse(normalized)
+                path = str(parsed.path or "").strip()
+                if not path or path == "/":
+                    continue
+            except Exception:
+                continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(normalized)
+        if len(cleaned) >= max_items:
+            break
+    return cleaned
+
+
+def _citation_summary_from_meta(screening_meta: Dict[str, Any]) -> Optional[CitationSummaryV1]:
+    payload = screening_meta.get("citation_summary_v1")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        summary = CitationSummaryV1.model_validate(payload)
+    except Exception:
+        return None
+    if summary.version != "v1":
+        return None
+    if not summary.sentences or not summary.source_pills:
+        return None
+    return summary
+
+
+def _screening_diagnostics_from_meta(screening_meta: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "registry_neighbors_with_first_party_website_count": int(
+            screening_meta.get("registry_neighbors_with_first_party_website_count", 0)
+        ),
+        "registry_neighbors_dropped_missing_official_website_count": int(
+            screening_meta.get("registry_neighbors_dropped_missing_official_website_count", 0)
+        ),
+        "registry_origin_screening_counts": (
+            screening_meta.get("registry_origin_screening_counts")
+            if isinstance(screening_meta.get("registry_origin_screening_counts"), dict)
+            else {}
+        ),
+        "first_party_hint_urls_used_count": int(screening_meta.get("first_party_hint_urls_used_count", 0)),
+        "first_party_hint_pages_crawled_total": int(screening_meta.get("first_party_hint_pages_crawled_total", 0)),
+    }
+
+
+def _quality_payload_from_job_result(result_json: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    payload = result_json if isinstance(result_json, dict) else {}
+    run_quality_tier = str(payload.get("run_quality_tier") or "").strip().lower()
+    if run_quality_tier not in {"high_quality", "degraded"}:
+        fallback_mode = bool(payload.get("fallback_mode"))
+        run_quality_tier = "degraded" if fallback_mode else "high_quality"
+    degraded_reasons = [
+        str(item).strip()
+        for item in (payload.get("degraded_reasons") or [])
+        if str(item).strip()
+    ]
+    quality_gate_passed = bool(payload.get("quality_gate_passed"))
+    if "quality_gate_passed" not in payload:
+        quality_gate_passed = run_quality_tier == "high_quality"
+    return {
+        "run_quality_tier": run_quality_tier,
+        "quality_gate_passed": quality_gate_passed,
+        "degraded_reasons": degraded_reasons,
+        "model_attempt_trace": payload.get("model_attempt_trace") if isinstance(payload.get("model_attempt_trace"), list) else [],
+        "stage_time_ms": payload.get("stage_time_ms") if isinstance(payload.get("stage_time_ms"), dict) else {},
+        "timeout_events": payload.get("timeout_events") if isinstance(payload.get("timeout_events"), list) else [],
+        "screening_run_id": str(payload.get("screening_run_id") or "").strip() or None,
+    }
+
+
+async def _latest_completed_discovery_job(
+    db: AsyncSession,
+    workspace_id: int,
+) -> Optional[Job]:
+    result = await db.execute(
+        select(Job)
+        .where(
+            Job.workspace_id == workspace_id,
+            Job.job_type == JobType.discovery_universe,
+            Job.state == JobState.completed,
+        )
+        .order_by(Job.finished_at.desc(), Job.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 def _source_from_evidence(evidence: Optional[WorkspaceEvidence]) -> Optional[SourcePill]:
@@ -436,6 +734,104 @@ def _dedupe_source_pills(pills: List[SourcePill]) -> List[SourcePill]:
     return deduped
 
 
+def _is_directory_host_url(url: Optional[str]) -> bool:
+    domain = normalize_domain(url)
+    if not domain:
+        return False
+    return any(domain == token or domain.endswith(f".{token}") for token in DIRECTORY_HOST_TOKENS)
+
+
+def _reason_codes_payload(screening: Optional[VendorScreening]) -> Dict[str, List[str]]:
+    if not screening:
+        return {"positive": [], "caution": [], "reject": []}
+    return {
+        "positive": [str(code) for code in (screening.positive_reason_codes_json or []) if str(code)],
+        "caution": [str(code) for code in (screening.caution_reason_codes_json or []) if str(code)],
+        "reject": [str(code) for code in (screening.reject_reason_codes_json or []) if str(code)],
+    }
+
+
+async def _latest_screening_for_vendor(
+    db: AsyncSession,
+    workspace_id: int,
+    vendor_id: int,
+) -> Optional[VendorScreening]:
+    screening_result = await db.execute(
+        select(VendorScreening)
+        .where(
+            VendorScreening.workspace_id == workspace_id,
+            VendorScreening.vendor_id == vendor_id,
+        )
+        .order_by(VendorScreening.created_at.desc())
+        .limit(1)
+    )
+    return screening_result.scalar_one_or_none()
+
+
+async def _vendor_response_from_row(db: AsyncSession, vendor: Vendor) -> VendorResponse:
+    evidence_count_result = await db.execute(
+        select(func.count(WorkspaceEvidence.id)).where(WorkspaceEvidence.vendor_id == vendor.id)
+    )
+    evidence_count = evidence_count_result.scalar() or 0
+    screening = await _latest_screening_for_vendor(db, vendor.workspace_id, vendor.id)
+    screening_meta = screening.screening_meta_json if screening and isinstance(screening.screening_meta_json, dict) else {}
+    citation_summary_v1 = _citation_summary_from_meta(screening_meta)
+    diagnostics = _screening_diagnostics_from_meta(screening_meta)
+    return VendorResponse(
+        id=vendor.id,
+        workspace_id=vendor.workspace_id,
+        name=vendor.name,
+        website=vendor.website,
+        official_website_url=(
+            screening.candidate_official_website
+            if screening and screening.candidate_official_website
+            else vendor.website
+        ),
+        discovery_url=screening.candidate_discovery_url if screening else None,
+        entity_type=str(screening_meta.get("entity_type") or "company") if screening else "company",
+        hq_country=vendor.hq_country,
+        operating_countries=vendor.operating_countries or [],
+        tags_vertical=vendor.tags_vertical or [],
+        tags_custom=vendor.tags_custom or [],
+        status=vendor.status.value,
+        why_relevant=vendor.why_relevant or [],
+        is_manual=vendor.is_manual,
+        created_at=vendor.created_at,
+        evidence_count=evidence_count,
+        decision_classification=screening.decision_classification if screening else None,
+        evidence_sufficiency=screening.evidence_sufficiency if screening else None,
+        reason_codes=_reason_codes_payload(screening),
+        rationale_summary=screening.rationale_summary if screening else None,
+        top_claim=screening.top_claim_json if screening and isinstance(screening.top_claim_json, dict) else {},
+        citation_summary_v1=citation_summary_v1,
+        registry_neighbors_with_first_party_website_count=int(diagnostics["registry_neighbors_with_first_party_website_count"]),
+        registry_neighbors_dropped_missing_official_website_count=int(
+            diagnostics["registry_neighbors_dropped_missing_official_website_count"]
+        ),
+        registry_origin_screening_counts=diagnostics["registry_origin_screening_counts"],
+        first_party_hint_urls_used_count=int(diagnostics["first_party_hint_urls_used_count"]),
+        first_party_hint_pages_crawled_total=int(diagnostics["first_party_hint_pages_crawled_total"]),
+        unresolved_contradictions_count=screening.unresolved_contradictions_count if screening else 0,
+    )
+
+
+def _to_workspace_feedback_response(event: WorkspaceFeedbackEvent) -> WorkspaceFeedbackResponse:
+    return WorkspaceFeedbackResponse(
+        id=event.id,
+        workspace_id=event.workspace_id,
+        vendor_id=event.vendor_id,
+        screening_id=event.screening_id,
+        feedback_type=event.feedback_type,
+        previous_classification=event.previous_classification,
+        new_classification=event.new_classification,
+        reason_codes=[str(code) for code in (event.reason_codes_json or []) if str(code)],
+        comment=event.comment,
+        metadata=event.metadata_json or {},
+        created_by=event.created_by,
+        created_at=event.created_at,
+    )
+
+
 # ============================================================================
 # Workspace CRUD
 # ============================================================================
@@ -448,7 +844,8 @@ async def create_workspace(
     """Create a new workspace with default taxonomy."""
     workspace = Workspace(
         name=data.name,
-        region_scope=data.region_scope
+        region_scope=data.region_scope,
+        decision_policy_json=normalize_policy(DEFAULT_EVIDENCE_POLICY),
     )
     db.add(workspace)
     await db.flush()
@@ -627,6 +1024,7 @@ async def get_context_pack(workspace_id: int, db: AsyncSession = Depends(get_db)
         buyer_company_url=profile.buyer_company_url,
         buyer_context_summary=profile.buyer_context_summary,
         reference_vendor_urls=profile.reference_vendor_urls or [],
+        reference_evidence_urls=profile.reference_evidence_urls or [],
         reference_summaries=profile.reference_summaries or {},
         geo_scope=profile.geo_scope or {},
         context_pack_markdown=profile.context_pack_markdown,
@@ -669,6 +1067,7 @@ async def export_context_pack(
         "buyer_company_url": profile.buyer_company_url,
         "buyer_context_summary": profile.buyer_context_summary,
         "reference_vendor_urls": profile.reference_vendor_urls or [],
+        "reference_evidence_urls": profile.reference_evidence_urls or [],
         "reference_summaries": profile.reference_summaries or {},
         "geo_scope": profile.geo_scope or {},
         "product_pages_found": profile.product_pages_found or 0,
@@ -697,7 +1096,9 @@ async def update_context_pack(
     if data.buyer_company_url is not None:
         profile.buyer_company_url = data.buyer_company_url
     if data.reference_vendor_urls is not None:
-        profile.reference_vendor_urls = data.reference_vendor_urls
+        profile.reference_vendor_urls = _clean_url_list(data.reference_vendor_urls, max_items=10)
+    if data.reference_evidence_urls is not None:
+        profile.reference_evidence_urls = _clean_url_list(data.reference_evidence_urls, max_items=50)
     if data.geo_scope is not None:
         profile.geo_scope = data.geo_scope.model_dump()
     
@@ -883,24 +1284,37 @@ async def get_discovery_diagnostics(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    screenings_result = await db.execute(
+    latest_discovery_job = await _latest_completed_discovery_job(db, workspace_id)
+    latest_discovery_job_result: Dict[str, Any] = (
+        latest_discovery_job.result_json
+        if latest_discovery_job and isinstance(latest_discovery_job.result_json, dict)
+        else {}
+    )
+    quality_payload = _quality_payload_from_job_result(latest_discovery_job_result)
+    latest_run_id = quality_payload.get("screening_run_id")
+
+    screenings_query = (
         select(VendorScreening)
         .where(VendorScreening.workspace_id == workspace_id)
         .order_by(VendorScreening.created_at.desc())
         .limit(1000)
     )
+    screenings_result = await db.execute(screenings_query)
     screenings = screenings_result.scalars().all()
-
-    latest_run_id = None
-    if screenings:
-        latest_run_id = (screenings[0].screening_meta_json or {}).get("screening_run_id")
 
     if latest_run_id:
         screenings = [
-            screening
-            for screening in screenings
+            screening for screening in screenings
             if (screening.screening_meta_json or {}).get("screening_run_id") == latest_run_id
         ]
+    elif screenings:
+        fallback_run_id = (screenings[0].screening_meta_json or {}).get("screening_run_id")
+        if fallback_run_id:
+            latest_run_id = fallback_run_id
+            screenings = [
+                screening for screening in screenings
+                if (screening.screening_meta_json or {}).get("screening_run_id") == fallback_run_id
+            ]
 
     source_runs_result = await db.execute(
         select(ComparatorSourceRun)
@@ -922,20 +1336,6 @@ async def get_discovery_diagnostics(
         }
         for run in source_runs
     ]
-
-    latest_discovery_job_result: Dict[str, Any] = {}
-    discovery_job_result = await db.execute(
-        select(Job)
-        .where(
-            Job.workspace_id == workspace_id,
-            Job.job_type == JobType.discovery_universe,
-        )
-        .order_by(Job.created_at.desc())
-        .limit(1)
-    )
-    latest_discovery_job = discovery_job_result.scalar_one_or_none()
-    if latest_discovery_job and isinstance(latest_discovery_job.result_json, dict):
-        latest_discovery_job_result = latest_discovery_job.result_json
 
     registry_logs: List[RegistryQueryLog] = []
     if latest_run_id:
@@ -1000,6 +1400,36 @@ async def get_discovery_diagnostics(
     kept_count = len([row for row in screenings if row.screening_status == "kept"])
     review_count = len([row for row in screenings if row.screening_status == "review"])
     rejected_count = len([row for row in screenings if row.screening_status == "rejected"])
+    ranking_eligible_count = len([row for row in screenings if bool(row.ranking_eligible)])
+    directory_only_count = len(
+        [
+            row for row in screenings
+            if not str(row.candidate_official_website or "").strip()
+            or _is_directory_host_url(row.candidate_official_website)
+        ]
+    )
+    solution_entity_count = len(
+        [
+            row for row in screenings
+            if str(
+                ((row.screening_meta_json or {}).get("entity_type") if isinstance(row.screening_meta_json, dict) else "")
+                or ""
+            ).strip().lower() == "solution"
+        ]
+    )
+    official_website_resolution_rate = round(
+        (
+            len(
+                [
+                    row for row in screenings
+                    if str(row.candidate_official_website or "").strip()
+                    and not _is_directory_host_url(row.candidate_official_website)
+                ]
+            )
+            / max(1, len(screenings))
+        ),
+        4,
+    )
 
     reject_reason_counts: Dict[str, int] = {}
     for screening in screenings:
@@ -1069,6 +1499,16 @@ async def get_discovery_diagnostics(
             "registry_neighbors_kept_count": int(
                 latest_discovery_job_result.get("registry_neighbors_kept_count", 0)
             ),
+            "registry_neighbors_with_first_party_website_count": int(
+                latest_discovery_job_result.get("registry_neighbors_with_first_party_website_count", 0)
+            ),
+            "registry_neighbors_dropped_missing_official_website_count": int(
+                latest_discovery_job_result.get("registry_neighbors_dropped_missing_official_website_count", 0)
+            ),
+            "registry_origin_screening_counts": latest_discovery_job_result.get(
+                "registry_origin_screening_counts",
+                {},
+            ),
             "registry_queries_by_country": latest_discovery_job_result.get("registry_queries_by_country", registry_queries_by_country),
             "registry_raw_hits_by_country": latest_discovery_job_result.get("registry_raw_hits_by_country", registry_raw_hits_by_country),
             "registry_neighbors_kept_pre_dedupe": int(
@@ -1105,10 +1545,32 @@ async def get_discovery_diagnostics(
             "first_party_crawl_fallback_count": int(
                 latest_discovery_job_result.get("first_party_crawl_fallback_count", 0)
             ),
+            "first_party_hint_urls_used_count": int(
+                latest_discovery_job_result.get("first_party_hint_urls_used_count", 0)
+            ),
+            "first_party_hint_pages_crawled_total": int(
+                latest_discovery_job_result.get("first_party_hint_pages_crawled_total", 0)
+            ),
         },
         "origin_mix_distribution": latest_discovery_job_result.get("origin_mix_distribution", origin_mix_distribution),
         "dedupe_quality_metrics": latest_discovery_job_result.get("dedupe_quality_metrics", {}),
         "registry_expansion_yield": latest_discovery_job_result.get("registry_expansion_yield", {}),
+        "ranking_eligibility": {
+            "ranking_eligible_count": ranking_eligible_count,
+            "directory_only_count": directory_only_count,
+            "solution_entity_count": solution_entity_count,
+            "official_website_resolution_rate": official_website_resolution_rate,
+        },
+        "ranking_eligible_count": ranking_eligible_count,
+        "directory_only_count": directory_only_count,
+        "solution_entity_count": solution_entity_count,
+        "official_website_resolution_rate": official_website_resolution_rate,
+        "run_quality_tier": quality_payload["run_quality_tier"],
+        "quality_gate_passed": bool(quality_payload["quality_gate_passed"]),
+        "degraded_reasons": quality_payload["degraded_reasons"],
+        "model_attempt_trace": quality_payload["model_attempt_trace"],
+        "stage_time_ms": quality_payload["stage_time_ms"],
+        "timeout_events": quality_payload["timeout_events"],
         "generated_at": datetime.utcnow().isoformat(),
     }
 
@@ -1128,32 +1590,209 @@ async def list_vendors(
     query = query.order_by(Vendor.created_at.desc())
     result = await db.execute(query)
     vendors = result.scalars().all()
-    
-    responses = []
-    for v in vendors:
-        # Get evidence count
-        evidence_count_result = await db.execute(
-            select(func.count(WorkspaceEvidence.id)).where(WorkspaceEvidence.vendor_id == v.id)
-        )
-        evidence_count = evidence_count_result.scalar() or 0
-        
-        responses.append(VendorResponse(
-            id=v.id,
-            workspace_id=v.workspace_id,
-            name=v.name,
-            website=v.website,
-            hq_country=v.hq_country,
-            operating_countries=v.operating_countries or [],
-            tags_vertical=v.tags_vertical or [],
-            tags_custom=v.tags_custom or [],
-            status=v.status.value,
-            why_relevant=v.why_relevant or [],
-            is_manual=v.is_manual,
-            created_at=v.created_at,
-            evidence_count=evidence_count
-        ))
-    
+
+    responses: List[VendorResponse] = []
+    for row in vendors:
+        responses.append(await _vendor_response_from_row(db, row))
     return responses
+
+
+@router.get("/{workspace_id}/universe/top-candidates", response_model=List[UniverseTopCandidateResponse])
+async def list_top_candidates(
+    workspace_id: int,
+    limit: int = Query(25, ge=1, le=200),
+    allow_degraded: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    latest_discovery_job = await _latest_completed_discovery_job(db, workspace_id)
+    latest_discovery_job_result: Dict[str, Any] = (
+        latest_discovery_job.result_json
+        if latest_discovery_job and isinstance(latest_discovery_job.result_json, dict)
+        else {}
+    )
+    quality_payload = _quality_payload_from_job_result(latest_discovery_job_result)
+
+    screenings_result = await db.execute(
+        select(VendorScreening)
+        .where(VendorScreening.workspace_id == workspace_id)
+        .order_by(VendorScreening.created_at.desc())
+        .limit(4000)
+    )
+    screenings_all = screenings_result.scalars().all()
+    if not screenings_all:
+        return []
+
+    latest_run_id = quality_payload.get("screening_run_id")
+    if latest_run_id:
+        screenings = [
+            row for row in screenings_all
+            if (row.screening_meta_json or {}).get("screening_run_id") == latest_run_id
+        ]
+    else:
+        fallback_run_id = (screenings_all[0].screening_meta_json or {}).get("screening_run_id")
+        if fallback_run_id:
+            latest_run_id = fallback_run_id
+            screenings = [
+                row for row in screenings_all
+                if (row.screening_meta_json or {}).get("screening_run_id") == latest_run_id
+            ]
+        else:
+            screenings = screenings_all
+
+    if quality_payload["run_quality_tier"] == "degraded" and not allow_degraded:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "degraded_run_blocked",
+                "message": "Latest completed discovery run is degraded. Pass allow_degraded=true to inspect it.",
+                "screening_run_id": latest_run_id,
+                "run_quality_tier": quality_payload["run_quality_tier"],
+                "quality_gate_passed": bool(quality_payload["quality_gate_passed"]),
+                "degraded_reasons": quality_payload["degraded_reasons"],
+            },
+        )
+
+    candidates = [row for row in screenings if bool(row.ranking_eligible)]
+    if not candidates:
+        return []
+
+    fallback_diagnostics = {
+        "registry_neighbors_with_first_party_website_count": int(
+            latest_discovery_job_result.get("registry_neighbors_with_first_party_website_count", 0)
+        ),
+        "registry_neighbors_dropped_missing_official_website_count": int(
+            latest_discovery_job_result.get("registry_neighbors_dropped_missing_official_website_count", 0)
+        ),
+        "registry_origin_screening_counts": (
+            latest_discovery_job_result.get("registry_origin_screening_counts")
+            if isinstance(latest_discovery_job_result.get("registry_origin_screening_counts"), dict)
+            else {}
+        ),
+        "first_party_hint_urls_used_count": int(
+            latest_discovery_job_result.get("first_party_hint_urls_used_count", 0)
+        ),
+        "first_party_hint_pages_crawled_total": int(
+            latest_discovery_job_result.get("first_party_hint_pages_crawled_total", 0)
+        ),
+    }
+
+    vendor_ids = [row.vendor_id for row in candidates if row.vendor_id]
+    entity_ids = [row.candidate_entity_id for row in candidates if row.candidate_entity_id]
+
+    vendor_map: Dict[int, Vendor] = {}
+    if vendor_ids:
+        vendor_result = await db.execute(select(Vendor).where(Vendor.id.in_(vendor_ids)))
+        vendor_map = {row.id: row for row in vendor_result.scalars().all()}
+
+    entity_map: Dict[int, CandidateEntity] = {}
+    origins_by_entity: Dict[int, List[CandidateOriginEdge]] = {}
+    if entity_ids:
+        entity_result = await db.execute(select(CandidateEntity).where(CandidateEntity.id.in_(entity_ids)))
+        entities = entity_result.scalars().all()
+        entity_map = {row.id: row for row in entities}
+        origin_result = await db.execute(
+            select(CandidateOriginEdge).where(CandidateOriginEdge.entity_id.in_(entity_ids))
+        )
+        for origin in origin_result.scalars().all():
+            origins_by_entity.setdefault(origin.entity_id, []).append(origin)
+
+    class_rank = {
+        "good_target": 0,
+        "borderline_watchlist": 1,
+        "insufficient_evidence": 2,
+        "not_good_target": 3,
+    }
+    candidates.sort(
+        key=lambda row: (
+            class_rank.get(str(row.decision_classification or "insufficient_evidence"), 99),
+            -float(row.total_score or 0.0),
+            row.id,
+        )
+    )
+
+    output: List[UniverseTopCandidateResponse] = []
+    for screening in candidates[:limit]:
+        vendor = vendor_map.get(screening.vendor_id) if screening.vendor_id else None
+        entity = entity_map.get(screening.candidate_entity_id) if screening.candidate_entity_id else None
+        meta = screening.screening_meta_json if isinstance(screening.screening_meta_json, dict) else {}
+        diagnostics = _screening_diagnostics_from_meta(meta)
+        citation_summary_v1 = _citation_summary_from_meta(meta)
+        if (
+            diagnostics["registry_neighbors_with_first_party_website_count"] == 0
+            and diagnostics["registry_neighbors_dropped_missing_official_website_count"] == 0
+            and not diagnostics["registry_origin_screening_counts"]
+        ):
+            diagnostics = fallback_diagnostics
+        discovery_sources: List[str] = []
+        if screening.candidate_discovery_url:
+            discovery_sources.append(screening.candidate_discovery_url)
+        if entity:
+            for origin in origins_by_entity.get(entity.id, []):
+                if origin.origin_url:
+                    discovery_sources.append(origin.origin_url)
+        # Deduplicate while preserving order.
+        seen_sources: set[str] = set()
+        deduped_sources: List[str] = []
+        for source in discovery_sources:
+            key = str(source or "").strip()
+            if not key:
+                continue
+            lower = key.lower()
+            if lower in seen_sources:
+                continue
+            seen_sources.add(lower)
+            deduped_sources.append(key)
+
+        top_claim = screening.top_claim_json if isinstance(screening.top_claim_json, dict) else {}
+        if not top_claim.get("source_url") or not top_claim.get("source_tier"):
+            top_claim = {}
+
+        output.append(
+            UniverseTopCandidateResponse(
+                vendor_id=screening.vendor_id,
+                candidate_entity_id=screening.candidate_entity_id,
+                company_name=(vendor.name if vendor else screening.candidate_name),
+                official_website_url=(
+                    screening.candidate_official_website
+                    or (vendor.website if vendor else None)
+                    or (entity.canonical_website if entity else None)
+                ),
+                discovery_sources=deduped_sources[:12],
+                entity_type=(
+                    str(entity.entity_type or "company")
+                    if entity
+                    else str(meta.get("entity_type") or "company")
+                ),
+                decision_classification=str(screening.decision_classification or "insufficient_evidence"),
+                evidence_sufficiency=str(screening.evidence_sufficiency or "insufficient"),
+                reason_codes=_reason_codes_payload(screening),
+                rationale_summary=screening.rationale_summary,
+                top_claim=top_claim,
+                citation_summary_v1=citation_summary_v1,
+                registry_neighbors_with_first_party_website_count=int(
+                    diagnostics["registry_neighbors_with_first_party_website_count"]
+                ),
+                registry_neighbors_dropped_missing_official_website_count=int(
+                    diagnostics["registry_neighbors_dropped_missing_official_website_count"]
+                ),
+                registry_origin_screening_counts=diagnostics["registry_origin_screening_counts"],
+                first_party_hint_urls_used_count=int(diagnostics["first_party_hint_urls_used_count"]),
+                first_party_hint_pages_crawled_total=int(diagnostics["first_party_hint_pages_crawled_total"]),
+                missing_claim_groups=[str(item) for item in (screening.missing_claim_groups_json or []) if str(item)],
+                unresolved_contradictions_count=int(screening.unresolved_contradictions_count or 0),
+                ranking_eligible=bool(screening.ranking_eligible),
+                run_quality_tier=quality_payload["run_quality_tier"],
+                quality_gate_passed=bool(quality_payload["quality_gate_passed"]),
+                degraded_reasons=quality_payload["degraded_reasons"],
+            )
+        )
+
+    return output
 
 
 @router.post("/{workspace_id}/vendors", response_model=VendorResponse)
@@ -1184,21 +1823,7 @@ async def create_vendor(
     await db.commit()
     await db.refresh(vendor)
     
-    return VendorResponse(
-        id=vendor.id,
-        workspace_id=vendor.workspace_id,
-        name=vendor.name,
-        website=vendor.website,
-        hq_country=vendor.hq_country,
-        operating_countries=vendor.operating_countries or [],
-        tags_vertical=vendor.tags_vertical or [],
-        tags_custom=vendor.tags_custom or [],
-        status=vendor.status.value,
-        why_relevant=vendor.why_relevant or [],
-        is_manual=vendor.is_manual,
-        created_at=vendor.created_at,
-        evidence_count=0
-    )
+    return await _vendor_response_from_row(db, vendor)
 
 
 @router.patch("/{workspace_id}/vendors/{vendor_id}", response_model=VendorResponse)
@@ -1238,26 +1863,7 @@ async def update_vendor(
     await db.commit()
     await db.refresh(vendor)
     
-    evidence_count_result = await db.execute(
-        select(func.count(WorkspaceEvidence.id)).where(WorkspaceEvidence.vendor_id == vendor_id)
-    )
-    evidence_count = evidence_count_result.scalar() or 0
-    
-    return VendorResponse(
-        id=vendor.id,
-        workspace_id=vendor.workspace_id,
-        name=vendor.name,
-        website=vendor.website,
-        hq_country=vendor.hq_country,
-        operating_countries=vendor.operating_countries or [],
-        tags_vertical=vendor.tags_vertical or [],
-        tags_custom=vendor.tags_custom or [],
-        status=vendor.status.value,
-        why_relevant=vendor.why_relevant or [],
-        is_manual=vendor.is_manual,
-        created_at=vendor.created_at,
-        evidence_count=evidence_count
-    )
+    return await _vendor_response_from_row(db, vendor)
 
 
 # ============================================================================
@@ -1863,13 +2469,13 @@ async def list_report_cards(
         for reason in (vendor.why_relevant or [])[:6]:
             if not isinstance(reason, dict):
                 continue
-            reason_text = str(reason.get("text") or "").strip()
+            reason_copy = str(reason.get("text") or "").strip()
             source_url = reason.get("citation_url")
-            if not reason_text:
+            if not reason_copy:
                 continue
             customer_claims.append(
                 _build_claim(
-                    text=f"Discovery rationale: {reason_text}",
+                    text=f"Discovery rationale: {reason_copy}",
                     source_url=source_url,
                     evidence_by_url=evidence_by_url,
                     confidence="medium",
@@ -1884,6 +2490,7 @@ async def list_report_cards(
             select(VendorClaim).where(VendorClaim.vendor_id == vendor.id)
         )
         claims = claims_result.scalars().all()
+        screening = await _latest_screening_for_vendor(db, workspace_id, vendor.id)
 
         estimate = item.lens_breakdown_json.get("size_estimate")
         if estimate is None:
@@ -1950,6 +2557,29 @@ async def list_report_cards(
                 legal_status = tag.split(":", 1)[1].strip()
                 break
 
+        reason_codes_payload = item.reason_codes_json if isinstance(item.reason_codes_json, dict) else {}
+        if not reason_codes_payload and screening:
+            reason_codes_payload = _reason_codes_payload(screening)
+        reason_code_list: List[str] = []
+        for key in ["positive", "caution", "reject"]:
+            reason_code_list.extend([str(code) for code in (reason_codes_payload.get(key) or []) if str(code)])
+
+        tier_counts: Dict[str, int] = {}
+        fresh_count = 0
+        for evidence in evidence_items:
+            tier = str(evidence.source_tier or "tier3_third_party")
+            tier_counts[tier] = tier_counts.get(tier, 0) + 1
+            if is_fresh(evidence.valid_through):
+                fresh_count += 1
+        evidence_quality_summary = {
+            "tier_counts": tier_counts,
+            "freshness_ratio": round(fresh_count / max(1, len(evidence_items)), 4),
+            "total_evidence": len(evidence_items),
+        }
+        known_unknowns = []
+        if screening:
+            known_unknowns = [f"Missing claim group: {group}" for group in (screening.missing_claim_groups_json or [])]
+
         card = ReportCard(
             vendor_id=vendor.id,
             name=vendor.name,
@@ -1972,6 +2602,15 @@ async def list_report_cards(
                 "What implementation risk exists in the top two capabilities?",
                 "Do filing and commercial signals agree on company scale?",
             ],
+            decision_classification=(
+                item.decision_classification
+                or (screening.decision_classification if screening else None)
+            ),
+            reason_highlights=[reason_text(code) for code in reason_code_list[:6]],
+            evidence_quality_summary=(
+                item.evidence_summary_json if isinstance(item.evidence_summary_json, dict) and item.evidence_summary_json else evidence_quality_summary
+            ),
+            known_unknowns=known_unknowns[:8],
         )
         cards.append(card)
 
@@ -2257,7 +2896,11 @@ async def export_report_snapshot(
         component_scores = screening.component_scores_json or {}
         total_score = float(screening.total_score or 0.0)
         penalties = screening.penalties_json or []
-        reject_reasons = screening.reject_reasons_json or []
+        reject_reasons = [
+            reason
+            for reason in (screening.reject_reasons_json or [])
+            if str(reason) != "score_below_threshold"
+        ]
         for reason in reject_reasons:
             key = str(reason).strip() or "unknown_reason"
             reject_reason_counts[key] = reject_reason_counts.get(key, 0) + 1
@@ -2397,18 +3040,57 @@ async def export_report_snapshot(
                 if isinstance(tag, str) and tag.startswith("legal_status:"):
                     legal_hint = tag.split(":", 1)[1].strip()
                     break
+        reason_codes_payload = _reason_codes_payload(screening)
+        discovery_sources_raw = [str(screening.candidate_discovery_url or "")] + [
+            str(origin.get("origin_url") or "") for origin in entity_origins_payload
+        ]
+        discovery_sources: List[str] = []
+        seen_discovery_sources: set[str] = set()
+        for source in discovery_sources_raw:
+            normalized_source = source.strip()
+            if not normalized_source:
+                continue
+            key = normalized_source.lower()
+            if key in seen_discovery_sources:
+                continue
+            seen_discovery_sources.add(key)
+            discovery_sources.append(normalized_source)
+        entity_type = (
+            str(candidate_entity.entity_type or "company")
+            if candidate_entity
+            else str(screening_meta.get("entity_type") or "company")
+        )
+        solutions_payload = (
+            candidate_entity.solutions_json
+            if candidate_entity and isinstance(candidate_entity.solutions_json, list)
+            else (
+                screening_meta.get("solutions")
+                if isinstance(screening_meta.get("solutions"), list)
+                else []
+            )
+        )
+        top_claim_payload = screening.top_claim_json if isinstance(screening.top_claim_json, dict) else {}
+        if not top_claim_payload.get("source_url") or not top_claim_payload.get("source_tier"):
+            top_claim_payload = {}
 
         companies.append(
             {
                 "identity": {
                     "name": company_name,
                     "website": website,
-                    "official_website": identity_meta.get("official_website") or website,
+                    "official_website": (
+                        screening.candidate_official_website
+                        or identity_meta.get("official_website")
+                        or website
+                    ),
+                    "discovery_sources": discovery_sources,
                     "input_website": identity_meta.get("input_website"),
                     "identity_confidence": identity_meta.get("identity_confidence"),
                     "identity_sources": identity_meta.get("identity_sources") or [],
                     "country": country,
                     "legal_entity_hints": legal_hint,
+                    "entity_type": entity_type,
+                    "solutions": solutions_payload,
                     "entity_id": candidate_entity.id if candidate_entity else None,
                 },
                 "screening": {
@@ -2416,9 +3098,10 @@ async def export_report_snapshot(
                     "total_score": total_score,
                     "component_scores": component_scores,
                     "penalties": penalties,
-                    "reason_codes": reject_reasons,
+                    "reason_codes": reason_codes_payload,
                     "reject_reasons": reject_reasons,
                     "evidence_mix": source_summary.get("source_type_counts") or {},
+                    "ranking_eligible": bool(screening.ranking_eligible),
                 },
                 "size": {
                     "employee_estimate": {
@@ -2499,6 +3182,7 @@ async def export_report_snapshot(
                     "principal_risk": principal_risk,
                     "next_diligence_question": next_question,
                 },
+                "top_claim": top_claim_payload,
                 "first_party_enrichment": {
                     "method": first_party_enrichment.get("method"),
                     "tier": first_party_enrichment.get("tier"),
@@ -2522,6 +3206,7 @@ async def export_report_snapshot(
 
     companies.sort(
         key=lambda row: (
+            0 if bool((row.get("screening") or {}).get("ranking_eligible")) else 1,
             0 if row["screening"]["status"] == "kept" else (1 if row["screening"]["status"] == "review" else 2),
             -float(row["screening"]["total_score"] or 0.0),
         )
@@ -2618,12 +3303,550 @@ async def export_report_snapshot(
 
 
 # ============================================================================
+# Decision Catalog / Policy / Diagnostics
+# ============================================================================
+
+
+@router.get("/{workspace_id}/decision-catalog")
+async def get_decision_catalog(workspace_id: int, db: AsyncSession = Depends(get_db)):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return get_catalog_payload()
+
+
+@router.get("/{workspace_id}/evidence-policy")
+async def get_evidence_policy(workspace_id: int, db: AsyncSession = Depends(get_db)):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    policy = normalize_policy(workspace.decision_policy_json or DEFAULT_EVIDENCE_POLICY)
+    return {"workspace_id": workspace_id, "policy": policy}
+
+
+@router.patch("/{workspace_id}/evidence-policy")
+async def update_evidence_policy(
+    workspace_id: int,
+    payload: EvidencePolicyUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace.decision_policy_json = normalize_policy(payload.policy)
+    await db.commit()
+    return {"workspace_id": workspace_id, "policy": workspace.decision_policy_json}
+
+
+@router.get("/{workspace_id}/vendors/{vendor_id}/decision", response_model=VendorDecisionResponse)
+async def get_vendor_decision(
+    workspace_id: int,
+    vendor_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    vendor_result = await db.execute(
+        select(Vendor).where(Vendor.id == vendor_id, Vendor.workspace_id == workspace_id)
+    )
+    vendor = vendor_result.scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    screening = await _latest_screening_for_vendor(db, workspace_id, vendor_id)
+    if screening:
+        return VendorDecisionResponse(
+            vendor_id=vendor_id,
+            workspace_id=workspace_id,
+            classification=screening.decision_classification or "insufficient_evidence",
+            evidence_sufficiency=screening.evidence_sufficiency or "insufficient",
+            positive_reason_codes=screening.positive_reason_codes_json or [],
+            caution_reason_codes=screening.caution_reason_codes_json or [],
+            reject_reason_codes=screening.reject_reason_codes_json or [],
+            missing_claim_groups=screening.missing_claim_groups_json or [],
+            unresolved_contradictions_count=screening.unresolved_contradictions_count or 0,
+            rationale_summary=screening.rationale_summary,
+            rationale_markdown=screening.rationale_markdown,
+            decision_engine_version=screening.decision_engine_version,
+            gating_passed=bool(screening.gating_passed),
+            generated_at=datetime.utcnow().isoformat(),
+        )
+
+    claims_result = await db.execute(
+        select(VendorClaim).where(
+            VendorClaim.workspace_id == workspace_id,
+            VendorClaim.vendor_id == vendor_id,
+        )
+    )
+    claims = claims_result.scalars().all()
+    decision = evaluate_decision(
+        screening_status="review",
+        reject_reasons=[],
+        claims=claims,
+        component_scores={},
+        source_type_counts={},
+    )
+    return VendorDecisionResponse(
+        vendor_id=vendor_id,
+        workspace_id=workspace_id,
+        classification=decision.classification,
+        evidence_sufficiency=decision.evidence_sufficiency,
+        positive_reason_codes=decision.positive_reason_codes,
+        caution_reason_codes=decision.caution_reason_codes,
+        reject_reason_codes=decision.reject_reason_codes,
+        missing_claim_groups=decision.missing_claim_groups,
+        unresolved_contradictions_count=decision.unresolved_contradictions_count,
+        rationale_summary=decision.rationale_summary,
+        rationale_markdown=decision.rationale_markdown,
+        decision_engine_version=decision.decision_engine_version,
+        gating_passed=decision.gating_passed,
+        generated_at=datetime.utcnow().isoformat(),
+    )
+
+
+@router.get("/{workspace_id}/diagnostics/decision-quality")
+async def get_decision_quality_diagnostics(
+    workspace_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    screenings_result = await db.execute(
+        select(VendorScreening)
+        .where(VendorScreening.workspace_id == workspace_id)
+        .order_by(VendorScreening.created_at.desc())
+        .limit(3000)
+    )
+    screenings = screenings_result.scalars().all()
+    if not screenings:
+        feedback_count_result = await db.execute(
+            select(func.count(WorkspaceFeedbackEvent.id)).where(
+                WorkspaceFeedbackEvent.workspace_id == workspace_id
+            )
+        )
+        feedback_count = int(feedback_count_result.scalar() or 0)
+        return {
+            "workspace_id": workspace_id,
+            "totals": 0,
+            "classification_distribution": {},
+            "evidence_sufficiency_distribution": {},
+            "contradiction_rate": 0.0,
+            "evidence_tier_mix": {},
+            "freshness_compliance_by_group": {},
+            "keep_to_later_reject_rate": 0.0,
+            "analyst_override_rate": 0.0,
+            "ranking_eligible_count": 0,
+            "directory_only_count": 0,
+            "solution_entity_count": 0,
+            "official_website_resolution_rate": 0.0,
+            "feedback_events_count": feedback_count,
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+
+    vendor_ids = [row.vendor_id for row in screenings if row.vendor_id]
+    claims_result = await db.execute(
+        select(VendorClaim).where(VendorClaim.workspace_id == workspace_id)
+    )
+    claims = claims_result.scalars().all()
+
+    evidence_result = await db.execute(
+        select(WorkspaceEvidence).where(WorkspaceEvidence.workspace_id == workspace_id)
+    )
+    evidence_rows = evidence_result.scalars().all()
+
+    classification_distribution: Dict[str, int] = {}
+    sufficiency_distribution: Dict[str, int] = {}
+    contradictions = 0
+    for row in screenings:
+        cls = str(row.decision_classification or "insufficient_evidence")
+        classification_distribution[cls] = classification_distribution.get(cls, 0) + 1
+        suff = str(row.evidence_sufficiency or "insufficient")
+        sufficiency_distribution[suff] = sufficiency_distribution.get(suff, 0) + 1
+        if (row.unresolved_contradictions_count or 0) > 0:
+            contradictions += 1
+
+    evidence_tier_mix: Dict[str, int] = {}
+    for evidence in evidence_rows:
+        key = str(evidence.source_tier or "tier3_third_party")
+        evidence_tier_mix[key] = evidence_tier_mix.get(key, 0) + 1
+
+    freshness_total_by_group: Dict[str, int] = {}
+    freshness_ok_by_group: Dict[str, int] = {}
+    for claim in claims:
+        group = str(claim.claim_group or claim_group_for_dimension(claim.dimension, claim.claim_key))
+        freshness_total_by_group[group] = freshness_total_by_group.get(group, 0) + 1
+        if is_fresh(claim.valid_through):
+            freshness_ok_by_group[group] = freshness_ok_by_group.get(group, 0) + 1
+    freshness_compliance = {
+        group: round(freshness_ok_by_group.get(group, 0) / max(1, total), 4)
+        for group, total in freshness_total_by_group.items()
+    }
+
+    by_vendor: Dict[int, List[VendorScreening]] = {}
+    for row in screenings:
+        if row.vendor_id:
+            by_vendor.setdefault(row.vendor_id, []).append(row)
+    downgraded = 0
+    for rows in by_vendor.values():
+        statuses = [str(item.decision_classification or "") for item in rows]
+        if "good_target" in statuses and "not_good_target" in statuses:
+            downgraded += 1
+    keep_to_later_reject_rate = round(downgraded / max(1, len(by_vendor)), 4)
+    feedback_count_result = await db.execute(
+        select(func.count(WorkspaceFeedbackEvent.id)).where(
+            WorkspaceFeedbackEvent.workspace_id == workspace_id
+        )
+    )
+    feedback_count = int(feedback_count_result.scalar() or 0)
+    analyst_override_rate = round(feedback_count / max(1, len(by_vendor)), 4)
+    ranking_eligible_count = len([row for row in screenings if bool(row.ranking_eligible)])
+    directory_only_count = len(
+        [
+            row for row in screenings
+            if not str(row.candidate_official_website or "").strip()
+            or _is_directory_host_url(row.candidate_official_website)
+        ]
+    )
+    solution_entity_count = len(
+        [
+            row for row in screenings
+            if str(
+                ((row.screening_meta_json or {}).get("entity_type") if isinstance(row.screening_meta_json, dict) else "")
+                or ""
+            ).strip().lower() == "solution"
+        ]
+    )
+    official_website_resolution_rate = round(
+        (
+            len(
+                [
+                    row for row in screenings
+                    if str(row.candidate_official_website or "").strip()
+                    and not _is_directory_host_url(row.candidate_official_website)
+                ]
+            )
+            / max(1, len(screenings))
+        ),
+        4,
+    )
+
+    return {
+        "workspace_id": workspace_id,
+        "totals": len(screenings),
+        "classification_distribution": classification_distribution,
+        "evidence_sufficiency_distribution": sufficiency_distribution,
+        "contradiction_rate": round(contradictions / max(1, len(screenings)), 4),
+        "evidence_tier_mix": evidence_tier_mix,
+        "freshness_compliance_by_group": freshness_compliance,
+        "keep_to_later_reject_rate": keep_to_later_reject_rate,
+        "analyst_override_rate": analyst_override_rate,
+        "ranking_eligible_count": ranking_eligible_count,
+        "directory_only_count": directory_only_count,
+        "solution_entity_count": solution_entity_count,
+        "official_website_resolution_rate": official_website_resolution_rate,
+        "feedback_events_count": feedback_count,
+        "generated_at": datetime.utcnow().isoformat(),
+    }
+
+
+# ============================================================================
+# Monitoring / Feedback / Graph / Evaluation
+# ============================================================================
+
+
+@router.post("/{workspace_id}/monitoring:run", response_model=JobResponse)
+async def run_monitoring(
+    workspace_id: int,
+    data: MonitoringRunRequest = MonitoringRunRequest(),
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    job = Job(
+        workspace_id=workspace_id,
+        job_type=JobType.monitoring_delta,
+        state=JobState.queued,
+        provider=JobProvider.crawler,
+        result_json={
+            "max_vendors": data.max_vendors,
+            "stale_only": data.stale_only,
+            "classifications": data.classifications,
+        },
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    from app.workers.workspace_tasks import run_monitoring_delta
+
+    run_monitoring_delta.delay(job.id)
+    return _to_job_response(job)
+
+
+@router.get("/{workspace_id}/claims-graph", response_model=ClaimsGraphSummaryResponse)
+async def get_claims_graph_summary(
+    workspace_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    nodes_count = (
+        await db.execute(
+            select(func.count(ClaimGraphNode.id)).where(ClaimGraphNode.workspace_id == workspace_id)
+        )
+    ).scalar() or 0
+    edges_count = (
+        await db.execute(
+            select(func.count(ClaimGraphEdge.id)).where(ClaimGraphEdge.workspace_id == workspace_id)
+        )
+    ).scalar() or 0
+    edge_evidence_count = (
+        await db.execute(
+            select(func.count(ClaimGraphEdgeEvidence.id))
+            .join(ClaimGraphEdge, ClaimGraphEdge.id == ClaimGraphEdgeEvidence.edge_id)
+            .where(ClaimGraphEdge.workspace_id == workspace_id)
+        )
+    ).scalar() or 0
+
+    nodes_result = await db.execute(
+        select(ClaimGraphNode.node_type).where(ClaimGraphNode.workspace_id == workspace_id)
+    )
+    node_type_distribution: Dict[str, int] = {}
+    for (node_type,) in nodes_result.all():
+        key = str(node_type or "unknown")
+        node_type_distribution[key] = node_type_distribution.get(key, 0) + 1
+
+    edges_result = await db.execute(
+        select(ClaimGraphEdge.relation_type).where(ClaimGraphEdge.workspace_id == workspace_id)
+    )
+    relation_type_distribution: Dict[str, int] = {}
+    for (relation_type,) in edges_result.all():
+        key = str(relation_type or "unknown")
+        relation_type_distribution[key] = relation_type_distribution.get(key, 0) + 1
+
+    return ClaimsGraphSummaryResponse(
+        workspace_id=workspace_id,
+        nodes_count=int(nodes_count),
+        edges_count=int(edges_count),
+        edge_evidence_count=int(edge_evidence_count),
+        relation_type_distribution=relation_type_distribution,
+        node_type_distribution=node_type_distribution,
+        generated_at=datetime.utcnow().isoformat(),
+    )
+
+
+@router.post("/{workspace_id}/claims-graph:refresh")
+async def refresh_claims_graph(
+    workspace_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    from app.workers.workspace_tasks import run_claims_graph_refresh
+
+    task_result = run_claims_graph_refresh.delay(workspace_id)
+    return {
+        "workspace_id": workspace_id,
+        "queued": True,
+        "task_id": task_result.id,
+        "generated_at": datetime.utcnow().isoformat(),
+    }
+
+
+@router.post("/{workspace_id}/feedback", response_model=WorkspaceFeedbackResponse)
+async def create_workspace_feedback(
+    workspace_id: int,
+    data: WorkspaceFeedbackCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    screening: Optional[VendorScreening] = None
+    if data.vendor_id:
+        vendor_result = await db.execute(
+            select(Vendor).where(Vendor.id == data.vendor_id, Vendor.workspace_id == workspace_id)
+        )
+        vendor = vendor_result.scalar_one_or_none()
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+    if data.screening_id:
+        screening_result = await db.execute(
+            select(VendorScreening).where(
+                VendorScreening.id == data.screening_id,
+                VendorScreening.workspace_id == workspace_id,
+            )
+        )
+        screening = screening_result.scalar_one_or_none()
+    elif data.vendor_id:
+        screening = await _latest_screening_for_vendor(db, workspace_id, data.vendor_id)
+
+    feedback_event = WorkspaceFeedbackEvent(
+        workspace_id=workspace_id,
+        vendor_id=data.vendor_id,
+        screening_id=screening.id if screening else data.screening_id,
+        feedback_type=data.feedback_type,
+        previous_classification=data.previous_classification
+        or (screening.decision_classification if screening else None),
+        new_classification=data.new_classification,
+        reason_codes_json=data.reason_codes,
+        comment=data.comment,
+        metadata_json=data.metadata,
+        created_by=data.created_by,
+    )
+    db.add(feedback_event)
+
+    if screening and data.new_classification:
+        screening.decision_classification = data.new_classification
+        if data.reason_codes:
+            screening.positive_reason_codes_json = [
+                code for code in data.reason_codes if str(code).startswith("POS-")
+            ]
+            screening.caution_reason_codes_json = [
+                code for code in data.reason_codes if str(code).startswith("CAU-")
+            ]
+            screening.reject_reason_codes_json = [
+                code for code in data.reason_codes if str(code).startswith("REJ-")
+            ]
+
+    await db.commit()
+    await db.refresh(feedback_event)
+    return _to_workspace_feedback_response(feedback_event)
+
+
+@router.get("/{workspace_id}/feedback", response_model=List[WorkspaceFeedbackResponse])
+async def list_workspace_feedback(
+    workspace_id: int,
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    result = await db.execute(
+        select(WorkspaceFeedbackEvent)
+        .where(WorkspaceFeedbackEvent.workspace_id == workspace_id)
+        .order_by(WorkspaceFeedbackEvent.created_at.desc())
+        .limit(limit)
+    )
+    return [_to_workspace_feedback_response(row) for row in result.scalars().all()]
+
+
+@router.post("/{workspace_id}/evaluations/replay", response_model=EvaluationReplayResponse)
+async def replay_workspace_evaluation(
+    workspace_id: int,
+    payload: EvaluationReplayRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    run = EvaluationRun(
+        workspace_id=workspace_id,
+        run_type="gold_set_replay",
+        status="completed",
+        model_version=payload.model_version,
+        metrics_json={},
+    )
+    db.add(run)
+    await db.flush()
+
+    total = 0
+    matched = 0
+    for sample in payload.samples:
+        expected = str(sample.get("expected_classification") or "")
+        predicted = str(sample.get("predicted_classification") or "")
+        sample_matched = int(bool(expected and predicted and expected == predicted))
+        total += 1
+        matched += sample_matched
+        db.add(
+            EvaluationSampleResult(
+                run_id=run.id,
+                vendor_id=sample.get("vendor_id"),
+                expected_classification=expected or None,
+                predicted_classification=predicted or None,
+                matched=sample_matched,
+                confidence=float(sample.get("confidence") or 0.0),
+                details_json=sample.get("details_json") if isinstance(sample.get("details_json"), dict) else {},
+            )
+        )
+
+    precision_proxy = round((matched / total) if total else 0.0, 4)
+    run.metrics_json = {
+        "samples_total": total,
+        "samples_matched": matched,
+        "precision_proxy": precision_proxy,
+    }
+    await db.commit()
+    await db.refresh(run)
+
+    return EvaluationReplayResponse(
+        workspace_id=workspace_id,
+        run_id=run.id,
+        metrics=run.metrics_json or {},
+        created_at=run.created_at.isoformat() if run.created_at else datetime.utcnow().isoformat(),
+    )
+
+
+@router.get("/{workspace_id}/evaluations")
+async def list_workspace_evaluations(
+    workspace_id: int,
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    result = await db.execute(
+        select(EvaluationRun)
+        .where(EvaluationRun.workspace_id == workspace_id)
+        .order_by(EvaluationRun.created_at.desc())
+        .limit(limit)
+    )
+    runs = result.scalars().all()
+    return [
+        {
+            "id": run.id,
+            "run_type": run.run_type,
+            "status": run.status,
+            "model_version": run.model_version,
+            "metrics": run.metrics_json or {},
+            "created_at": run.created_at.isoformat() if run.created_at else None,
+        }
+        for run in runs
+    ]
+
+
+# ============================================================================
 # Gates
 # ============================================================================
 
 @router.get("/{workspace_id}/gates", response_model=GatesResponse)
 async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     """Get gating status for the workspace - what's unlocked."""
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    policy = normalize_policy(workspace.decision_policy_json or DEFAULT_EVIDENCE_POLICY)
+    gate_cfg = policy.get("gate_requirements", {})
+
     missing_items: Dict[str, List[str]] = {
         "context_pack": [],
         "brick_model": [],
@@ -2639,13 +3862,32 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     profile = profile_result.scalar_one_or_none()
     context_pack_ready = False
     if profile:
+        context_claim_groups_available = set()
         if not profile.buyer_company_url:
             missing_items["context_pack"].append("Add your company URL")
+        else:
+            context_claim_groups_available.add("identity_scope")
         if not profile.context_pack_markdown:
             missing_items["context_pack"].append("Generate context pack")
+        elif profile.reference_vendor_urls:
+            context_claim_groups_available.add("vertical_workflow")
         if profile.product_pages_found < 3:
             missing_items["context_pack"].append(f"Need more product pages (found {profile.product_pages_found})")
-        context_pack_ready = bool(profile.context_pack_markdown and profile.product_pages_found >= 3)
+        else:
+            context_claim_groups_available.add("product_depth")
+
+        required_groups = gate_cfg.get("context_pack", {}).get("required_claim_groups", ["identity_scope", "product_depth"])
+        min_required = int(gate_cfg.get("context_pack", {}).get("min_required_groups_met", 2))
+        covered = len([group for group in required_groups if group in context_claim_groups_available])
+        if covered < min_required:
+            missing_items["context_pack"].append(
+                f"Evidence pattern coverage too low ({covered}/{len(required_groups)})"
+            )
+        context_pack_ready = bool(
+            profile.context_pack_markdown
+            and profile.product_pages_found >= 3
+            and covered >= min_required
+        )
     else:
         missing_items["context_pack"].append("Create company profile")
     
@@ -2658,33 +3900,109 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     if taxonomy:
         if not taxonomy.confirmed:
             missing_items["brick_model"].append("Confirm taxonomy")
-        if len(taxonomy.priority_brick_ids or []) < 3:
+        min_priority = int(gate_cfg.get("brick_model", {}).get("min_priority_bricks", 3))
+        if len(taxonomy.priority_brick_ids or []) < min_priority:
             missing_items["brick_model"].append("Select at least 3 priority bricks")
-        brick_model_ready = taxonomy.confirmed and len(taxonomy.priority_brick_ids or []) >= 3
+        required_mapped = int(gate_cfg.get("brick_model", {}).get("require_evidence_mapped_bricks", 2))
+        mapped_priority = 0
+        if taxonomy.priority_brick_ids:
+            vendors_result = await db.execute(
+                select(Vendor).where(
+                    Vendor.workspace_id == workspace_id,
+                    Vendor.status.in_([VendorStatus.kept, VendorStatus.enriched]),
+                )
+            )
+            vendors = vendors_result.scalars().all()
+            seen_bricks: set[str] = set()
+            for vendor in vendors:
+                dossier_result = await db.execute(
+                    select(VendorDossier)
+                    .where(VendorDossier.vendor_id == vendor.id)
+                    .order_by(VendorDossier.version.desc())
+                    .limit(1)
+                )
+                dossier = dossier_result.scalar_one_or_none()
+                modules = (dossier.dossier_json or {}).get("modules", []) if dossier else []
+                for module in modules:
+                    brick_id = str(module.get("brick_id") or "").strip()
+                    if brick_id and brick_id in set(taxonomy.priority_brick_ids or []):
+                        urls = [url for url in module.get("evidence_urls", []) if is_trusted_source_url(url)]
+                        if urls:
+                            seen_bricks.add(brick_id)
+            mapped_priority = len(seen_bricks)
+        if mapped_priority < required_mapped:
+            missing_items["brick_model"].append(
+                f"Need evidence-backed priority brick mappings ({mapped_priority}/{required_mapped})"
+            )
+        brick_model_ready = (
+            taxonomy.confirmed
+            and len(taxonomy.priority_brick_ids or []) >= min_priority
+            and mapped_priority >= required_mapped
+        )
     else:
         missing_items["brick_model"].append("Create brick taxonomy")
     
-    # Check universe
+    # Check universe with evidence-pattern decisions
+    screenings_result = await db.execute(
+        select(VendorScreening)
+        .where(VendorScreening.workspace_id == workspace_id)
+        .order_by(VendorScreening.created_at.desc())
+    )
+    screenings_all = screenings_result.scalars().all()
+    latest_by_vendor: Dict[int, VendorScreening] = {}
+    for row in screenings_all:
+        if not row.vendor_id:
+            continue
+        if row.vendor_id not in latest_by_vendor:
+            latest_by_vendor[row.vendor_id] = row
+
+    universe_cfg = gate_cfg.get("universe", {})
+    allowed_classes = set(universe_cfg.get("allowed_classes", ["good_target", "borderline_watchlist"]))
+    min_decision_qualified = int(universe_cfg.get("min_decision_qualified_vendors", 5))
+    max_insufficient_ratio = float(universe_cfg.get("max_insufficient_ratio", 0.5))
+
+    decision_qualified = [
+        row for row in latest_by_vendor.values()
+        if str(row.decision_classification or "") in allowed_classes
+    ]
+    insufficient_count = len(
+        [row for row in latest_by_vendor.values() if str(row.evidence_sufficiency or "") == "insufficient"]
+    )
+    insufficient_ratio = insufficient_count / max(1, len(latest_by_vendor))
+
     kept_vendors_result = await db.execute(
         select(func.count(Vendor.id)).where(
             Vendor.workspace_id == workspace_id,
-            Vendor.status.in_([VendorStatus.kept, VendorStatus.enriched])
+            Vendor.status.in_([VendorStatus.kept, VendorStatus.enriched]),
         )
     )
     kept_vendors_count = kept_vendors_result.scalar() or 0
-    
-    universe_ready = False
+    universe_ready = (
+        len(decision_qualified) >= min_decision_qualified
+        and insufficient_ratio <= max_insufficient_ratio
+    )
+    if len(decision_qualified) < min_decision_qualified:
+        missing_items["universe"].append(
+            f"Need decision-qualified vendors ({len(decision_qualified)}/{min_decision_qualified})"
+        )
+    if insufficient_ratio > max_insufficient_ratio:
+        missing_items["universe"].append(
+            f"Evidence insufficiency ratio too high ({round(insufficient_ratio, 2)} > {max_insufficient_ratio})"
+        )
+    # Legacy fallback messaging (one release cycle)
     if kept_vendors_count < 5:
         missing_items["universe"].append(f"Keep at least 5 vendors ({kept_vendors_count} kept)")
-    else:
-        universe_ready = True
     
     # Check segmentation (has reviewed and focused)
-    segmentation_ready = universe_ready and kept_vendors_count >= 10
+    segmentation_ready = universe_ready and len(decision_qualified) >= 10
     if not segmentation_ready and universe_ready:
         missing_items["segmentation"].append("Review and keep at least 10 vendors")
     
     # Check enrichment
+    enrichment_cfg = gate_cfg.get("enrichment", {})
+    min_enriched = int(enrichment_cfg.get("min_enriched_vendors", 5))
+    required_groups = set(enrichment_cfg.get("required_groups_per_vendor", ["product_depth", "traction"]))
+
     enriched_result = await db.execute(
         select(func.count(Vendor.id)).where(
             Vendor.workspace_id == workspace_id,
@@ -2692,10 +4010,26 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         )
     )
     enriched_count = enriched_result.scalar() or 0
-    
-    enrichment_ready = enriched_count >= 5
+
+    enriched_vendors_result = await db.execute(
+        select(Vendor).where(
+            Vendor.workspace_id == workspace_id,
+            Vendor.status == VendorStatus.enriched,
+        )
+    )
+    enriched_vendors = enriched_vendors_result.scalars().all()
+    enriched_with_groups = 0
+    for vendor in enriched_vendors:
+        screening = latest_by_vendor.get(vendor.id)
+        missing_groups = set(screening.missing_claim_groups_json or []) if screening else set(required_groups)
+        if required_groups.isdisjoint(missing_groups):
+            enriched_with_groups += 1
+
+    enrichment_ready = enriched_count >= min_enriched and enriched_with_groups >= min_enriched
     if not enrichment_ready:
-        missing_items["enrichment"].append(f"Enrich at least 5 vendors ({enriched_count} enriched)")
+        missing_items["enrichment"].append(
+            f"Enrich at least {min_enriched} vendors with required evidence groups ({enriched_with_groups}/{min_enriched})"
+        )
     
     return GatesResponse(
         context_pack=context_pack_ready,

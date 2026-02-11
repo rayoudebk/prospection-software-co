@@ -3,19 +3,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   workspaceApi,
-  Workspace,
-  CompanyProfile,
-  BrickTaxonomy,
   BrickItem,
-  Vendor,
-  VendorDossier,
   Job,
-  Gates,
-  LensResponse,
   GeoScope,
-  ReportSnapshot,
-  ReportCard,
-  ReportLens,
 } from "./api";
 import { useEffect, useState } from "react";
 
@@ -86,6 +76,7 @@ export function useUpdateContextPack(workspaceId: number) {
     mutationFn: (data: {
       buyer_company_url?: string;
       reference_vendor_urls?: string[];
+      reference_evidence_urls?: string[];
       geo_scope?: GeoScope;
       vertical_focus?: string[];
     }) => workspaceApi.updateContextPack(workspaceId, data),
@@ -153,6 +144,14 @@ export function useVendors(workspaceId: number, status?: string) {
   return useQuery({
     queryKey: ["vendors", workspaceId, status],
     queryFn: () => workspaceApi.listVendors(workspaceId, status),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useTopCandidates(workspaceId: number, limit = 25, allowDegraded = false) {
+  return useQuery({
+    queryKey: ["top-candidates", workspaceId, limit, allowDegraded],
+    queryFn: () => workspaceApi.getTopCandidates(workspaceId, limit, allowDegraded),
     enabled: !!workspaceId,
   });
 }
@@ -292,6 +291,125 @@ export function useGates(workspaceId: number) {
   return useQuery({
     queryKey: ["gates", workspaceId],
     queryFn: () => workspaceApi.getGates(workspaceId),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useDecisionCatalog(workspaceId: number) {
+  return useQuery({
+    queryKey: ["decision-catalog", workspaceId],
+    queryFn: () => workspaceApi.getDecisionCatalog(workspaceId),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useEvidencePolicy(workspaceId: number) {
+  return useQuery({
+    queryKey: ["evidence-policy", workspaceId],
+    queryFn: () => workspaceApi.getEvidencePolicy(workspaceId),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useUpdateEvidencePolicy(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (policy: Record<string, unknown>) =>
+      workspaceApi.updateEvidencePolicy(workspaceId, policy),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["evidence-policy", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
+    },
+  });
+}
+
+export function useVendorDecision(workspaceId: number, vendorId: number | null) {
+  return useQuery({
+    queryKey: ["vendor-decision", workspaceId, vendorId],
+    queryFn: () => workspaceApi.getVendorDecision(workspaceId, vendorId!),
+    enabled: !!workspaceId && !!vendorId,
+  });
+}
+
+export function useDecisionQualityDiagnostics(workspaceId: number) {
+  return useQuery({
+    queryKey: ["decision-quality", workspaceId],
+    queryFn: () => workspaceApi.getDecisionQualityDiagnostics(workspaceId),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useRunMonitoring(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data?: { max_vendors?: number; stale_only?: boolean; classifications?: string[] }) =>
+      workspaceApi.runMonitoring(workspaceId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["workspace-jobs", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["decision-quality", workspaceId] });
+    },
+  });
+}
+
+export function useClaimsGraph(workspaceId: number) {
+  return useQuery({
+    queryKey: ["claims-graph", workspaceId],
+    queryFn: () => workspaceApi.getClaimsGraph(workspaceId),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useRefreshClaimsGraph(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => workspaceApi.refreshClaimsGraph(workspaceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["claims-graph", workspaceId] });
+    },
+  });
+}
+
+export function useWorkspaceFeedback(workspaceId: number, limit = 100) {
+  return useQuery({
+    queryKey: ["workspace-feedback", workspaceId, limit],
+    queryFn: () => workspaceApi.listFeedback(workspaceId, limit),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useCreateWorkspaceFeedback(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      vendor_id?: number;
+      screening_id?: number;
+      feedback_type?: string;
+      previous_classification?: string;
+      new_classification?: string;
+      reason_codes?: string[];
+      comment?: string;
+      metadata?: Record<string, unknown>;
+      created_by?: string;
+    }) => workspaceApi.createFeedback(workspaceId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["workspace-feedback", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["vendors", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["decision-quality", workspaceId] });
+    },
+  });
+}
+
+export function useReplayEvaluation(workspaceId: number) {
+  return useMutation({
+    mutationFn: (data: { model_version?: string; samples: Array<Record<string, unknown>> }) =>
+      workspaceApi.replayEvaluation(workspaceId, data),
+  });
+}
+
+export function useEvaluations(workspaceId: number, limit = 20) {
+  return useQuery({
+    queryKey: ["evaluations", workspaceId, limit],
+    queryFn: () => workspaceApi.listEvaluations(workspaceId, limit),
     enabled: !!workspaceId,
   });
 }

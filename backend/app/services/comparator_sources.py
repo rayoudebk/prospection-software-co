@@ -127,6 +127,93 @@ def _label_from_vendor_path(company_url: str) -> Optional[str]:
     return None
 
 
+def _extract_vendor_slugs(company_url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Extract company and solution slugs from /vendors/{company_slug}/{solution_slug} URL."""
+    if not company_url:
+        return None, None
+    try:
+        path = urlparse(company_url).path.strip("/")
+        parts = [part.strip() for part in path.split("/") if part.strip()]
+        if len(parts) >= 2 and parts[0] in {"vendor", "vendors"}:
+            company_slug = parts[1] or None
+            solution_slug = parts[2] if len(parts) >= 3 else None
+            return company_slug, (solution_slug or None)
+    except Exception:
+        return None, None
+    return None, None
+
+
+def _slug_to_label(slug: Optional[str]) -> Optional[str]:
+    normalized = str(slug or "").strip()
+    if not normalized:
+        return None
+    return normalized.replace("-", " ").replace("_", " ").title()
+
+
+def _extract_website_address_from_html(profile_url: str, html: str) -> Optional[str]:
+    """Extract explicit 'Website Address' value if present in profile markup."""
+    candidates: list[str] = []
+    patterns = [
+        r"Website\s*Address.{0,260}?href=[\"']([^\"']+)[\"']",
+        r"Website\s*Address.{0,180}?(https?://[^\s\"'<>]+)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, html, flags=re.IGNORECASE | re.DOTALL):
+            raw = str(match.group(1) or "").strip()
+            if raw:
+                candidates.append(raw)
+    for raw in candidates:
+        normalized = _normalize_company_url(raw, profile_url)
+        if not normalized:
+            continue
+        host = (urlparse(normalized).netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if not host or _is_aggregator_domain(host):
+            continue
+        if any(blocked == host or host.endswith(f".{blocked}") for blocked in EXTERNAL_HOST_BLOCKLIST):
+            continue
+        return normalized
+    return None
+
+
+def _extract_official_website_from_block(anchor_block: Any, listing_url: str) -> Optional[str]:
+    """Best-effort extraction of official website URL from a listing card block."""
+    listing_host = (urlparse(listing_url).netloc or "").lower()
+    if listing_host.startswith("www."):
+        listing_host = listing_host[4:]
+
+    candidates: list[tuple[int, str]] = []
+    for anchor in anchor_block.css("a[href]"):
+        href = (anchor.attributes.get("href") or "").strip()
+        if not href:
+            continue
+        absolute = _normalize_company_url(href, listing_url)
+        if not absolute:
+            continue
+        parsed = urlparse(absolute)
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if not host or host == listing_host or _is_aggregator_domain(host):
+            continue
+        if any(blocked == host or host.endswith(f".{blocked}") for blocked in EXTERNAL_HOST_BLOCKLIST):
+            continue
+        anchor_text = _clean_text(anchor.text()).lower()
+        score = 0
+        if any(token in anchor_text for token in ("website", "visit", "official", "company site")):
+            score += 5
+        if parsed.path in {"", "/"}:
+            score += 2
+        if len(anchor_text) <= 24:
+            score += 1
+        candidates.append((score, absolute))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], -len(item[1])), reverse=True)
+    return candidates[0][1]
+
+
 def parse_wealth_mosaic_listing(html: str, listing_url: str) -> List[Dict[str, Any]]:
     """Parse Wealth Mosaic need/listing page into mention records."""
     tree = HTMLParser(html)
@@ -197,15 +284,18 @@ def parse_wealth_mosaic_listing(html: str, listing_url: str) -> List[Dict[str, A
                 chosen_anchor, chosen_href = anchor, href
                 break
 
-        company_url = _normalize_company_url(chosen_href, listing_url)
-        if not company_url:
+        profile_url = _normalize_company_url(chosen_href, listing_url)
+        if not profile_url:
             continue
 
         title_node = block.css_first("h3")
         product_title = _clean_text(title_node.text() if title_node else chosen_anchor.text())
-        company_name = _label_from_vendor_path(company_url) or product_title
+        company_slug, solution_slug = _extract_vendor_slugs(profile_url)
+        company_name = _slug_to_label(company_slug) or _label_from_vendor_path(profile_url) or product_title
         if not company_name:
             continue
+        official_website_url = _extract_official_website_from_block(block, listing_url)
+        entity_type = "solution" if solution_slug else "company"
 
         description_node = block.css_first("p")
         snippet = _clean_text(description_node.text() if description_node else "")
@@ -215,14 +305,19 @@ def parse_wealth_mosaic_listing(html: str, listing_url: str) -> List[Dict[str, A
         if snippet:
             snippets.append(snippet)
 
-        key = (company_name.lower(), company_url.lower())
+        key = (company_name.lower(), profile_url.lower())
         if key in seen_keys:
             continue
         seen_keys.add(key)
         mentions.append(
             {
                 "company_name": company_name[:300],
-                "company_url": company_url,
+                "company_url": profile_url,
+                "profile_url": profile_url,
+                "official_website_url": official_website_url,
+                "company_slug": company_slug,
+                "solution_slug": solution_slug,
+                "entity_type": entity_type,
                 "listing_url": listing_url,
                 "category_tags": category_tags,
                 "listing_text_snippets": snippets,
@@ -233,6 +328,8 @@ def parse_wealth_mosaic_listing(html: str, listing_url: str) -> List[Dict[str, A
                     "anchor_text": company_name[:300],
                     "extractor": "sol_block",
                     "solution_title": product_title[:300] if product_title else None,
+                    "company_slug": company_slug,
+                    "solution_slug": solution_slug,
                 },
             }
         )
@@ -244,11 +341,11 @@ def parse_wealth_mosaic_listing(html: str, listing_url: str) -> List[Dict[str, A
         if not company_name or len(company_name) < 2:
             continue
 
-        company_url = _normalize_company_url(href, listing_url)
-        if not company_url:
+        profile_url = _normalize_company_url(href, listing_url)
+        if not profile_url:
             continue
 
-        parsed = urlparse(company_url)
+        parsed = urlparse(profile_url)
         path = parsed.path.lower()
         host = parsed.netloc.lower()
 
@@ -266,15 +363,23 @@ def parse_wealth_mosaic_listing(html: str, listing_url: str) -> List[Dict[str, A
         if len(company_name) < 3:
             continue
 
-        key = (company_name.lower(), company_url.lower())
+        company_slug, solution_slug = _extract_vendor_slugs(profile_url)
+        normalized_company_name = _slug_to_label(company_slug) or company_name
+        entity_type = "solution" if solution_slug else "company"
+        key = (normalized_company_name.lower(), profile_url.lower())
         if key in seen_keys:
             continue
         seen_keys.add(key)
 
         mentions.append(
             {
-                "company_name": company_name[:300],
-                "company_url": company_url,
+                "company_name": normalized_company_name[:300],
+                "company_url": profile_url,
+                "profile_url": profile_url,
+                "official_website_url": None,
+                "company_slug": company_slug,
+                "solution_slug": solution_slug,
+                "entity_type": entity_type,
                 "listing_url": listing_url,
                 "category_tags": category_tags,
                 "listing_text_snippets": _extract_listing_snippets(anchor),
@@ -282,13 +387,97 @@ def parse_wealth_mosaic_listing(html: str, listing_url: str) -> List[Dict[str, A
                     "source_name": "wealth_mosaic",
                     "listing_url": listing_url,
                     "anchor_href": href[:1000],
-                    "anchor_text": company_name[:300],
+                    "anchor_text": normalized_company_name[:300],
                     "extractor": "anchor_scan",
+                    "company_slug": company_slug,
+                    "solution_slug": solution_slug,
                 },
             }
         )
 
     return mentions
+
+
+def _parse_generic_external_directory(
+    html: str,
+    listing_url: str,
+    source_name: str,
+    company_markers: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    tree = HTMLParser(html)
+    if tree is None:
+        return []
+    markers = [m.lower() for m in (company_markers or [])]
+    mentions: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    listing_host = (urlparse(listing_url).netloc or "").lower().replace("www.", "")
+
+    for anchor in tree.css("a[href]"):
+        href = anchor.attributes.get("href", "")
+        company_url = _normalize_company_url(href, listing_url)
+        if not company_url:
+            continue
+        parsed = urlparse(company_url)
+        host = (parsed.netloc or "").lower().replace("www.", "")
+        if not host or host == listing_host:
+            continue
+        if any(host.endswith(blocked) for blocked in EXTERNAL_HOST_BLOCKLIST):
+            continue
+
+        anchor_text = _clean_text(anchor.text())
+        if markers and not any(marker in anchor_text.lower() for marker in markers):
+            # Generic mode: allow long enough names when no marker match.
+            if len(anchor_text.split()) < 2 and len(anchor_text) < 8:
+                continue
+
+        company_name = anchor_text or host.split(".")[0].replace("-", " ").title()
+        key = (company_name.lower(), company_url.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        mentions.append(
+            {
+                "company_name": company_name[:300],
+                "company_url": company_url,
+                "profile_url": listing_url,
+                "official_website_url": company_url,
+                "company_slug": None,
+                "solution_slug": None,
+                "entity_type": "company",
+                "listing_url": listing_url,
+                "category_tags": [source_name.replace("_", " ")[:80]],
+                "listing_text_snippets": _extract_listing_snippets(anchor),
+                "provenance": {
+                    "source_name": source_name,
+                    "listing_url": listing_url,
+                    "anchor_href": href[:1000],
+                    "anchor_text": company_name[:300],
+                    "extractor": "generic_external_directory",
+                    "source_tier": "tier4_discovery",
+                },
+            }
+        )
+        if len(mentions) >= MAX_FILTERED_MENTIONS:
+            break
+    return mentions
+
+
+def parse_partner_graph_listing(html: str, listing_url: str) -> List[Dict[str, Any]]:
+    return _parse_generic_external_directory(
+        html,
+        listing_url,
+        source_name="partner_graph_seed",
+        company_markers=["partner", "integration", "technology"],
+    )
+
+
+def parse_conference_exhibitor_listing(html: str, listing_url: str) -> List[Dict[str, Any]]:
+    return _parse_generic_external_directory(
+        html,
+        listing_url,
+        source_name="conference_exhibitors_seed",
+        company_markers=["exhibitor", "booth", "sponsor"],
+    )
 
 
 def _mention_quality_score(mention: Dict[str, Any], base_host: Optional[str]) -> int:
@@ -316,7 +505,19 @@ SOURCE_REGISTRY: Dict[str, SourceConfig] = {
         seed_url="https://www.thewealthmosaic.com/needs/portfolio-wealth-management-systems/",
         parser=parse_wealth_mosaic_listing,
         default_max_pages=2,
-    )
+    ),
+    "partner_graph_seed": SourceConfig(
+        source_name="partner_graph_seed",
+        seed_url="https://www.avaloq.com/partners",
+        parser=parse_partner_graph_listing,
+        default_max_pages=1,
+    ),
+    "conference_exhibitors_seed": SourceConfig(
+        source_name="conference_exhibitors_seed",
+        seed_url="https://europe.money2020.com/exhibitors",
+        parser=parse_conference_exhibitor_listing,
+        default_max_pages=1,
+    ),
 }
 
 
@@ -541,6 +742,15 @@ def resolve_external_website_from_profile(
         with httpx.Client(timeout=timeout_seconds, follow_redirects=True, headers=headers) as client:
             response = client.get(normalized)
             response.raise_for_status()
+            explicit = _extract_website_address_from_html(normalized, response.text)
+            if explicit:
+                return {
+                    "profile_url": normalized,
+                    "official_website": explicit,
+                    "identity_confidence": "high",
+                    "captured_at": now,
+                    "error": None,
+                }
             official = _pick_external_company_website(normalized, response.text)
             if official:
                 return {
