@@ -126,6 +126,31 @@ def test_registry_profile_only_identity_never_marked_high(monkeypatch):
     assert candidate["identity"]["input_domain"] == "find-and-update.company-information.service.gov.uk"
 
 
+def test_resolve_identities_canonicalizes_redirected_first_party_domain(monkeypatch):
+    def fake_direct_identity(url: str, timeout_seconds: int = 3):
+        return {
+            "profile_url": url,
+            "official_website": "https://cwan.com/",
+            "identity_confidence": "high",
+            "captured_at": "2026-01-01T00:00:00",
+            "error": None,
+            "resolved_via_redirect": True,
+        }
+
+    monkeypatch.setattr(workspace_tasks, "_resolve_direct_website_identity", fake_direct_identity)
+
+    candidate = {"name": "Jump Technology", "website": "https://www.jump-technology.com", "first_party_domains": []}
+    stats = workspace_tasks._resolve_identities_for_candidates([candidate], max_fetches=5)
+
+    assert stats["identity_resolved_count"] == 1
+    assert stats["identity_fetch_count"] == 1
+    assert candidate["official_website_url"] == "https://cwan.com/"
+    assert candidate["website"] == "https://cwan.com/"
+    assert candidate["identity"]["resolved_via_redirect"] is True
+    assert "cwan.com" in candidate["first_party_domains"]
+    assert "jump-technology.com" in candidate["first_party_domains"]
+
+
 def test_build_first_party_hint_url_map_uses_evidence_urls_and_path_vendor_urls():
     profile = SimpleNamespace(
         reference_evidence_urls=[
@@ -144,6 +169,13 @@ def test_build_first_party_hint_url_map_uses_evidence_urls_and_path_vendor_urls(
     assert "https://upvest.co/blog/boerse-stuttgart-and-upvest/" in hint_map["upvest.co"]
     assert "https://upvest.co/blog/liqid-enters-partnership-with-upvest-for-its-eltif-offering" in hint_map["upvest.co"]
     assert "https://upvest.co/" not in hint_map["upvest.co"]
+
+
+def test_auto_first_party_hint_urls_include_client_stories():
+    hints = workspace_tasks._auto_first_party_hint_urls_for_domains(["cwan.com"])
+    assert "https://cwan.com/client-stories/" in hints
+    assert "https://cwan.com/customers/" in hints
+    assert "https://cwan.com/case-studies/" in hints
 
 
 def test_extract_first_party_signals_from_crawl_uses_hint_urls(monkeypatch):
@@ -222,6 +254,63 @@ def test_extract_first_party_signals_from_crawl_uses_hint_urls(monkeypatch):
     assert capabilities == []
 
 
+def test_extract_first_party_signals_prioritizes_customer_reasons(monkeypatch):
+    class FakeCrawler:
+        def __init__(self, max_pages: int, timeout: int):
+            self.max_pages = max_pages
+            self.timeout = timeout
+
+        async def crawl_for_context(self, url: str, start_urls=None):
+            product_signals = [
+                Signal(
+                    type="capability",
+                    value=f"Capability {index}",
+                    evidence=Evidence(
+                        source_url="https://cwan.com/products/beacon",
+                        snippet=f"Product capability detail {index} for institutional workflows and analytics.",
+                    ),
+                )
+                for index in range(25)
+            ]
+            return ContextPack(
+                company_name="CWAN",
+                website=url,
+                pages=[
+                    CrawledPage(
+                        url="https://cwan.com/products/beacon",
+                        title="Beacon",
+                        page_type="product",
+                        blocks=[],
+                    )
+                ],
+                signals=product_signals,
+                customer_evidence=[
+                    CustomerEvidence(
+                        name="Major Asset Manager",
+                        source_url="https://cwan.com/client-stories/",
+                        evidence_type="case_study",
+                        context="Client story",
+                    )
+                ],
+            )
+
+    import app.services.crawler as crawler_module
+
+    monkeypatch.setattr(crawler_module, "UnifiedCrawler", FakeCrawler)
+
+    reasons, _, meta, error = workspace_tasks._extract_first_party_signals_from_crawl(
+        website="https://cwan.com",
+        candidate_name="CWAN",
+        max_pages=6,
+        hint_urls=["https://cwan.com/client-stories/"],
+    )
+
+    assert error is None
+    assert meta["customer_evidence_count"] == 1
+    assert any(reason["dimension"] == "customer" for reason in reasons)
+    assert any("Major Asset Manager" in reason["text"] for reason in reasons)
+
+
 def test_citation_summary_v1_sentence_to_pill_contract():
     claims = [
         {
@@ -271,4 +360,3 @@ def test_citation_summary_v1_sentence_to_pill_contract():
     for sentence in summary["sentences"]:
         assert sentence["citation_pill_ids"]
         assert all(pill_id in pill_ids for pill_id in sentence["citation_pill_ids"])
-

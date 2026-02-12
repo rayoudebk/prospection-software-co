@@ -90,6 +90,15 @@ FIRST_PARTY_CRAWL_DEEP_MAX_PAGES = 10
 FIRST_PARTY_CRAWL_MAX_REASONS = 16
 FIRST_PARTY_CRAWL_DEEP_PRIORITY_THRESHOLD = 95.0
 PRE_SCORE_UNIVERSE_CAP = 500
+DIRECT_IDENTITY_RESOLUTION_TIMEOUT_SECONDS = 3
+
+FIRST_PARTY_AUTO_HINT_PATHS = (
+    "/client-stories/",
+    "/customers/",
+    "/case-studies/",
+    "/resources/case-studies/",
+    "/success-stories/",
+)
 
 REGISTRY_MAX_QUERIES = 360
 REGISTRY_MAX_ACCEPTED_NEIGHBORS = 300
@@ -699,6 +708,54 @@ def _origin_entries(candidate: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _resolve_direct_website_identity(
+    website_url: str,
+    timeout_seconds: int = DIRECT_IDENTITY_RESOLUTION_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    normalized = str(website_url or "").strip()
+    now = datetime.utcnow().isoformat()
+    if not normalized:
+        return {
+            "profile_url": None,
+            "official_website": None,
+            "identity_confidence": "low",
+            "captured_at": now,
+            "error": "missing_website",
+        }
+    if not normalized.startswith(("http://", "https://")):
+        normalized = f"https://{normalized}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; MA-BuySide-Radar/1.0; +https://example.com/bot)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=True, headers=headers, http2=False) as client:
+            response = client.get(normalized)
+            response.raise_for_status()
+            resolved = str(response.url).strip() or normalized
+            resolved_domain = normalize_domain(resolved)
+            if not resolved_domain or _is_non_first_party_profile_domain(resolved_domain):
+                resolved = normalized
+            return {
+                "profile_url": normalized,
+                "official_website": resolved,
+                "identity_confidence": "high",
+                "captured_at": now,
+                "error": None,
+                "resolved_via_redirect": normalize_domain(resolved) != normalize_domain(normalized),
+            }
+    except Exception as exc:
+        # Redirect resolution failures should not zero out identity for otherwise valid domains.
+        return {
+            "profile_url": normalized,
+            "official_website": normalized,
+            "identity_confidence": "high",
+            "captured_at": now,
+            "error": f"redirect_resolution_failed:{exc}",
+            "resolved_via_redirect": False,
+        }
+
+
 def _apply_identity_payload(candidate: dict[str, Any], payload: dict[str, Any]) -> None:
     existing_official = str(
         candidate.get("official_website_url")
@@ -746,6 +803,8 @@ def _apply_identity_payload(candidate: dict[str, Any], payload: dict[str, Any]) 
     candidate["website"] = final_official
 
     first_party_domains = _normalize_domain_list(candidate.get("first_party_domains") or [])
+    if input_domain and not _is_non_first_party_profile_domain(input_domain) and input_domain not in first_party_domains:
+        first_party_domains.append(input_domain)
     if final_domain and final_domain not in first_party_domains:
         first_party_domains.append(final_domain)
     candidate["first_party_domains"] = first_party_domains
@@ -754,15 +813,21 @@ def _apply_identity_payload(candidate: dict[str, Any], payload: dict[str, Any]) 
     if not final_official:
         identity_confidence = "low"
 
+    identity_sources = payload.get("identity_sources") if isinstance(payload.get("identity_sources"), list) else []
+    if payload.get("profile_url"):
+        identity_sources.append(payload.get("profile_url"))
+    identity_sources = _dedupe_strings([str(item) for item in identity_sources if str(item).strip()])
+
     candidate["identity"] = {
         "input_website": normalized_input or None,
         "official_website": final_official,
         "input_domain": input_domain,
         "canonical_domain": final_domain or input_domain,
         "identity_confidence": identity_confidence,
-        "identity_sources": [payload.get("profile_url")] if payload.get("profile_url") else [],
+        "identity_sources": identity_sources,
         "captured_at": payload.get("captured_at"),
         "error": payload.get("error"),
+        "resolved_via_redirect": bool(payload.get("resolved_via_redirect")),
     }
     if not candidate.get("hq_country"):
         inferred_country = _infer_country_from_domain(final_domain or input_domain)
@@ -778,7 +843,9 @@ def _resolve_identities_for_candidates(
 ) -> dict[str, Any]:
     """Resolve identity for all candidates with bounded network fetches."""
     aggregator_urls: list[str] = []
+    direct_urls: list[str] = []
     aggregator_seen: set[str] = set()
+    direct_seen: set[str] = set()
     for candidate in candidates:
         identity_url = str(
             candidate.get("website")
@@ -810,14 +877,9 @@ def _resolve_identities_for_candidates(
             _apply_identity_payload(candidate, payload)
             continue
         if not _is_non_first_party_profile_domain(domain):
-            payload = {
-                "profile_url": normalized,
-                "official_website": normalized,
-                "identity_confidence": "high",
-                "captured_at": datetime.utcnow().isoformat(),
-                "error": None,
-            }
-            _apply_identity_payload(candidate, payload)
+            if normalized.lower() not in direct_seen:
+                direct_seen.add(normalized.lower())
+                direct_urls.append(normalized)
             continue
         if normalized.lower() not in aggregator_seen:
             aggregator_seen.add(normalized.lower())
@@ -850,6 +912,32 @@ def _resolve_identities_for_candidates(
                     fetch_errors[normalize_domain(source_url) or source_url] = str(result["error"])
                 resolved_payloads[source_url.lower()] = result
 
+    direct_fetch_urls = direct_urls[: max(0, max_fetches)]
+    direct_exhausted = set(direct_urls[max(0, max_fetches) :])
+    direct_payloads: dict[str, dict[str, Any]] = {}
+    if direct_fetch_urls:
+        with ThreadPoolExecutor(max_workers=max(1, min(concurrency, 50))) as executor:
+            futures = {
+                executor.submit(_resolve_direct_website_identity, url, DIRECT_IDENTITY_RESOLUTION_TIMEOUT_SECONDS): url
+                for url in direct_fetch_urls
+            }
+            for future in as_completed(futures):
+                source_url = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = {
+                        "profile_url": source_url,
+                        "official_website": source_url,
+                        "identity_confidence": "high",
+                        "captured_at": datetime.utcnow().isoformat(),
+                        "error": f"redirect_resolution_failed:{exc}",
+                        "resolved_via_redirect": False,
+                    }
+                if result.get("error"):
+                    fetch_errors[normalize_domain(source_url) or source_url] = str(result["error"])
+                direct_payloads[source_url.lower()] = result
+
     for candidate in candidates:
         identity_url = str(
             candidate.get("website")
@@ -862,7 +950,24 @@ def _resolve_identities_for_candidates(
             continue
         normalized = identity_url if identity_url.startswith(("http://", "https://")) else f"https://{identity_url}"
         domain = normalize_domain(normalized)
-        if not domain or not _is_non_first_party_profile_domain(domain):
+        if not domain:
+            continue
+        if not _is_non_first_party_profile_domain(domain):
+            if normalized.lower() in direct_payloads:
+                _apply_identity_payload(candidate, direct_payloads[normalized.lower()])
+                continue
+            error = "resolution_budget_exhausted" if normalized in direct_exhausted else "identity_not_resolved"
+            _apply_identity_payload(
+                candidate,
+                {
+                    "profile_url": normalized,
+                    "official_website": normalized,
+                    "identity_confidence": "high",
+                    "captured_at": datetime.utcnow().isoformat(),
+                    "error": error,
+                    "resolved_via_redirect": False,
+                },
+            )
             continue
         if normalized.lower() in resolved_payloads:
             _apply_identity_payload(candidate, resolved_payloads[normalized.lower()])
@@ -884,9 +989,10 @@ def _resolve_identities_for_candidates(
             resolved_high += 1
     return {
         "identity_resolved_count": resolved_high,
-        "identity_fetch_count": len(fetch_urls),
+        "identity_fetch_count": len(fetch_urls) + len(direct_fetch_urls),
         "identity_fetch_errors": fetch_errors,
-        "identity_budget_exhausted": max(0, len(aggregator_urls) - len(fetch_urls)),
+        "identity_budget_exhausted": max(0, len(aggregator_urls) - len(fetch_urls))
+        + max(0, len(direct_urls) - len(direct_fetch_urls)),
     }
 
 
@@ -2778,6 +2884,31 @@ def _dedupe_reason_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
     return deduped
 
 
+def _prioritize_reason_items(
+    items: list[dict[str, str]],
+    max_items: int = FIRST_PARTY_CRAWL_MAX_REASONS,
+) -> list[dict[str, str]]:
+    if not items:
+        return []
+    priority = {
+        "customer": 0,
+        "customers": 0,
+        "case_study": 0,
+        "icp": 1,
+        "services": 2,
+        "pricing_gtm": 3,
+        "moat": 4,
+        "product": 5,
+        "company_profile": 6,
+    }
+    ranked: list[tuple[int, int, dict[str, str]]] = []
+    for index, item in enumerate(items):
+        dimension = str(item.get("dimension") or "evidence").strip().lower()
+        ranked.append((priority.get(dimension, 7), index, item))
+    ranked.sort(key=lambda row: (row[0], row[1]))
+    return [row[2] for row in ranked[: max(1, int(max_items))]]
+
+
 def _extract_first_party_signals_from_crawl(
     website: str,
     candidate_name: str,
@@ -2987,7 +3118,10 @@ def _extract_first_party_signals_from_crawl(
             }
         )
 
-    deduped_reasons = _dedupe_reason_items(reasons)[:FIRST_PARTY_CRAWL_MAX_REASONS]
+    deduped_reasons = _prioritize_reason_items(
+        _dedupe_reason_items(reasons),
+        FIRST_PARTY_CRAWL_MAX_REASONS,
+    )
     deduped_capabilities = _dedupe_strings(capability_signals)[:12]
 
     if not deduped_reasons:
@@ -3892,6 +4026,41 @@ def _build_first_party_hint_url_map(
                 register(url)
 
     return {domain: urls[:20] for domain, urls in hint_map.items()}
+
+
+def _collect_hint_urls_for_domains(
+    hint_map: dict[str, list[str]],
+    domains: list[str],
+) -> list[str]:
+    collected: list[str] = []
+    seen: set[str] = set()
+    for domain in _normalize_domain_list(domains):
+        for url in hint_map.get(domain, []):
+            normalized = _normalize_hint_url(url)
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            collected.append(normalized)
+    return collected
+
+
+def _auto_first_party_hint_urls_for_domains(domains: list[str]) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    for domain in _normalize_domain_list(domains):
+        if _is_non_first_party_profile_domain(domain):
+            continue
+        for path in FIRST_PARTY_AUTO_HINT_PATHS:
+            hint = f"https://{domain}{path}"
+            key = hint.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            hints.append(hint)
+    return hints
 
 
 def _build_mention_indexes(mentions: list[dict[str, Any]]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
@@ -5391,11 +5560,17 @@ def _run_discovery_universe_monolith(job_id: int):
                 first_party_enrichment_meta: dict[str, Any] = {}
                 candidate_website = str(candidate.get("website") or "").strip()
                 candidate_domain_for_fetch = normalize_domain(candidate_website)
-                candidate_hint_urls = (
-                    first_party_hint_urls_by_domain.get(candidate_domain_for_fetch, [])
-                    if candidate_domain_for_fetch
-                    else []
+                candidate_hint_domains = _normalize_domain_list(
+                    ([candidate_domain_for_fetch] if candidate_domain_for_fetch else [])
+                    + (candidate_first_party_domains or [])
                 )
+                candidate_hint_urls = _collect_hint_urls_for_domains(
+                    first_party_hint_urls_by_domain,
+                    candidate_hint_domains,
+                )
+                auto_hint_urls = _auto_first_party_hint_urls_for_domains(candidate_hint_domains)
+                if auto_hint_urls:
+                    candidate_hint_urls = _dedupe_strings(candidate_hint_urls + auto_hint_urls)
                 if (
                     candidate_website
                     and candidate_domain_for_fetch
