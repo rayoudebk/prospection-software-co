@@ -23,7 +23,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_routes={
         "app.workers.workspace_tasks.generate_context_pack_v2": {"queue": "discovery.crawl"},
-        "app.workers.workspace_tasks.run_enrich_vendor": {"queue": "discovery.crawl"},
+        "app.workers.workspace_tasks.run_enrich_company": {"queue": "discovery.crawl"},
         "app.workers.workspace_tasks.run_monitoring_delta": {"queue": "discovery.crawl"},
         "app.workers.workspace_tasks.run_discovery_universe": {"queue": "discovery.search"},
         "app.workers.workspace_tasks.stage_seed_ingest": {"queue": "discovery.search"},

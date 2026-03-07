@@ -36,7 +36,7 @@ def run_gold_set_replay(
         db.add(
             EvaluationSampleResult(
                 run_id=run.id,
-                vendor_id=sample.get("vendor_id"),
+                company_id=sample.get("company_id"),
                 expected_classification=expected or None,
                 predicted_classification=predicted or None,
                 matched=ok,

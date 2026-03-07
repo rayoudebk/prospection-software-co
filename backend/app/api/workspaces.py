@@ -10,10 +10,10 @@ import math
 from app.models.base import get_db
 from app.models.workspace import Workspace, CompanyProfile
 from app.models.thesis import BuyerThesisPack, SearchLane
-from app.models.vendor import Vendor, VendorDossier, VendorStatus
+from app.models.company import Company, CompanyDossier, CompanyStatus
 from app.models.job import Job, JobType, JobState, JobProvider
-from app.models.workspace_evidence import WorkspaceEvidence
-from app.models.report import ReportSnapshot, ReportSnapshotItem, VendorFact
+from app.models.source_evidence import SourceEvidence
+from app.models.report import ReportSnapshot, ReportSnapshotItem, CompanyFact
 from app.models.claims_graph import ClaimGraphNode, ClaimGraphEdge, ClaimGraphEdgeEvidence
 from app.models.workspace_feedback import WorkspaceFeedbackEvent
 from app.models.evaluation import EvaluationRun, EvaluationSampleResult
@@ -23,9 +23,9 @@ from app.models.intelligence import (
     CandidateOriginEdge,
     ComparatorSourceRun,
     RegistryQueryLog,
-    VendorMention,
-    VendorScreening,
-    VendorClaim,
+    CompanyMention,
+    CompanyScreening,
+    CompanyClaim,
 )
 from app.services.decision_catalog import get_catalog_payload, reason_text
 from app.services.evidence_policy import (
@@ -90,7 +90,7 @@ class WorkspaceResponse(BaseModel):
     name: str
     region_scope: str
     created_at: datetime
-    vendor_count: int = 0
+    company_count: int = 0
     has_context_pack: bool = False
     has_confirmed_search_lanes: bool = False
 
@@ -106,7 +106,7 @@ class GeoScope(BaseModel):
 
 class CompanyProfileUpdate(BaseModel):
     buyer_company_url: Optional[str] = None
-    reference_vendor_urls: Optional[List[str]] = None
+    reference_company_urls: Optional[List[str]] = None
     reference_evidence_urls: Optional[List[str]] = None
     geo_scope: Optional[GeoScope] = None
 
@@ -116,7 +116,7 @@ class CompanyProfileResponse(BaseModel):
     workspace_id: int
     buyer_company_url: Optional[str]
     buyer_context_summary: Optional[str]
-    reference_vendor_urls: List[str]
+    reference_company_urls: List[str]
     reference_evidence_urls: List[str]
     reference_summaries: Dict[str, str]
     geo_scope: Dict[str, Any]
@@ -208,13 +208,13 @@ class SearchLanesUpdate(BaseModel):
     lanes: List[SearchLaneItem] = Field(default_factory=list)
 
 
-class VendorCreate(BaseModel):
+class CompanyCreate(BaseModel):
     name: str
     website: Optional[str] = None
     hq_country: Optional[str] = None
 
 
-class VendorUpdate(BaseModel):
+class CompanyUpdate(BaseModel):
     name: Optional[str] = None
     website: Optional[str] = None
     hq_country: Optional[str] = None
@@ -223,7 +223,7 @@ class VendorUpdate(BaseModel):
     status: Optional[str] = None
 
 
-class VendorResponse(BaseModel):
+class CompanyResponse(BaseModel):
     id: int
     workspace_id: int
     name: str
@@ -262,9 +262,9 @@ class VendorResponse(BaseModel):
         from_attributes = True
 
 
-class VendorDossierResponse(BaseModel):
+class CompanyDossierResponse(BaseModel):
     id: int
-    vendor_id: int
+    company_id: int
     dossier_json: Dict[str, Any]
     version: int
     created_at: datetime
@@ -274,14 +274,14 @@ class VendorDossierResponse(BaseModel):
 
 
 class EnrichBatchRequest(BaseModel):
-    vendor_ids: List[int]
+    company_ids: List[int]
     job_types: List[str] = Field(default=["enrich_full"])
 
 
 class JobResponse(BaseModel):
     id: int
     workspace_id: int
-    vendor_id: Optional[int]
+    company_id: Optional[int]
     job_type: str
     state: str
     provider: str
@@ -357,7 +357,7 @@ class ReportClaim(BaseModel):
 
 
 class ReportCard(BaseModel):
-    vendor_id: int
+    company_id: int
     name: str
     website: Optional[str] = None
     hq_country: Optional[str] = None
@@ -384,7 +384,7 @@ class ReportCard(BaseModel):
 
 
 class UniverseTopCandidateResponse(BaseModel):
-    vendor_id: Optional[int] = None
+    company_id: Optional[int] = None
     candidate_entity_id: Optional[int] = None
     company_name: str
     official_website_url: Optional[str] = None
@@ -446,8 +446,8 @@ class ReportSnapshotResponse(BaseModel):
         from_attributes = True
 
 
-class VendorDecisionResponse(BaseModel):
-    vendor_id: int
+class CompanyDecisionResponse(BaseModel):
+    company_id: int
     workspace_id: int
     classification: str
     evidence_sufficiency: str
@@ -468,7 +468,7 @@ class EvidencePolicyUpdate(BaseModel):
 
 
 class MonitoringRunRequest(BaseModel):
-    max_vendors: int = 80
+    max_companies: int = 80
     stale_only: bool = False
     classifications: List[str] = Field(
         default_factory=lambda: ["borderline_watchlist", "insufficient_evidence"]
@@ -476,8 +476,8 @@ class MonitoringRunRequest(BaseModel):
 
 
 class WorkspaceFeedbackCreate(BaseModel):
-    vendor_id: Optional[int] = None
-    screening_id: Optional[int] = None
+    company_id: Optional[int] = None
+    company_screening_id: Optional[int] = None
     feedback_type: str = "classification_override"
     previous_classification: Optional[str] = None
     new_classification: Optional[str] = None
@@ -490,8 +490,8 @@ class WorkspaceFeedbackCreate(BaseModel):
 class WorkspaceFeedbackResponse(BaseModel):
     id: int
     workspace_id: int
-    vendor_id: Optional[int]
-    screening_id: Optional[int]
+    company_id: Optional[int]
+    company_screening_id: Optional[int]
     feedback_type: str
     previous_classification: Optional[str]
     new_classification: Optional[str]
@@ -532,7 +532,7 @@ def _to_job_response(job: Job) -> JobResponse:
     return JobResponse(
         id=job.id,
         workspace_id=job.workspace_id,
-        vendor_id=job.vendor_id,
+        company_id=job.company_id,
         job_type=job.job_type.value,
         state=job.state.value,
         provider=job.provider.value,
@@ -950,7 +950,7 @@ async def _ensure_search_lanes(
     return list(by_type.values())
 
 
-def _source_from_evidence(evidence: Optional[WorkspaceEvidence]) -> Optional[SourcePill]:
+def _source_from_evidence(evidence: Optional[SourceEvidence]) -> Optional[SourcePill]:
     if not evidence or not evidence.source_url:
         return None
     if not is_trusted_source_url(evidence.source_url):
@@ -966,7 +966,7 @@ def _source_from_evidence(evidence: Optional[WorkspaceEvidence]) -> Optional[Sou
 def _build_claim(
     text: str,
     source_url: Optional[str],
-    evidence_by_url: Dict[str, WorkspaceEvidence],
+    evidence_by_url: Dict[str, SourceEvidence],
     confidence: str = "medium",
 ) -> ReportClaim:
     source: Optional[SourcePill] = None
@@ -1017,8 +1017,8 @@ def _parse_int(value: Any) -> Optional[int]:
 
 def _size_range_from_claims(
     size_estimate: Optional[int],
-    facts: List[VendorFact],
-    claims: List[VendorClaim],
+    facts: List[CompanyFact],
+    claims: List[CompanyClaim],
 ) -> tuple[Optional[int], Optional[int]]:
     values: List[int] = []
     if size_estimate is not None:
@@ -1055,7 +1055,7 @@ def _dedupe_source_pills(pills: List[SourcePill]) -> List[SourcePill]:
 def _collect_bucket_claims(
     bucket: Any,
     *,
-    evidence_by_url: Dict[str, WorkspaceEvidence],
+    evidence_by_url: Dict[str, SourceEvidence],
     fallback_confidence: str = "medium",
 ) -> List[ReportClaim]:
     claims: List[ReportClaim] = []
@@ -1082,7 +1082,7 @@ def _collect_bucket_claims(
 def _collect_workflow_profile(
     dossier_json: Dict[str, Any],
     *,
-    evidence_by_url: Dict[str, WorkspaceEvidence],
+    evidence_by_url: Dict[str, SourceEvidence],
     fallback_capabilities: List[str],
     fallback_evidence_urls: List[str],
 ) -> List[ReportClaim]:
@@ -1120,7 +1120,7 @@ def _collect_workflow_profile(
 def _collect_customer_profile(
     dossier_json: Dict[str, Any],
     *,
-    evidence_by_url: Dict[str, WorkspaceEvidence],
+    evidence_by_url: Dict[str, SourceEvidence],
     why_relevant: List[Dict[str, Any]],
 ) -> List[ReportClaim]:
     canonical = _collect_bucket_claims(dossier_json.get("customer"), evidence_by_url=evidence_by_url)
@@ -1157,7 +1157,7 @@ def _collect_customer_profile(
 def _collect_business_model_profile(
     dossier_json: Dict[str, Any],
     *,
-    evidence_by_url: Dict[str, WorkspaceEvidence],
+    evidence_by_url: Dict[str, SourceEvidence],
 ) -> List[ReportClaim]:
     canonical = _collect_bucket_claims(dossier_json.get("business_model"), evidence_by_url=evidence_by_url)
     if canonical:
@@ -1185,7 +1185,7 @@ def _is_directory_host_url(url: Optional[str]) -> bool:
     return any(domain == token or domain.endswith(f".{token}") for token in DIRECTORY_HOST_TOKENS)
 
 
-def _reason_codes_payload(screening: Optional[VendorScreening]) -> Dict[str, List[str]]:
+def _reason_codes_payload(screening: Optional[CompanyScreening]) -> Dict[str, List[str]]:
     if not screening:
         return {"positive": [], "caution": [], "reject": []}
     return {
@@ -1195,18 +1195,18 @@ def _reason_codes_payload(screening: Optional[VendorScreening]) -> Dict[str, Lis
     }
 
 
-async def _latest_screening_for_vendor(
+async def _latest_screening_for_company(
     db: AsyncSession,
     workspace_id: int,
-    vendor_id: int,
-) -> Optional[VendorScreening]:
+    company_id: int,
+) -> Optional[CompanyScreening]:
     screening_result = await db.execute(
-        select(VendorScreening)
+        select(CompanyScreening)
         .where(
-            VendorScreening.workspace_id == workspace_id,
-            VendorScreening.vendor_id == vendor_id,
+            CompanyScreening.workspace_id == workspace_id,
+            CompanyScreening.company_id == company_id,
         )
-        .order_by(VendorScreening.created_at.desc())
+        .order_by(CompanyScreening.created_at.desc())
         .limit(1)
     )
     return screening_result.scalar_one_or_none()
@@ -1232,12 +1232,12 @@ def _lane_types_from_meta(screening_meta: Dict[str, Any]) -> List[str]:
     return values or ["core"]
 
 
-def _vendor_claims_to_fit_card(
-    vendor: Vendor,
-    screening: Optional[VendorScreening],
+def _company_claims_to_fit_card(
+    company: Company,
+    screening: Optional[CompanyScreening],
     screening_meta: Dict[str, Any],
     citation_summary_v1: Optional[CitationSummaryV1],
-    vendor_claims: List[VendorClaim],
+    company_claims: List[CompanyClaim],
 ) -> Dict[str, Any]:
     why_fit_bullets: List[Dict[str, Any]] = []
     business_model_signal: Optional[str] = None
@@ -1269,7 +1269,7 @@ def _vendor_claims_to_fit_card(
                 }
             )
     if not why_fit_bullets:
-        for item in (vendor.why_relevant or [])[:4]:
+        for item in (company.why_relevant or [])[:4]:
             if not isinstance(item, dict):
                 continue
             text = str(item.get("text") or "").strip()
@@ -1284,7 +1284,7 @@ def _vendor_claims_to_fit_card(
 
     business_model_tokens = ("saas", "subscription", "license", "services", "implementation", "managed service", "contract")
     customer_dimensions = {"customer", "customers", "case_study"}
-    for claim in vendor_claims:
+    for claim in company_claims:
         claim_text = str(claim.claim_text or "").strip()
         lowered = claim_text.lower()
         if not business_model_signal and any(token in lowered for token in business_model_tokens):
@@ -1310,7 +1310,7 @@ def _vendor_claims_to_fit_card(
         if candidate_size is not None:
             employee_signal = f"Employee estimate: {candidate_size}"
         else:
-            for tag in vendor.tags_custom or []:
+            for tag in company.tags_custom or []:
                 if not str(tag).startswith("employee_estimate:"):
                     continue
                 parsed = _parse_int(str(tag).split(":", 1)[1])
@@ -1336,45 +1336,45 @@ def _vendor_claims_to_fit_card(
     }
 
 
-async def _vendor_response_from_row(db: AsyncSession, vendor: Vendor) -> VendorResponse:
+async def _company_response_from_row(db: AsyncSession, company: Company) -> CompanyResponse:
     evidence_count_result = await db.execute(
-        select(func.count(WorkspaceEvidence.id)).where(WorkspaceEvidence.vendor_id == vendor.id)
+        select(func.count(SourceEvidence.id)).where(SourceEvidence.company_id == company.id)
     )
     evidence_count = evidence_count_result.scalar() or 0
-    screening = await _latest_screening_for_vendor(db, vendor.workspace_id, vendor.id)
+    screening = await _latest_screening_for_company(db, company.workspace_id, company.id)
     screening_meta = screening.screening_meta_json if screening and isinstance(screening.screening_meta_json, dict) else {}
     citation_summary_v1 = _citation_summary_from_meta(screening_meta)
     diagnostics = _screening_diagnostics_from_meta(screening_meta)
-    vendor_claims_result = await db.execute(
-        select(VendorClaim)
+    company_claims_result = await db.execute(
+        select(CompanyClaim)
         .where(
-            VendorClaim.workspace_id == vendor.workspace_id,
-            VendorClaim.vendor_id == vendor.id,
+            CompanyClaim.workspace_id == company.workspace_id,
+            CompanyClaim.company_id == company.id,
         )
-        .order_by(VendorClaim.created_at.desc(), VendorClaim.id.desc())
+        .order_by(CompanyClaim.created_at.desc(), CompanyClaim.id.desc())
         .limit(24)
     )
-    vendor_claims = vendor_claims_result.scalars().all()
-    fit_card = _vendor_claims_to_fit_card(vendor, screening, screening_meta, citation_summary_v1, vendor_claims)
-    return VendorResponse(
-        id=vendor.id,
-        workspace_id=vendor.workspace_id,
-        name=vendor.name,
-        website=vendor.website,
+    company_claims = company_claims_result.scalars().all()
+    fit_card = _company_claims_to_fit_card(company, screening, screening_meta, citation_summary_v1, company_claims)
+    return CompanyResponse(
+        id=company.id,
+        workspace_id=company.workspace_id,
+        name=company.name,
+        website=company.website,
         official_website_url=(
             screening.candidate_official_website
             if screening and screening.candidate_official_website
-            else vendor.website
+            else company.website
         ),
         discovery_url=screening.candidate_discovery_url if screening else None,
         entity_type=str(screening_meta.get("entity_type") or "company") if screening else "company",
-        hq_country=vendor.hq_country,
-        operating_countries=vendor.operating_countries or [],
-        tags_custom=vendor.tags_custom or [],
-        status=vendor.status.value,
-        why_relevant=vendor.why_relevant or [],
-        is_manual=vendor.is_manual,
-        created_at=vendor.created_at,
+        hq_country=company.hq_country,
+        operating_countries=company.operating_countries or [],
+        tags_custom=company.tags_custom or [],
+        status=company.status.value,
+        why_relevant=company.why_relevant or [],
+        is_manual=company.is_manual,
+        created_at=company.created_at,
         evidence_count=evidence_count,
         decision_classification=screening.decision_classification if screening else None,
         evidence_sufficiency=screening.evidence_sufficiency if screening else None,
@@ -1403,8 +1403,8 @@ def _to_workspace_feedback_response(event: WorkspaceFeedbackEvent) -> WorkspaceF
     return WorkspaceFeedbackResponse(
         id=event.id,
         workspace_id=event.workspace_id,
-        vendor_id=event.vendor_id,
-        screening_id=event.screening_id,
+        company_id=event.company_id,
+        company_screening_id=event.company_screening_id,
         feedback_type=event.feedback_type,
         previous_classification=event.previous_classification,
         new_classification=event.new_classification,
@@ -1449,7 +1449,7 @@ async def create_workspace(
         name=workspace.name,
         region_scope=workspace.region_scope,
         created_at=workspace.created_at,
-        vendor_count=0,
+        company_count=0,
         has_context_pack=False,
         has_confirmed_search_lanes=False
     )
@@ -1465,11 +1465,11 @@ async def list_workspaces(db: AsyncSession = Depends(get_db)):
     
     responses = []
     for ws in workspaces:
-        # Get vendor count
-        vendor_count_result = await db.execute(
-            select(func.count(Vendor.id)).where(Vendor.workspace_id == ws.id)
+        # Get company count
+        company_count_result = await db.execute(
+            select(func.count(Company.id)).where(Company.workspace_id == ws.id)
         )
-        vendor_count = vendor_count_result.scalar() or 0
+        company_count = company_count_result.scalar() or 0
         
         # Check context pack
         profile_result = await db.execute(
@@ -1500,7 +1500,7 @@ async def list_workspaces(db: AsyncSession = Depends(get_db)):
             name=ws.name,
             region_scope=ws.region_scope,
             created_at=ws.created_at,
-            vendor_count=vendor_count,
+            company_count=company_count,
             has_context_pack=has_context_pack,
             has_confirmed_search_lanes=has_confirmed_search_lanes
         ))
@@ -1518,10 +1518,10 @@ async def get_workspace(workspace_id: int, db: AsyncSession = Depends(get_db)):
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     
-    vendor_count_result = await db.execute(
-        select(func.count(Vendor.id)).where(Vendor.workspace_id == workspace_id)
+    company_count_result = await db.execute(
+        select(func.count(Company.id)).where(Company.workspace_id == workspace_id)
     )
-    vendor_count = vendor_count_result.scalar() or 0
+    company_count = company_count_result.scalar() or 0
     
     profile_result = await db.execute(
         select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
@@ -1551,7 +1551,7 @@ async def get_workspace(workspace_id: int, db: AsyncSession = Depends(get_db)):
         name=workspace.name,
         region_scope=workspace.region_scope,
         created_at=workspace.created_at,
-        vendor_count=vendor_count,
+        company_count=company_count,
         has_context_pack=has_context_pack,
         has_confirmed_search_lanes=has_confirmed_search_lanes
     )
@@ -1616,7 +1616,7 @@ async def get_context_pack(workspace_id: int, db: AsyncSession = Depends(get_db)
         workspace_id=profile.workspace_id,
         buyer_company_url=profile.buyer_company_url,
         buyer_context_summary=profile.buyer_context_summary,
-        reference_vendor_urls=profile.reference_vendor_urls or [],
+        reference_company_urls=profile.reference_company_urls or [],
         reference_evidence_urls=profile.reference_evidence_urls or [],
         reference_summaries=profile.reference_summaries or {},
         geo_scope=profile.geo_scope or {},
@@ -1659,7 +1659,7 @@ async def export_context_pack(
         "workspace_id": workspace_id,
         "buyer_company_url": profile.buyer_company_url,
         "buyer_context_summary": profile.buyer_context_summary,
-        "reference_vendor_urls": profile.reference_vendor_urls or [],
+        "reference_company_urls": profile.reference_company_urls or [],
         "reference_evidence_urls": profile.reference_evidence_urls or [],
         "reference_summaries": profile.reference_summaries or {},
         "geo_scope": profile.geo_scope or {},
@@ -1688,8 +1688,8 @@ async def update_context_pack(
     
     if data.buyer_company_url is not None:
         profile.buyer_company_url = data.buyer_company_url
-    if data.reference_vendor_urls is not None:
-        profile.reference_vendor_urls = _clean_url_list(data.reference_vendor_urls, max_items=10)
+    if data.reference_company_urls is not None:
+        profile.reference_company_urls = _clean_url_list(data.reference_company_urls, max_items=10)
     if data.reference_evidence_urls is not None:
         profile.reference_evidence_urls = _clean_url_list(data.reference_evidence_urls, max_items=50)
     if data.geo_scope is not None:
@@ -1757,7 +1757,7 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
     return JobResponse(
         id=job.id,
         workspace_id=job.workspace_id,
-        vendor_id=job.vendor_id,
+        company_id=job.company_id,
         job_type=job.job_type.value,
         state=job.state.value,
         provider=job.provider.value,
@@ -1814,7 +1814,7 @@ async def update_thesis_pack(
         thesis_pack.source_pills_json = normalize_source_pills(
             [item.model_dump() for item in data.source_pills],
             buyer_url=profile.buyer_company_url,
-            reference_vendor_urls=profile.reference_vendor_urls or [],
+            reference_company_urls=profile.reference_company_urls or [],
             reference_evidence_urls=profile.reference_evidence_urls or [],
         )
         existing_pills = thesis_pack.source_pills_json or []
@@ -2070,7 +2070,7 @@ async def confirm_search_lanes(workspace_id: int, db: AsyncSession = Depends(get
 
 
 # ============================================================================
-# Discovery & Vendors
+# Discovery & Companies
 # ============================================================================
 
 @router.post("/{workspace_id}/discovery:run", response_model=JobResponse)
@@ -2105,7 +2105,7 @@ async def run_discovery(workspace_id: int, db: AsyncSession = Depends(get_db)):
     return JobResponse(
         id=job.id,
         workspace_id=job.workspace_id,
-        vendor_id=job.vendor_id,
+        company_id=job.company_id,
         job_type=job.job_type.value,
         state=job.state.value,
         provider=job.provider.value,
@@ -2144,9 +2144,9 @@ async def get_discovery_diagnostics(
     variance_hotspots_v1 = await _variance_hotspots_for_workspace(db, workspace_id, limit_runs=30)
 
     screenings_query = (
-        select(VendorScreening)
-        .where(VendorScreening.workspace_id == workspace_id)
-        .order_by(VendorScreening.created_at.desc())
+        select(CompanyScreening)
+        .where(CompanyScreening.workspace_id == workspace_id)
+        .order_by(CompanyScreening.created_at.desc())
         .limit(1000)
     )
     screenings_result = await db.execute(screenings_query)
@@ -2240,10 +2240,10 @@ async def get_discovery_diagnostics(
         origin_mix_distribution[origin_type] = origin_mix_distribution.get(origin_type, 0) + 1
 
     screening_ids = [row.id for row in screenings]
-    claims: List[VendorClaim] = []
+    claims: List[CompanyClaim] = []
     if screening_ids:
         claims_result = await db.execute(
-            select(VendorClaim).where(VendorClaim.screening_id.in_(screening_ids))
+            select(CompanyClaim).where(CompanyClaim.company_screening_id.in_(screening_ids))
         )
         claims = claims_result.scalars().all()
 
@@ -2294,8 +2294,12 @@ async def get_discovery_diagnostics(
     for claim in claims:
         source_type = claim.source_type or "unknown"
         source_quality_distribution[source_type] = source_quality_distribution.get(source_type, 0) + 1
-        evidence_claims_by_screening[claim.screening_id] = evidence_claims_by_screening.get(claim.screening_id, 0) + 1
-        seen_dimensions_per_screening.setdefault(claim.screening_id, set()).add((claim.dimension or "").lower())
+        if not claim.company_screening_id:
+            continue
+        evidence_claims_by_screening[claim.company_screening_id] = (
+            evidence_claims_by_screening.get(claim.company_screening_id, 0) + 1
+        )
+        seen_dimensions_per_screening.setdefault(claim.company_screening_id, set()).add((claim.dimension or "").lower())
 
     for dimensions in seen_dimensions_per_screening.values():
         if any(d in dimensions for d in {"icp", "target_customer"}):
@@ -2448,25 +2452,25 @@ async def get_discovery_diagnostics(
     return response_payload
 
 
-@router.get("/{workspace_id}/vendors", response_model=List[VendorResponse])
-async def list_vendors(
+@router.get("/{workspace_id}/companies", response_model=List[CompanyResponse])
+async def list_companies(
     workspace_id: int,
     status: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db)
 ):
-    """List vendors in workspace with optional status filter."""
-    query = select(Vendor).where(Vendor.workspace_id == workspace_id)
+    """List companies in workspace with optional status filter."""
+    query = select(Company).where(Company.workspace_id == workspace_id)
     
     if status:
-        query = query.where(Vendor.status == VendorStatus(status))
+        query = query.where(Company.status == CompanyStatus(status))
     
-    query = query.order_by(Vendor.created_at.desc())
+    query = query.order_by(Company.created_at.desc())
     result = await db.execute(query)
-    vendors = result.scalars().all()
+    companies = result.scalars().all()
 
-    responses: List[VendorResponse] = []
-    for row in vendors:
-        responses.append(await _vendor_response_from_row(db, row))
+    responses: List[CompanyResponse] = []
+    for row in companies:
+        responses.append(await _company_response_from_row(db, row))
     return responses
 
 
@@ -2491,9 +2495,9 @@ async def list_top_candidates(
     quality_payload = _quality_payload_from_job_result(latest_discovery_job_result)
 
     screenings_result = await db.execute(
-        select(VendorScreening)
-        .where(VendorScreening.workspace_id == workspace_id)
-        .order_by(VendorScreening.created_at.desc())
+        select(CompanyScreening)
+        .where(CompanyScreening.workspace_id == workspace_id)
+        .order_by(CompanyScreening.created_at.desc())
         .limit(4000)
     )
     screenings_all = screenings_result.scalars().all()
@@ -2555,13 +2559,13 @@ async def list_top_candidates(
         ),
     }
 
-    vendor_ids = [row.vendor_id for row in candidates if row.vendor_id]
+    company_ids = [row.company_id for row in candidates if row.company_id]
     entity_ids = [row.candidate_entity_id for row in candidates if row.candidate_entity_id]
 
-    vendor_map: Dict[int, Vendor] = {}
-    if vendor_ids:
-        vendor_result = await db.execute(select(Vendor).where(Vendor.id.in_(vendor_ids)))
-        vendor_map = {row.id: row for row in vendor_result.scalars().all()}
+    company_map: Dict[int, Company] = {}
+    if company_ids:
+        company_result = await db.execute(select(Company).where(Company.id.in_(company_ids)))
+        company_map = {row.id: row for row in company_result.scalars().all()}
 
     entity_map: Dict[int, CandidateEntity] = {}
     origins_by_entity: Dict[int, List[CandidateOriginEdge]] = {}
@@ -2591,7 +2595,7 @@ async def list_top_candidates(
 
     output: List[UniverseTopCandidateResponse] = []
     for screening in candidates[:limit]:
-        vendor = vendor_map.get(screening.vendor_id) if screening.vendor_id else None
+        company = company_map.get(screening.company_id) if screening.company_id else None
         entity = entity_map.get(screening.candidate_entity_id) if screening.candidate_entity_id else None
         meta = screening.screening_meta_json if isinstance(screening.screening_meta_json, dict) else {}
         diagnostics = _screening_diagnostics_from_meta(meta)
@@ -2628,12 +2632,12 @@ async def list_top_candidates(
 
         output.append(
             UniverseTopCandidateResponse(
-                vendor_id=screening.vendor_id,
+                company_id=screening.company_id,
                 candidate_entity_id=screening.candidate_entity_id,
-                company_name=(vendor.name if vendor else screening.candidate_name),
+                company_name=(company.name if company else screening.candidate_name),
                 official_website_url=(
                     screening.candidate_official_website
-                    or (vendor.website if vendor else None)
+                    or (company.website if company else None)
                     or (entity.canonical_website if entity else None)
                 ),
                 discovery_sources=deduped_sources[:12],
@@ -2670,13 +2674,13 @@ async def list_top_candidates(
     return output
 
 
-@router.post("/{workspace_id}/vendors", response_model=VendorResponse)
-async def create_vendor(
+@router.post("/{workspace_id}/companies", response_model=CompanyResponse)
+async def create_company(
     workspace_id: int,
-    data: VendorCreate,
+    data: CompanyCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Manually add a vendor to the workspace."""
+    """Manually add a company to the workspace."""
     # Verify workspace exists
     result = await db.execute(
         select(Workspace).where(Workspace.id == workspace_id)
@@ -2685,70 +2689,70 @@ async def create_vendor(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     
-    vendor = Vendor(
+    company = Company(
         workspace_id=workspace_id,
         name=data.name,
         website=data.website,
         hq_country=data.hq_country,
-        status=VendorStatus.candidate,
+        status=CompanyStatus.candidate,
         is_manual=True
     )
-    db.add(vendor)
+    db.add(company)
     await db.commit()
-    await db.refresh(vendor)
+    await db.refresh(company)
     
-    return await _vendor_response_from_row(db, vendor)
+    return await _company_response_from_row(db, company)
 
 
-@router.patch("/{workspace_id}/vendors/{vendor_id}", response_model=VendorResponse)
-async def update_vendor(
+@router.patch("/{workspace_id}/companies/{company_id}", response_model=CompanyResponse)
+async def update_company(
     workspace_id: int,
-    vendor_id: int,
-    data: VendorUpdate,
+    company_id: int,
+    data: CompanyUpdate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Update vendor details or status (keep/remove)."""
+    """Update company details or status (keep/remove)."""
     result = await db.execute(
-        select(Vendor).where(
-            Vendor.id == vendor_id,
-            Vendor.workspace_id == workspace_id
+        select(Company).where(
+            Company.id == company_id,
+            Company.workspace_id == workspace_id
         )
     )
-    vendor = result.scalar_one_or_none()
-    if not vendor:
-        raise HTTPException(status_code=404, detail="Vendor not found")
+    company = result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
     
     if data.name is not None:
-        vendor.name = data.name
+        company.name = data.name
     if data.website is not None:
-        vendor.website = data.website
+        company.website = data.website
     if data.hq_country is not None:
-        vendor.hq_country = data.hq_country
+        company.hq_country = data.hq_country
     if data.operating_countries is not None:
-        vendor.operating_countries = data.operating_countries
+        company.operating_countries = data.operating_countries
     if data.tags_custom is not None:
-        vendor.tags_custom = data.tags_custom
+        company.tags_custom = data.tags_custom
     if data.status is not None:
-        vendor.status = VendorStatus(data.status)
+        company.status = CompanyStatus(data.status)
     
-    vendor.updated_at = datetime.utcnow()
+    company.updated_at = datetime.utcnow()
     await db.commit()
-    await db.refresh(vendor)
+    await db.refresh(company)
     
-    return await _vendor_response_from_row(db, vendor)
+    return await _company_response_from_row(db, company)
 
 
 # ============================================================================
 # Enrichment
 # ============================================================================
 
-@router.post("/{workspace_id}/vendors:enrich", response_model=List[JobResponse])
-async def enrich_vendors_batch(
+@router.post("/{workspace_id}/companies:enrich", response_model=List[JobResponse])
+async def enrich_companies_batch(
     workspace_id: int,
     data: EnrichBatchRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """Batch enrich multiple vendors."""
+    """Batch enrich multiple companies."""
     # Verify workspace exists
     result = await db.execute(
         select(Workspace).where(Workspace.id == workspace_id)
@@ -2758,20 +2762,20 @@ async def enrich_vendors_batch(
         raise HTTPException(status_code=404, detail="Workspace not found")
     
     jobs = []
-    for vendor_id in data.vendor_ids:
-        # Verify vendor exists
-        vendor_result = await db.execute(
-            select(Vendor).where(Vendor.id == vendor_id, Vendor.workspace_id == workspace_id)
+    for company_id in data.company_ids:
+        # Verify company exists
+        company_result = await db.execute(
+            select(Company).where(Company.id == company_id, Company.workspace_id == workspace_id)
         )
-        vendor = vendor_result.scalar_one_or_none()
-        if not vendor:
+        company = company_result.scalar_one_or_none()
+        if not company:
             continue
         
         for job_type_str in data.job_types:
             job_type = JobType(job_type_str)
             job = Job(
                 workspace_id=workspace_id,
-                vendor_id=vendor_id,
+                company_id=company_id,
                 job_type=job_type,
                 state=JobState.queued,
                 provider=JobProvider.gemini_flash
@@ -2783,9 +2787,9 @@ async def enrich_vendors_batch(
     await db.commit()
     
     # Trigger async tasks
-    from app.workers.workspace_tasks import run_enrich_vendor
+    from app.workers.workspace_tasks import run_enrich_company
     for job in jobs:
-        task_result = run_enrich_vendor.delay(job.id)
+        task_result = run_enrich_company.delay(job.id)
         job.interaction_id = str(task_result.id)
     await db.commit()
     
@@ -2793,7 +2797,7 @@ async def enrich_vendors_batch(
         JobResponse(
             id=job.id,
             workspace_id=job.workspace_id,
-            vendor_id=job.vendor_id,
+            company_id=job.company_id,
             job_type=job.job_type.value,
             state=job.state.value,
             provider=job.provider.value,
@@ -2809,17 +2813,17 @@ async def enrich_vendors_batch(
     ]
 
 
-@router.get("/{workspace_id}/vendors/{vendor_id}/dossier", response_model=Optional[VendorDossierResponse])
-async def get_vendor_dossier(
+@router.get("/{workspace_id}/companies/{company_id}/dossier", response_model=Optional[CompanyDossierResponse])
+async def get_company_dossier(
     workspace_id: int,
-    vendor_id: int,
+    company_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """Get the latest dossier for a vendor."""
+    """Get the latest dossier for a company."""
     result = await db.execute(
-        select(VendorDossier)
-        .where(VendorDossier.vendor_id == vendor_id)
-        .order_by(VendorDossier.version.desc())
+        select(CompanyDossier)
+        .where(CompanyDossier.company_id == company_id)
+        .order_by(CompanyDossier.version.desc())
         .limit(1)
     )
     dossier = result.scalar_one_or_none()
@@ -2827,9 +2831,9 @@ async def get_vendor_dossier(
     if not dossier:
         return None
     
-    return VendorDossierResponse(
+    return CompanyDossierResponse(
         id=dossier.id,
-        vendor_id=dossier.vendor_id,
+        company_id=dossier.company_id,
         dossier_json=dossier.dossier_json,
         version=dossier.version,
         created_at=dossier.created_at
@@ -2987,31 +2991,31 @@ async def list_report_cards(
 
     cards: List[ReportCard] = []
     for item in items:
-        vendor_result = await db.execute(
-            select(Vendor).where(Vendor.id == item.vendor_id, Vendor.workspace_id == workspace_id)
+        company_result = await db.execute(
+            select(Company).where(Company.id == item.company_id, Company.workspace_id == workspace_id)
         )
-        vendor = vendor_result.scalar_one_or_none()
-        if not vendor:
+        company = company_result.scalar_one_or_none()
+        if not company:
             continue
 
         dossier_result = await db.execute(
-            select(VendorDossier)
-            .where(VendorDossier.vendor_id == vendor.id)
-            .order_by(VendorDossier.version.desc())
+            select(CompanyDossier)
+            .where(CompanyDossier.company_id == company.id)
+            .order_by(CompanyDossier.version.desc())
             .limit(1)
         )
         dossier = dossier_result.scalar_one_or_none()
         dossier_json = dossier.dossier_json if dossier else {}
 
         evidence_result = await db.execute(
-            select(WorkspaceEvidence).where(WorkspaceEvidence.vendor_id == vendor.id)
+            select(SourceEvidence).where(SourceEvidence.company_id == company.id)
         )
         evidence_items = evidence_result.scalars().all()
         evidence_by_url = {e.source_url: e for e in evidence_items if e.source_url}
         evidence_by_id = {e.id: e for e in evidence_items}
         fallback_capabilities = [
             tag.split(":", 1)[1].strip()
-            for tag in (vendor.tags_custom or [])
+            for tag in (company.tags_custom or [])
             if isinstance(tag, str) and tag.startswith("capability:")
         ]
         fallback_evidence_urls = [
@@ -3029,7 +3033,7 @@ async def list_report_cards(
         customer_profile = _collect_customer_profile(
             dossier_json,
             evidence_by_url=evidence_by_url,
-            why_relevant=vendor.why_relevant or [],
+            why_relevant=company.why_relevant or [],
         )
         business_model_profile = _collect_business_model_profile(
             dossier_json,
@@ -3045,14 +3049,14 @@ async def list_report_cards(
         )
 
         facts_result = await db.execute(
-            select(VendorFact).where(VendorFact.vendor_id == vendor.id)
+            select(CompanyFact).where(CompanyFact.company_id == company.id)
         )
         facts = facts_result.scalars().all()
         claims_result = await db.execute(
-            select(VendorClaim).where(VendorClaim.vendor_id == vendor.id)
+            select(CompanyClaim).where(CompanyClaim.company_id == company.id)
         )
         claims = claims_result.scalars().all()
-        screening = await _latest_screening_for_vendor(db, workspace_id, vendor.id)
+        screening = await _latest_screening_for_company(db, workspace_id, company.id)
 
         estimate = item.lens_breakdown_json.get("size_estimate")
         if estimate is None:
@@ -3060,8 +3064,8 @@ async def list_report_cards(
                 dossier_json=dossier_json,
                 facts=facts,
                 evidence_items=evidence_items,
-                tags_custom=vendor.tags_custom or [],
-                why_relevant=vendor.why_relevant or [],
+                tags_custom=company.tags_custom or [],
+                why_relevant=company.why_relevant or [],
             )
         size_range_low, size_range_high = _size_range_from_claims(estimate, facts, claims)
         bucket = item.lens_breakdown_json.get("size_bucket") or classify_size_bucket(estimate)
@@ -3075,7 +3079,7 @@ async def list_report_cards(
             source_evidence = evidence_by_id.get(fact.source_evidence_id)
             if not source_evidence and fact.source_evidence_id:
                 source_result = await db.execute(
-                    select(WorkspaceEvidence).where(WorkspaceEvidence.id == fact.source_evidence_id)
+                    select(SourceEvidence).where(SourceEvidence.id == fact.source_evidence_id)
                 )
                 source_evidence = source_result.scalar_one_or_none()
             if not source_evidence or not source_evidence.source_url:
@@ -3133,7 +3137,7 @@ async def list_report_cards(
             )
 
         legal_status = None
-        for tag in vendor.tags_custom or []:
+        for tag in company.tags_custom or []:
             if isinstance(tag, str) and tag.startswith("legal_status:"):
                 legal_status = tag.split(":", 1)[1].strip()
                 break
@@ -3162,10 +3166,10 @@ async def list_report_cards(
             known_unknowns = [f"Missing claim group: {group}" for group in (screening.missing_claim_groups_json or [])]
 
         card = ReportCard(
-            vendor_id=vendor.id,
-            name=vendor.name,
-            website=vendor.website,
-            hq_country=vendor.hq_country,
+            company_id=company.id,
+            name=company.name,
+            website=company.website,
+            hq_country=company.hq_country,
             legal_status=legal_status,
             size_bucket=bucket,
             size_estimate=estimate,
@@ -3180,7 +3184,7 @@ async def list_report_cards(
             transaction_profile=transaction_profile,
             filing_metrics=filing_metrics,
             source_pills=_dedupe_source_pills(source_pills),
-            coverage_note=_coverage_note_for_country(vendor.hq_country),
+            coverage_note=_coverage_note_for_country(company.hq_country),
             next_validation_questions=[
                 "Can we verify customer concentration from at least two independent sources?",
                 "What ownership and control signals still need confirmation?",
@@ -3229,12 +3233,12 @@ async def export_report_snapshot(
         select(ReportSnapshotItem).where(ReportSnapshotItem.report_id == report_id)
     )
     report_items = report_items_result.scalars().all()
-    item_by_vendor: Dict[int, ReportSnapshotItem] = {item.vendor_id: item for item in report_items}
+    item_by_company: Dict[int, ReportSnapshotItem] = {item.company_id: item for item in report_items}
 
     screenings_result = await db.execute(
-        select(VendorScreening)
-        .where(VendorScreening.workspace_id == workspace_id)
-        .order_by(VendorScreening.created_at.desc())
+        select(CompanyScreening)
+        .where(CompanyScreening.workspace_id == workspace_id)
+        .order_by(CompanyScreening.created_at.desc())
         .limit(2000)
     )
     screenings_all = screenings_result.scalars().all()
@@ -3251,15 +3255,16 @@ async def export_report_snapshot(
         ]
 
     screening_ids = [row.id for row in screenings]
-    claims: List[VendorClaim] = []
+    claims: List[CompanyClaim] = []
     if screening_ids:
         claims_result = await db.execute(
-            select(VendorClaim).where(VendorClaim.screening_id.in_(screening_ids))
+            select(CompanyClaim).where(CompanyClaim.company_screening_id.in_(screening_ids))
         )
         claims = claims_result.scalars().all()
-    claims_by_screening: Dict[int, List[VendorClaim]] = {}
+    claims_by_screening: Dict[int, List[CompanyClaim]] = {}
     for claim in claims:
-        claims_by_screening.setdefault(claim.screening_id, []).append(claim)
+        if claim.company_screening_id:
+            claims_by_screening.setdefault(claim.company_screening_id, []).append(claim)
 
     entity_ids = [row.candidate_entity_id for row in screenings if row.candidate_entity_id]
     entity_map: Dict[int, CandidateEntity] = {}
@@ -3284,40 +3289,40 @@ async def export_report_snapshot(
         for origin in origin_result.scalars().all():
             origins_by_entity.setdefault(origin.entity_id, []).append(origin)
 
-    vendor_ids = [row.vendor_id for row in screenings if row.vendor_id]
-    vendor_map: Dict[int, Vendor] = {}
-    dossier_map: Dict[int, VendorDossier] = {}
-    facts_by_vendor: Dict[int, List[VendorFact]] = {}
-    evidence_by_vendor: Dict[int, List[WorkspaceEvidence]] = {}
-    if vendor_ids:
-        vendor_result = await db.execute(
-            select(Vendor).where(Vendor.id.in_(vendor_ids), Vendor.workspace_id == workspace_id)
+    company_ids = [row.company_id for row in screenings if row.company_id]
+    company_map: Dict[int, Company] = {}
+    dossier_map: Dict[int, CompanyDossier] = {}
+    facts_by_company: Dict[int, List[CompanyFact]] = {}
+    evidence_by_company: Dict[int, List[SourceEvidence]] = {}
+    if company_ids:
+        company_result = await db.execute(
+            select(Company).where(Company.id.in_(company_ids), Company.workspace_id == workspace_id)
         )
-        vendors = vendor_result.scalars().all()
-        vendor_map = {vendor.id: vendor for vendor in vendors}
+        companies = company_result.scalars().all()
+        company_map = {company.id: company for company in companies}
 
-        for vendor_id in vendor_ids:
+        for company_id in company_ids:
             dossier_result = await db.execute(
-                select(VendorDossier)
-                .where(VendorDossier.vendor_id == vendor_id)
-                .order_by(VendorDossier.version.desc())
+                select(CompanyDossier)
+                .where(CompanyDossier.company_id == company_id)
+                .order_by(CompanyDossier.version.desc())
                 .limit(1)
             )
             dossier = dossier_result.scalar_one_or_none()
             if dossier:
-                dossier_map[vendor_id] = dossier
+                dossier_map[company_id] = dossier
 
         facts_result = await db.execute(
-            select(VendorFact).where(VendorFact.vendor_id.in_(vendor_ids))
+            select(CompanyFact).where(CompanyFact.company_id.in_(company_ids))
         )
         for fact in facts_result.scalars().all():
-            facts_by_vendor.setdefault(fact.vendor_id, []).append(fact)
+            facts_by_company.setdefault(fact.company_id, []).append(fact)
 
         evidence_result = await db.execute(
-            select(WorkspaceEvidence).where(WorkspaceEvidence.vendor_id.in_(vendor_ids))
+            select(SourceEvidence).where(SourceEvidence.company_id.in_(company_ids))
         )
         for evidence in evidence_result.scalars().all():
-            evidence_by_vendor.setdefault(evidence.vendor_id, []).append(evidence)
+            evidence_by_company.setdefault(evidence.company_id, []).append(evidence)
 
     source_runs_result = await db.execute(
         select(ComparatorSourceRun)
@@ -3327,10 +3332,10 @@ async def export_report_snapshot(
     )
     source_runs = source_runs_result.scalars().all()
     source_run_ids = [run.id for run in source_runs]
-    mentions: List[VendorMention] = []
+    mentions: List[CompanyMention] = []
     if source_run_ids:
         mentions_result = await db.execute(
-            select(VendorMention).where(VendorMention.source_run_id.in_(source_run_ids))
+            select(CompanyMention).where(CompanyMention.source_run_id.in_(source_run_ids))
         )
         mentions = mentions_result.scalars().all()
 
@@ -3373,29 +3378,29 @@ async def export_report_snapshot(
         latest_discovery_job_result = latest_discovery_job.result_json
 
     for screening in screenings:
-        vendor = vendor_map.get(screening.vendor_id) if screening.vendor_id else None
+        company = company_map.get(screening.company_id) if screening.company_id else None
         candidate_entity = entity_map.get(screening.candidate_entity_id) if screening.candidate_entity_id else None
-        vendor_claims = claims_by_screening.get(screening.id, [])
-        report_item = item_by_vendor.get(vendor.id) if vendor else None
+        company_claims = claims_by_screening.get(screening.id, [])
+        report_item = item_by_company.get(company.id) if company else None
         dossier_json = {}
-        if vendor and vendor.id in dossier_map:
-            dossier_json = dossier_map[vendor.id].dossier_json or {}
+        if company and company.id in dossier_map:
+            dossier_json = dossier_map[company.id].dossier_json or {}
         modules = modules_with_evidence(dossier_json)
         customers, integrations = extract_customers_and_integrations(dossier_json)
-        facts = facts_by_vendor.get(vendor.id, []) if vendor else []
+        facts = facts_by_company.get(company.id, []) if company else []
 
         size_estimate = None
         if report_item:
             size_estimate = report_item.lens_breakdown_json.get("size_estimate")
-        if size_estimate is None and vendor:
+        if size_estimate is None and company:
             size_estimate = estimate_size_from_signals(
                 dossier_json=dossier_json,
                 facts=facts,
-                evidence_items=evidence_by_vendor.get(vendor.id, []),
-                tags_custom=vendor.tags_custom or [],
-                why_relevant=vendor.why_relevant or [],
+                evidence_items=evidence_by_company.get(company.id, []),
+                tags_custom=company.tags_custom or [],
+                why_relevant=company.why_relevant or [],
             )
-        size_low, size_high = _size_range_from_claims(size_estimate, facts, vendor_claims)
+        size_low, size_high = _size_range_from_claims(size_estimate, facts, company_claims)
         size_confidence = "high" if (size_low is not None and size_high is not None and size_low == size_high) else "medium"
 
         component_scores = screening.component_scores_json or {}
@@ -3430,7 +3435,7 @@ async def export_report_snapshot(
             fit_classification = "adjacent"
 
         source_pills: List[Dict[str, Any]] = []
-        for claim in vendor_claims:
+        for claim in company_claims:
             if not claim.source_url or not is_trusted_source_url(claim.source_url):
                 continue
             source_pills.append(
@@ -3451,16 +3456,16 @@ async def export_report_snapshot(
             deduped_pills.append(pill)
 
         icp_claims = [
-            claim for claim in vendor_claims
+            claim for claim in company_claims
             if (claim.dimension or "").lower() in {"icp", "target_customer", "customers", "customer"}
         ]
         product_claims = [
-            claim for claim in vendor_claims
+            claim for claim in company_claims
             if (claim.dimension or "").lower() in {"capability", "product", "services", "evidence", "directory_context"}
         ]
 
         target_segments = []
-        all_text = " ".join((claim.claim_text or "") for claim in vendor_claims).lower()
+        all_text = " ".join((claim.claim_text or "") for claim in company_claims).lower()
         segment_tokens = {
             "asset manager": "asset manager",
             "wealth manager": "wealth manager",
@@ -3488,9 +3493,9 @@ async def export_report_snapshot(
             else "What is customer concentration risk among top logos?"
         )
 
-        company_name = vendor.name if vendor else screening.candidate_name
-        website = vendor.website if vendor else screening.candidate_website
-        country = vendor.hq_country if vendor else (screening.screening_meta_json or {}).get("candidate_hq_country")
+        company_name = company.name if company else screening.candidate_name
+        website = company.website if company else screening.candidate_website
+        country = company.hq_country if company else (screening.screening_meta_json or {}).get("candidate_hq_country")
         screening_meta = screening.screening_meta_json or {}
         source_summary = screening.source_summary_json or {}
         first_party_enrichment = screening_meta.get("first_party_enrichment") if isinstance(screening_meta.get("first_party_enrichment"), dict) else {}
@@ -3540,8 +3545,8 @@ async def export_report_snapshot(
                 registry_ids_payload.append(candidate_entity.registry_id)
 
         legal_hint = None
-        if vendor:
-            for tag in vendor.tags_custom or []:
+        if company:
+            for tag in company.tags_custom or []:
                 if isinstance(tag, str) and tag.startswith("legal_status:"):
                     legal_hint = tag.split(":", 1)[1].strip()
                     break
@@ -3620,7 +3625,7 @@ async def export_report_snapshot(
                             "source_url": claim.source_url,
                             "source_type": claim.source_type,
                         }
-                        for claim in vendor_claims
+                        for claim in company_claims
                         if claim.claim_key == "employees"
                     ][:6],
                 },
@@ -3668,7 +3673,7 @@ async def export_report_snapshot(
                             "text": claim.claim_text[:240],
                             "source_url": claim.source_url,
                         }
-                        for claim in vendor_claims
+                        for claim in company_claims
                         if (claim.dimension or "").lower() in {"customer", "customers", "case_study"}
                     ][:8],
                 },
@@ -3846,23 +3851,23 @@ async def update_evidence_policy(
     return {"workspace_id": workspace_id, "policy": workspace.decision_policy_json}
 
 
-@router.get("/{workspace_id}/vendors/{vendor_id}/decision", response_model=VendorDecisionResponse)
-async def get_vendor_decision(
+@router.get("/{workspace_id}/companies/{company_id}/decision", response_model=CompanyDecisionResponse)
+async def get_company_decision(
     workspace_id: int,
-    vendor_id: int,
+    company_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    vendor_result = await db.execute(
-        select(Vendor).where(Vendor.id == vendor_id, Vendor.workspace_id == workspace_id)
+    company_result = await db.execute(
+        select(Company).where(Company.id == company_id, Company.workspace_id == workspace_id)
     )
-    vendor = vendor_result.scalar_one_or_none()
-    if not vendor:
-        raise HTTPException(status_code=404, detail="Vendor not found")
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
 
-    screening = await _latest_screening_for_vendor(db, workspace_id, vendor_id)
+    screening = await _latest_screening_for_company(db, workspace_id, company_id)
     if screening:
-        return VendorDecisionResponse(
-            vendor_id=vendor_id,
+        return CompanyDecisionResponse(
+            company_id=company_id,
             workspace_id=workspace_id,
             classification=screening.decision_classification or "insufficient_evidence",
             evidence_sufficiency=screening.evidence_sufficiency or "insufficient",
@@ -3879,9 +3884,9 @@ async def get_vendor_decision(
         )
 
     claims_result = await db.execute(
-        select(VendorClaim).where(
-            VendorClaim.workspace_id == workspace_id,
-            VendorClaim.vendor_id == vendor_id,
+        select(CompanyClaim).where(
+            CompanyClaim.workspace_id == workspace_id,
+            CompanyClaim.company_id == company_id,
         )
     )
     claims = claims_result.scalars().all()
@@ -3892,8 +3897,8 @@ async def get_vendor_decision(
         component_scores={},
         source_type_counts={},
     )
-    return VendorDecisionResponse(
-        vendor_id=vendor_id,
+    return CompanyDecisionResponse(
+        company_id=company_id,
         workspace_id=workspace_id,
         classification=decision.classification,
         evidence_sufficiency=decision.evidence_sufficiency,
@@ -3916,9 +3921,9 @@ async def get_decision_quality_diagnostics(
     db: AsyncSession = Depends(get_db),
 ):
     screenings_result = await db.execute(
-        select(VendorScreening)
-        .where(VendorScreening.workspace_id == workspace_id)
-        .order_by(VendorScreening.created_at.desc())
+        select(CompanyScreening)
+        .where(CompanyScreening.workspace_id == workspace_id)
+        .order_by(CompanyScreening.created_at.desc())
         .limit(3000)
     )
     screenings = screenings_result.scalars().all()
@@ -3947,14 +3952,14 @@ async def get_decision_quality_diagnostics(
             "generated_at": datetime.utcnow().isoformat(),
         }
 
-    vendor_ids = [row.vendor_id for row in screenings if row.vendor_id]
+    company_ids = [row.company_id for row in screenings if row.company_id]
     claims_result = await db.execute(
-        select(VendorClaim).where(VendorClaim.workspace_id == workspace_id)
+        select(CompanyClaim).where(CompanyClaim.workspace_id == workspace_id)
     )
     claims = claims_result.scalars().all()
 
     evidence_result = await db.execute(
-        select(WorkspaceEvidence).where(WorkspaceEvidence.workspace_id == workspace_id)
+        select(SourceEvidence).where(SourceEvidence.workspace_id == workspace_id)
     )
     evidence_rows = evidence_result.scalars().all()
 
@@ -3986,23 +3991,23 @@ async def get_decision_quality_diagnostics(
         for group, total in freshness_total_by_group.items()
     }
 
-    by_vendor: Dict[int, List[VendorScreening]] = {}
+    by_company: Dict[int, List[CompanyScreening]] = {}
     for row in screenings:
-        if row.vendor_id:
-            by_vendor.setdefault(row.vendor_id, []).append(row)
+        if row.company_id:
+            by_company.setdefault(row.company_id, []).append(row)
     downgraded = 0
-    for rows in by_vendor.values():
+    for rows in by_company.values():
         statuses = [str(item.decision_classification or "") for item in rows]
         if "good_target" in statuses and "not_good_target" in statuses:
             downgraded += 1
-    keep_to_later_reject_rate = round(downgraded / max(1, len(by_vendor)), 4)
+    keep_to_later_reject_rate = round(downgraded / max(1, len(by_company)), 4)
     feedback_count_result = await db.execute(
         select(func.count(WorkspaceFeedbackEvent.id)).where(
             WorkspaceFeedbackEvent.workspace_id == workspace_id
         )
     )
     feedback_count = int(feedback_count_result.scalar() or 0)
-    analyst_override_rate = round(feedback_count / max(1, len(by_vendor)), 4)
+    analyst_override_rate = round(feedback_count / max(1, len(by_company)), 4)
     ranking_eligible_count = len([row for row in screenings if bool(row.ranking_eligible)])
     directory_only_count = len(
         [
@@ -4075,7 +4080,7 @@ async def run_monitoring(
         state=JobState.queued,
         provider=JobProvider.crawler,
         result_json={
-            "max_vendors": data.max_vendors,
+            "max_companies": data.max_companies,
             "stale_only": data.stale_only,
             "classifications": data.classifications,
         },
@@ -4177,29 +4182,29 @@ async def create_workspace_feedback(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    screening: Optional[VendorScreening] = None
-    if data.vendor_id:
-        vendor_result = await db.execute(
-            select(Vendor).where(Vendor.id == data.vendor_id, Vendor.workspace_id == workspace_id)
+    screening: Optional[CompanyScreening] = None
+    if data.company_id:
+        company_result = await db.execute(
+            select(Company).where(Company.id == data.company_id, Company.workspace_id == workspace_id)
         )
-        vendor = vendor_result.scalar_one_or_none()
-        if not vendor:
-            raise HTTPException(status_code=404, detail="Vendor not found")
-    if data.screening_id:
+        company = company_result.scalar_one_or_none()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+    if data.company_screening_id:
         screening_result = await db.execute(
-            select(VendorScreening).where(
-                VendorScreening.id == data.screening_id,
-                VendorScreening.workspace_id == workspace_id,
+            select(CompanyScreening).where(
+                CompanyScreening.id == data.company_screening_id,
+                CompanyScreening.workspace_id == workspace_id,
             )
         )
         screening = screening_result.scalar_one_or_none()
-    elif data.vendor_id:
-        screening = await _latest_screening_for_vendor(db, workspace_id, data.vendor_id)
+    elif data.company_id:
+        screening = await _latest_screening_for_company(db, workspace_id, data.company_id)
 
     feedback_event = WorkspaceFeedbackEvent(
         workspace_id=workspace_id,
-        vendor_id=data.vendor_id,
-        screening_id=screening.id if screening else data.screening_id,
+        company_id=data.company_id,
+        company_screening_id=screening.id if screening else data.company_screening_id,
         feedback_type=data.feedback_type,
         previous_classification=data.previous_classification
         or (screening.decision_classification if screening else None),
@@ -4281,7 +4286,7 @@ async def replay_workspace_evaluation(
         db.add(
             EvaluationSampleResult(
                 run_id=run.id,
-                vendor_id=sample.get("vendor_id"),
+                company_id=sample.get("company_id"),
                 expected_classification=expected or None,
                 predicted_classification=predicted or None,
                 matched=sample_matched,
@@ -4382,7 +4387,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
             missing_items["context_pack"].append("Generate or refresh company thesis")
         else:
             context_claim_groups_available.add("product_depth")
-        if profile.reference_vendor_urls:
+        if profile.reference_company_urls:
             context_claim_groups_available.add("vertical_workflow")
         if not thesis_payload.get("source_pills"):
             missing_items["context_pack"].append("Add auditable source links to the company thesis")
@@ -4435,39 +4440,41 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     
     # Check universe with evidence-pattern decisions
     screenings_result = await db.execute(
-        select(VendorScreening)
-        .where(VendorScreening.workspace_id == workspace_id)
-        .order_by(VendorScreening.created_at.desc())
+        select(CompanyScreening)
+        .where(CompanyScreening.workspace_id == workspace_id)
+        .order_by(CompanyScreening.created_at.desc())
     )
     screenings_all = screenings_result.scalars().all()
-    latest_by_vendor: Dict[int, VendorScreening] = {}
+    latest_by_company: Dict[int, CompanyScreening] = {}
     for row in screenings_all:
-        if not row.vendor_id:
+        if not row.company_id:
             continue
-        if row.vendor_id not in latest_by_vendor:
-            latest_by_vendor[row.vendor_id] = row
+        if row.company_id not in latest_by_company:
+            latest_by_company[row.company_id] = row
 
     universe_cfg = gate_cfg.get("universe", {})
     allowed_classes = set(universe_cfg.get("allowed_classes", ["good_target", "borderline_watchlist"]))
-    min_decision_qualified = int(universe_cfg.get("min_decision_qualified_vendors", 5))
+    min_decision_qualified = int(
+        universe_cfg.get("min_decision_qualified_companies", universe_cfg.get("min_decision_qualified_vendors", 5))
+    )
     max_insufficient_ratio = float(universe_cfg.get("max_insufficient_ratio", 0.5))
 
     decision_qualified = [
-        row for row in latest_by_vendor.values()
+        row for row in latest_by_company.values()
         if str(row.decision_classification or "") in allowed_classes
     ]
     insufficient_count = len(
-        [row for row in latest_by_vendor.values() if str(row.evidence_sufficiency or "") == "insufficient"]
+        [row for row in latest_by_company.values() if str(row.evidence_sufficiency or "") == "insufficient"]
     )
-    insufficient_ratio = insufficient_count / max(1, len(latest_by_vendor))
+    insufficient_ratio = insufficient_count / max(1, len(latest_by_company))
 
-    kept_vendors_result = await db.execute(
-        select(func.count(Vendor.id)).where(
-            Vendor.workspace_id == workspace_id,
-            Vendor.status.in_([VendorStatus.kept, VendorStatus.enriched]),
+    kept_companies_result = await db.execute(
+        select(func.count(Company.id)).where(
+            Company.workspace_id == workspace_id,
+            Company.status.in_([CompanyStatus.kept, CompanyStatus.enriched]),
         )
     )
-    kept_vendors_count = kept_vendors_result.scalar() or 0
+    kept_companies_count = kept_companies_result.scalar() or 0
     universe_ready = (
         len(decision_qualified) >= min_decision_qualified
         and insufficient_ratio <= max_insufficient_ratio
@@ -4481,8 +4488,8 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
             f"Evidence insufficiency ratio too high ({round(insufficient_ratio, 2)} > {max_insufficient_ratio})"
         )
     # Legacy fallback messaging (one release cycle)
-    if kept_vendors_count < 5:
-        missing_items["universe"].append(f"Keep at least 5 companies ({kept_vendors_count} kept)")
+    if kept_companies_count < 5:
+        missing_items["universe"].append(f"Keep at least 5 companies ({kept_companies_count} kept)")
     
     # Check segmentation (has reviewed and focused)
     segmentation_ready = universe_ready and len(decision_qualified) >= 10
@@ -4491,27 +4498,29 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     
     # Check enrichment
     enrichment_cfg = gate_cfg.get("enrichment", {})
-    min_enriched = int(enrichment_cfg.get("min_enriched_vendors", 5))
-    required_groups = set(enrichment_cfg.get("required_groups_per_vendor", ["product_depth", "traction"]))
+    min_enriched = int(enrichment_cfg.get("min_enriched_companies", enrichment_cfg.get("min_enriched_vendors", 5)))
+    required_groups = set(
+        enrichment_cfg.get("required_groups_per_company", enrichment_cfg.get("required_groups_per_vendor", ["product_depth", "traction"]))
+    )
 
     enriched_result = await db.execute(
-        select(func.count(Vendor.id)).where(
-            Vendor.workspace_id == workspace_id,
-            Vendor.status == VendorStatus.enriched
+        select(func.count(Company.id)).where(
+            Company.workspace_id == workspace_id,
+            Company.status == CompanyStatus.enriched
         )
     )
     enriched_count = enriched_result.scalar() or 0
 
-    enriched_vendors_result = await db.execute(
-        select(Vendor).where(
-            Vendor.workspace_id == workspace_id,
-            Vendor.status == VendorStatus.enriched,
+    enriched_companies_result = await db.execute(
+        select(Company).where(
+            Company.workspace_id == workspace_id,
+            Company.status == CompanyStatus.enriched,
         )
     )
-    enriched_vendors = enriched_vendors_result.scalars().all()
+    enriched_companies = enriched_companies_result.scalars().all()
     enriched_with_groups = 0
-    for vendor in enriched_vendors:
-        screening = latest_by_vendor.get(vendor.id)
+    for company in enriched_companies:
+        screening = latest_by_company.get(company.id)
         missing_groups = set(screening.missing_claim_groups_json or []) if screening else set(required_groups)
         if required_groups.isdisjoint(missing_groups):
             enriched_with_groups += 1
@@ -4560,7 +4569,7 @@ async def list_workspace_jobs(
         JobResponse(
             id=job.id,
             workspace_id=job.workspace_id,
-            vendor_id=job.vendor_id,
+            company_id=job.company_id,
             job_type=job.job_type.value,
             state=job.state.value,
             provider=job.provider.value,
@@ -4593,7 +4602,7 @@ async def get_job(
     return JobResponse(
         id=job.id,
         workspace_id=job.workspace_id,
-        vendor_id=job.vendor_id,
+        company_id=job.company_id,
         job_type=job.job_type.value,
         state=job.state.value,
         provider=job.provider.value,

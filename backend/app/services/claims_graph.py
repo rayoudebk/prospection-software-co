@@ -1,4 +1,4 @@
-"""Claims graph builder from vendor claims and evidence."""
+"""Claims graph builder from company claims and evidence."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -7,7 +7,7 @@ from typing import Dict, Iterable, List, Tuple
 from sqlalchemy.orm import Session
 
 from app.models.claims_graph import ClaimGraphEdge, ClaimGraphEdgeEvidence, ClaimGraphNode
-from app.models.intelligence import VendorClaim
+from app.models.intelligence import CompanyClaim
 
 
 def _node_key(node_type: str, name: str) -> str:
@@ -16,9 +16,9 @@ def _node_key(node_type: str, name: str) -> str:
 
 def rebuild_workspace_claims_graph(db: Session, workspace_id: int) -> Dict[str, int]:
     claims = (
-        db.query(VendorClaim)
-        .filter(VendorClaim.workspace_id == workspace_id)
-        .order_by(VendorClaim.created_at.desc())
+        db.query(CompanyClaim)
+        .filter(CompanyClaim.workspace_id == workspace_id)
+        .order_by(CompanyClaim.created_at.desc())
         .all()
     )
 
@@ -32,17 +32,17 @@ def rebuild_workspace_claims_graph(db: Session, workspace_id: int) -> Dict[str, 
     db.flush()
 
     nodes: Dict[str, ClaimGraphNode] = {}
-    edges: Dict[Tuple[str, str, str], List[VendorClaim]] = defaultdict(list)
+    edges: Dict[Tuple[str, str, str], List[CompanyClaim]] = defaultdict(list)
 
     for claim in claims:
-        vendor_name = f"vendor-{claim.vendor_id}" if claim.vendor_id else "unknown-vendor"
-        vendor_key = _node_key("company", vendor_name)
-        if vendor_key not in nodes:
-            nodes[vendor_key] = ClaimGraphNode(
+        company_name = f"company-{claim.company_id}" if claim.company_id else "unknown-company"
+        company_key = _node_key("company", company_name)
+        if company_key not in nodes:
+            nodes[company_key] = ClaimGraphNode(
                 workspace_id=workspace_id,
                 node_type="company",
-                canonical_name=vendor_name,
-                metadata_json={"vendor_id": claim.vendor_id},
+                canonical_name=company_name,
+                metadata_json={"company_id": claim.company_id},
             )
 
         if claim.dimension in {"customer", "customers", "case_study"}:
@@ -69,7 +69,7 @@ def rebuild_workspace_claims_graph(db: Session, workspace_id: int) -> Dict[str, 
                 metadata_json={},
             )
 
-        edges[(vendor_key, target_key, rel_type)].append(claim)
+        edges[(company_key, target_key, rel_type)].append(claim)
 
     for node in nodes.values():
         db.add(node)
@@ -109,4 +109,3 @@ def rebuild_workspace_claims_graph(db: Session, workspace_id: int) -> Dict[str, 
         "edges_count": edge_count,
         "edge_evidence_count": evidence_count,
     }
-

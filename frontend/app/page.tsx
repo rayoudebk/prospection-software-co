@@ -201,9 +201,9 @@ export default function WorkspacesPage() {
                   <div className="flex items-center gap-1">
                     <span className={clsx(
                       "font-medium",
-                      workspace.vendor_count > 0 ? "text-oxford" : "text-steel-400"
+                      workspace.company_count > 0 ? "text-oxford" : "text-steel-400"
                     )}>
-                      {workspace.vendor_count}
+                      {workspace.company_count}
                     </span>
                     <span className="text-steel-500">companies</span>
                   </div>

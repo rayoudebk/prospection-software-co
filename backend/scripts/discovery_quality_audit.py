@@ -17,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
 from app.models.job import Job, JobState, JobType
-from app.models.intelligence import VendorClaim, VendorScreening
+from app.models.intelligence import CompanyClaim, CompanyScreening
 from app.services.quality_audit import (
     DEFAULT_QUALITY_AUDIT_THRESHOLDS,
     QUALITY_AUDIT_PATTERN_ORDER,
@@ -72,7 +72,7 @@ def _resolve_thresholds(
     return merged
 
 
-def _screening_run_id_from_screening(row: VendorScreening) -> str:
+def _screening_run_id_from_screening(row: CompanyScreening) -> str:
     meta = row.screening_meta_json if isinstance(row.screening_meta_json, dict) else {}
     return str(meta.get("screening_run_id") or "").strip()
 
@@ -96,9 +96,9 @@ def _resolve_run_id(session, workspace_id: int, explicit_run_id: Optional[str]) 
             return run_id
 
     latest_screening = (
-        session.query(VendorScreening)
-        .filter(VendorScreening.workspace_id == workspace_id)
-        .order_by(VendorScreening.created_at.desc())
+        session.query(CompanyScreening)
+        .filter(CompanyScreening.workspace_id == workspace_id)
+        .order_by(CompanyScreening.created_at.desc())
         .first()
     )
     if latest_screening:
@@ -112,11 +112,11 @@ def _collect_workspace_run(
     session,
     workspace_id: int,
     run_id: str,
-) -> tuple[List[VendorScreening], Dict[int, List[VendorClaim]]]:
+) -> tuple[List[CompanyScreening], Dict[int, List[CompanyClaim]]]:
     screenings = (
-        session.query(VendorScreening)
-        .filter(VendorScreening.workspace_id == workspace_id)
-        .order_by(VendorScreening.created_at.desc())
+        session.query(CompanyScreening)
+        .filter(CompanyScreening.workspace_id == workspace_id)
+        .order_by(CompanyScreening.created_at.desc())
         .limit(5000)
         .all()
     )
@@ -124,12 +124,12 @@ def _collect_workspace_run(
     screening_ids = [row.id for row in run_screenings if row.id]
     if not screening_ids:
         return run_screenings, {}
-    claims = session.query(VendorClaim).filter(VendorClaim.screening_id.in_(screening_ids)).all()
-    claims_by_screening: Dict[int, List[VendorClaim]] = {}
+    claims = session.query(CompanyClaim).filter(CompanyClaim.company_screening_id.in_(screening_ids)).all()
+    claims_by_screening: Dict[int, List[CompanyClaim]] = {}
     for claim in claims:
-        if claim.screening_id is None:
+        if claim.company_screening_id is None:
             continue
-        claims_by_screening.setdefault(int(claim.screening_id), []).append(claim)
+        claims_by_screening.setdefault(int(claim.company_screening_id), []).append(claim)
     return run_screenings, claims_by_screening
 
 

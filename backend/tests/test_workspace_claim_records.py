@@ -4,8 +4,8 @@ from app.workers.workspace_tasks import _build_claim_records, _select_top_claim
 def test_build_claim_records_links_to_source_evidence_ids():
     records = _build_claim_records(
         workspace_id=1,
-        vendor_id=2,
-        screening_id=3,
+        company_id=2,
+        company_screening_id=3,
         candidate={"website": "https://acme.com"},
         trusted_reasons=[
             {
@@ -25,8 +25,8 @@ def test_build_claim_records_links_to_source_evidence_ids():
 def test_build_claim_records_marks_numeric_conflicts():
     records = _build_claim_records(
         workspace_id=1,
-        vendor_id=2,
-        screening_id=3,
+        company_id=2,
+        company_screening_id=3,
         candidate={"website": "https://acme.com"},
         trusted_reasons=[
             {
@@ -51,8 +51,8 @@ def test_build_claim_records_marks_numeric_conflicts():
 def test_build_claim_records_preserves_rendered_browser_provenance():
     records = _build_claim_records(
         workspace_id=1,
-        vendor_id=2,
-        screening_id=3,
+        company_id=2,
+        company_screening_id=3,
         candidate={"website": "https://acme.com"},
         trusted_reasons=[
             {

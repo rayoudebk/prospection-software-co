@@ -24,7 +24,7 @@ class EvaluationSampleResult(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     run_id = Column(Integer, ForeignKey("evaluation_runs.id"), nullable=False, index=True)
-    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
     expected_classification = Column(String(40), nullable=True)
     predicted_classification = Column(String(40), nullable=True)
     matched = Column(Integer, nullable=False, default=0)

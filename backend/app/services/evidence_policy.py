@@ -26,8 +26,8 @@ DEFAULT_EVIDENCE_POLICY: Dict[str, Any] = {
     "gate_requirements": {
         "context_pack": {"required_claim_groups": ["identity_scope", "product_depth", "vertical_workflow"], "min_required_groups_met": 2},
         "search_lanes": {"required_lane_types": ["core", "adjacent"], "require_confirmed": True, "min_core_capabilities": 1},
-        "universe": {"min_decision_qualified_vendors": 5, "allowed_classes": ["good_target", "borderline_watchlist"], "max_insufficient_ratio": 0.5},
-        "enrichment": {"min_enriched_vendors": 5, "required_groups_per_vendor": ["product_depth", "traction"]},
+        "universe": {"min_decision_qualified_companies": 5, "allowed_classes": ["good_target", "borderline_watchlist"], "max_insufficient_ratio": 0.5},
+        "enrichment": {"min_enriched_companies": 5, "required_groups_per_company": ["product_depth", "traction"]},
     },
     "contradiction_resolution": "higher_tier_preferred_but_visible",
     "tier4_cannot_justify_good_target": True,
@@ -142,4 +142,21 @@ def normalize_policy(raw_policy: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             merged[key] = {**merged.get(key, {}), **value}
         else:
             merged[key] = value
+    gate_requirements = merged.get("gate_requirements", {})
+    if isinstance(gate_requirements, dict):
+        universe = gate_requirements.get("universe", {})
+        if isinstance(universe, dict) and "min_decision_qualified_companies" not in universe:
+            legacy_value = universe.get("min_decision_qualified_vendors")
+            if legacy_value is not None:
+                universe["min_decision_qualified_companies"] = legacy_value
+        enrichment = gate_requirements.get("enrichment", {})
+        if isinstance(enrichment, dict):
+            if "min_enriched_companies" not in enrichment:
+                legacy_value = enrichment.get("min_enriched_vendors")
+                if legacy_value is not None:
+                    enrichment["min_enriched_companies"] = legacy_value
+            if "required_groups_per_company" not in enrichment:
+                legacy_value = enrichment.get("required_groups_per_vendor")
+                if legacy_value is not None:
+                    enrichment["required_groups_per_company"] = legacy_value
     return merged

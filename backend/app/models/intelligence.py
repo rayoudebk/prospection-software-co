@@ -27,10 +27,10 @@ class ComparatorSourceRun(Base):
     workspace = relationship("Workspace", overlaps="comparator_source_runs")
 
 
-class VendorMention(Base):
+class CompanyMention(Base):
     """Source mention from directory/comparator listings."""
 
-    __tablename__ = "vendor_mentions"
+    __tablename__ = "company_mentions"
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
@@ -52,7 +52,7 @@ class VendorMention(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    workspace = relationship("Workspace", overlaps="vendor_mentions")
+    workspace = relationship("Workspace", overlaps="company_mentions")
     source_run = relationship("ComparatorSourceRun")
 
 
@@ -94,7 +94,7 @@ class CandidateEntity(Base):
         back_populates="entity",
         cascade="all, delete-orphan",
     )
-    screenings = relationship("VendorScreening", back_populates="candidate_entity")
+    screenings = relationship("CompanyScreening", back_populates="candidate_entity")
 
 
 class CandidateEntityAlias(Base):
@@ -158,14 +158,14 @@ class RegistryQueryLog(Base):
     workspace = relationship("Workspace", back_populates="registry_query_logs")
 
 
-class VendorScreening(Base):
+class CompanyScreening(Base):
     """Evidence-weighted screening decision for kept vs rejected candidates."""
 
-    __tablename__ = "vendor_screenings"
+    __tablename__ = "company_screenings"
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
-    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
     candidate_entity_id = Column(Integer, ForeignKey("candidate_entities.id"), nullable=True, index=True)
 
     candidate_name = Column(String(300), nullable=False)
@@ -206,25 +206,25 @@ class VendorScreening(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    workspace = relationship("Workspace", overlaps="vendor_screenings")
-    vendor = relationship("Vendor", overlaps="screenings")
+    workspace = relationship("Workspace", overlaps="company_screenings")
+    company = relationship("Company", overlaps="screenings")
     candidate_entity = relationship("CandidateEntity", back_populates="screenings")
     claims = relationship(
-        "VendorClaim",
-        back_populates="screening",
+        "CompanyClaim",
+        back_populates="company_screening",
         cascade="all, delete-orphan",
     )
 
 
-class VendorClaim(Base):
+class CompanyClaim(Base):
     """Atomic evidence claim tagged by dimension with optional normalized numeric payload."""
 
-    __tablename__ = "vendor_claims"
+    __tablename__ = "company_claims"
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
-    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=True, index=True)
-    screening_id = Column(Integer, ForeignKey("vendor_screenings.id"), nullable=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
+    company_screening_id = Column(Integer, ForeignKey("company_screenings.id"), nullable=True, index=True)
 
     dimension = Column(String(64), nullable=False, index=True)
     claim_key = Column(String(120), nullable=True, index=True)
@@ -233,7 +233,7 @@ class VendorClaim(Base):
     source_url = Column(String(1000), nullable=False)
     source_type = Column(String(64), nullable=False, default="trusted_third_party")
     source_tier = Column(String(32), nullable=False, default="tier3_third_party", index=True)
-    source_evidence_id = Column(Integer, ForeignKey("workspace_evidence.id"), nullable=True, index=True)
+    source_evidence_id = Column(Integer, ForeignKey("source_evidence.id"), nullable=True, index=True)
     confidence = Column(String(20), nullable=False, default="medium")
     claim_group = Column(String(64), nullable=True, index=True)
     claim_status = Column(String(24), nullable=False, default="fact", index=True)  # fact|assumption|unknown|contradicted
@@ -248,7 +248,7 @@ class VendorClaim(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    workspace = relationship("Workspace", overlaps="vendor_claims")
-    vendor = relationship("Vendor", overlaps="claims")
-    screening = relationship("VendorScreening", back_populates="claims")
-    source_evidence = relationship("WorkspaceEvidence")
+    workspace = relationship("Workspace", overlaps="company_claims")
+    company = relationship("Company", overlaps="claims")
+    company_screening = relationship("CompanyScreening", back_populates="claims")
+    source_evidence = relationship("SourceEvidence")

@@ -133,7 +133,7 @@ function CardSection({ card }: { card: ReportCard }) {
           <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Decision Rationale</div>
           <div className="space-y-1">
             {card.reason_highlights.slice(0, 5).map((reason, idx) => (
-              <div key={`${card.vendor_id}-reason-${idx}`} className="text-sm text-steel-700">
+              <div key={`${card.company_id}-reason-${idx}`} className="text-sm text-steel-700">
                 - {reason}
               </div>
             ))}
@@ -147,7 +147,7 @@ function CardSection({ card }: { card: ReportCard }) {
           <div className="flex flex-wrap gap-2">
             {card.known_unknowns.slice(0, 6).map((item, idx) => (
               <span
-                key={`${card.vendor_id}-unknown-${idx}`}
+                key={`${card.company_id}-unknown-${idx}`}
                 className="px-2 py-0.5 text-xs bg-warning/10 text-warning border border-warning/30"
               >
                 {item}
@@ -394,7 +394,7 @@ export default function ReportPage() {
               reportRunner.job ?? {
                 id: 0,
                 workspace_id: workspaceId,
-                vendor_id: null,
+                company_id: null,
                 job_type: "generate_report_snapshot",
                 state: "queued",
                 provider: "crawler",
@@ -459,7 +459,7 @@ export default function ReportPage() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {sortedCards.map((card) => (
-                <CardSection key={card.vendor_id} card={card} />
+                <CardSection key={card.company_id} card={card} />
               ))}
             </div>
           )}

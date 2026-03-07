@@ -1,4 +1,4 @@
-"""Workspace models - Core entity for M&A market maps."""
+"""Workspace models - Core entity for M&A sourcing work."""
 from sqlalchemy import Column, Integer, String, DateTime, JSON, Text, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -28,8 +28,8 @@ class Workspace(Base):
     company_profile = relationship("CompanyProfile", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
     thesis_pack = relationship("BuyerThesisPack", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
     search_lanes = relationship("SearchLane", back_populates="workspace", cascade="all, delete-orphan")
-    vendors = relationship("Vendor", back_populates="workspace", cascade="all, delete-orphan")
-    evidence_items = relationship("WorkspaceEvidence", back_populates="workspace", cascade="all, delete-orphan")
+    companies = relationship("Company", back_populates="workspace", cascade="all, delete-orphan")
+    evidence_items = relationship("SourceEvidence", back_populates="workspace", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="workspace", cascade="all, delete-orphan")
     report_snapshots = relationship(
         "ReportSnapshot",
@@ -40,16 +40,16 @@ class Workspace(Base):
         "ComparatorSourceRun",
         cascade="all, delete-orphan",
     )
-    vendor_mentions = relationship(
-        "VendorMention",
+    company_mentions = relationship(
+        "CompanyMention",
         cascade="all, delete-orphan",
     )
-    vendor_screenings = relationship(
-        "VendorScreening",
+    company_screenings = relationship(
+        "CompanyScreening",
         cascade="all, delete-orphan",
     )
-    vendor_claims = relationship(
-        "VendorClaim",
+    company_claims = relationship(
+        "CompanyClaim",
         cascade="all, delete-orphan",
     )
     registry_query_logs = relationship(
@@ -79,8 +79,8 @@ class CompanyProfile(Base):
     buyer_company_url = Column(String(500), nullable=True)
     buyer_context_summary = Column(Text, nullable=True)  # AI-generated summary of buyer
     
-    # Reference vendors (2-3 examples)
-    reference_vendor_urls = Column(JSON, default=list)  # ["https://vendor1.com", ...]
+    # Reference companies (2-3 examples)
+    reference_company_urls = Column(JSON, default=list)  # ["https://company1.com", ...]
     reference_evidence_urls = Column(JSON, default=list)  # ["https://vendor.com/blog/case-study", ...]
     reference_summaries = Column(JSON, default=dict)  # {"url": "summary", ...}
     

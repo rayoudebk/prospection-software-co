@@ -32,13 +32,13 @@ class ReportSnapshot(Base):
 
 
 class ReportSnapshotItem(Base):
-    """A scored vendor item inside a report snapshot."""
+    """A scored company item inside a report snapshot."""
 
     __tablename__ = "report_snapshot_items"
 
     id = Column(Integer, primary_key=True, index=True)
     report_id = Column(Integer, ForeignKey("report_snapshots.id"), nullable=False, index=True)
-    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False, index=True)
 
     compete_score = Column(Float, default=0.0)
     complement_score = Column(Float, default=0.0)
@@ -54,16 +54,16 @@ class ReportSnapshotItem(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     report_snapshot = relationship("ReportSnapshot", back_populates="items")
-    vendor = relationship("Vendor")
+    company = relationship("Company")
 
 
-class VendorFact(Base):
-    """Source-backed normalized facts associated with a vendor."""
+class CompanyFact(Base):
+    """Source-backed normalized facts associated with a company."""
 
-    __tablename__ = "vendor_facts"
+    __tablename__ = "company_facts"
 
     id = Column(Integer, primary_key=True, index=True)
-    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False, index=True)
 
     fact_key = Column(String(100), nullable=False, index=True)
     fact_value = Column(String(255), nullable=False)
@@ -71,11 +71,11 @@ class VendorFact(Base):
     period = Column(String(50), nullable=True)
     confidence = Column(String(20), default="medium", nullable=False)
 
-    source_evidence_id = Column(Integer, ForeignKey("workspace_evidence.id"), nullable=True)
+    source_evidence_id = Column(Integer, ForeignKey("source_evidence.id"), nullable=True)
     source_system = Column(String(100), nullable=False, default="unknown")
 
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    vendor = relationship("Vendor", back_populates="facts")
-    source_evidence = relationship("WorkspaceEvidence")
+    company = relationship("Company", back_populates="facts")
+    source_evidence = relationship("SourceEvidence")

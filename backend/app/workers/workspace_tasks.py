@@ -23,19 +23,19 @@ from app.workers.celery_app import celery_app
 from app.config import get_settings
 from app.models.workspace import Workspace, CompanyProfile
 from app.models.thesis import SearchLane
-from app.models.vendor import Vendor, VendorDossier, VendorStatus
+from app.models.company import Company, CompanyDossier, CompanyStatus
 from app.models.job import Job, JobType, JobState
-from app.models.workspace_evidence import WorkspaceEvidence
-from app.models.report import ReportSnapshot, ReportSnapshotItem, VendorFact
+from app.models.source_evidence import SourceEvidence
+from app.models.report import ReportSnapshot, ReportSnapshotItem, CompanyFact
 from app.models.intelligence import (
     CandidateEntity,
     CandidateEntityAlias,
     CandidateOriginEdge,
     ComparatorSourceRun,
     RegistryQueryLog,
-    VendorMention,
-    VendorScreening,
-    VendorClaim,
+    CompanyMention,
+    CompanyScreening,
+    CompanyClaim,
 )
 from app.services.comparator_sources import (
     SOURCE_REGISTRY,
@@ -449,7 +449,7 @@ def _expire_stale_running_discovery_jobs(db, exclude_job_id: Optional[int] = Non
     return stale_count
 
 
-def _screening_run_id_from_screening(screening: VendorScreening) -> str:
+def _screening_run_id_from_screening(screening: CompanyScreening) -> str:
     meta = screening.screening_meta_json if isinstance(screening.screening_meta_json, dict) else {}
     return str(meta.get("screening_run_id") or "").strip()
 
@@ -460,14 +460,14 @@ def _collect_run_screenings_and_claims(
     screening_run_id: str,
     *,
     max_screenings: int = 5000,
-) -> tuple[list[VendorScreening], dict[int, list[VendorClaim]]]:
+) -> tuple[list[CompanyScreening], dict[int, list[CompanyClaim]]]:
     target_run_id = str(screening_run_id or "").strip()
     if not target_run_id:
         return [], {}
     screening_rows = (
-        db.query(VendorScreening)
-        .filter(VendorScreening.workspace_id == workspace_id)
-        .order_by(VendorScreening.created_at.desc())
+        db.query(CompanyScreening)
+        .filter(CompanyScreening.workspace_id == workspace_id)
+        .order_by(CompanyScreening.created_at.desc())
         .limit(max_screenings)
         .all()
     )
@@ -478,12 +478,12 @@ def _collect_run_screenings_and_claims(
     screening_ids = [row.id for row in run_screenings if row.id]
     if not screening_ids:
         return run_screenings, {}
-    claim_rows = db.query(VendorClaim).filter(VendorClaim.screening_id.in_(screening_ids)).all()
-    claims_by_screening: dict[int, list[VendorClaim]] = {}
+    claim_rows = db.query(CompanyClaim).filter(CompanyClaim.company_screening_id.in_(screening_ids)).all()
+    claims_by_screening: dict[int, list[CompanyClaim]] = {}
     for claim in claim_rows:
-        if not claim.screening_id:
+        if not claim.company_screening_id:
             continue
-        claims_by_screening.setdefault(int(claim.screening_id), []).append(claim)
+        claims_by_screening.setdefault(int(claim.company_screening_id), []).append(claim)
     return run_screenings, claims_by_screening
 
 
@@ -3187,7 +3187,7 @@ def _tag_value(tags: list[str], prefix: str) -> str | None:
     return None
 
 
-def _vendor_passes_enterprise_screen(tags_custom: list[str] | None) -> bool:
+def _company_passes_enterprise_screen(tags_custom: list[str] | None) -> bool:
     tags = [t for t in (tags_custom or []) if isinstance(t, str)]
     gtm = (_tag_value(tags, "gtm:") or "").lower()
     if gtm == "b2c":
@@ -4992,7 +4992,7 @@ def _default_discovery_query_plan(
         adjacent_capabilities = adjacent_lane.get("capabilities") or ["adjacent workflow"] if adjacent_lane else ["adjacent workflow"]
         precision_queries = [
             {
-                "query_text": f"{customer_hint} {core_capabilities[0]} software vendor {region}",
+                "query_text": f"{customer_hint} {core_capabilities[0]} software company {region}",
                 "query_intent": "capability_discovery",
                 "brick_name": core_capabilities[0],
                 "lane_type": "core",
@@ -5039,7 +5039,7 @@ def _default_discovery_query_plan(
     brick_hint = ", ".join(brick_names[:2]) if brick_names else "core workflow"
 
     precision_queries = [
-        {"query_text": f"{vertical_hint} {brick_hint} vendor {region}", "query_intent": "capability_discovery", "brick_name": brick_names[0] if brick_names else None, "lane_type": "core"},
+        {"query_text": f"{vertical_hint} {brick_hint} company {region}", "query_intent": "capability_discovery", "brick_name": brick_names[0] if brick_names else None, "lane_type": "core"},
         {"query_text": f"{vertical_hint} platform {region} {brick_hint}", "query_intent": "competitor_discovery", "brick_name": brick_names[1] if len(brick_names) > 1 else None, "lane_type": "core"},
     ]
     recall_queries = [
@@ -5115,8 +5115,8 @@ Comparator seeds:
 
 Constraints:
 - 3-5 precision queries, 1-3 recall queries.
-- Keep queries short, vendor-oriented, and evidence-friendly.
-- Seed URLs should be high-confidence competitor/vendor homepages only.
+- Keep queries short, company-oriented, and evidence-friendly.
+- Seed URLs should be high-confidence competitor/company homepages only.
 - Include must_exclude_terms for mega incumbents (Bloomberg, FIS, Fiserv, Broadridge, SS&C, Refinitiv).
 - Return JSON only.
 """
@@ -5705,7 +5705,7 @@ def _build_first_party_hint_url_map(
     if profile:
         for url in (profile.reference_evidence_urls or []):
             register(url)
-        for url in (profile.reference_vendor_urls or []):
+        for url in (profile.reference_company_urls or []):
             register(url, require_path=True)
 
     if include_benchmark_hints:
@@ -5817,8 +5817,8 @@ def _match_mentions_for_candidate(
 
 def _build_claim_records(
     workspace_id: int,
-    vendor_id: Optional[int],
-    screening_id: int,
+    company_id: Optional[int],
+    company_screening_id: int,
     candidate: dict[str, Any],
     trusted_reasons: list[dict[str, str]],
     matched_mentions: list[dict[str, Any]],
@@ -5883,8 +5883,8 @@ def _build_claim_records(
         records.append(
             {
                 "workspace_id": workspace_id,
-                "vendor_id": vendor_id,
-                "screening_id": screening_id,
+                "company_id": company_id,
+                "company_screening_id": company_screening_id,
                 "dimension": (dimension or "evidence")[:64],
                 "claim_group": claim_group,
                 "claim_status": "fact",
@@ -6294,8 +6294,8 @@ def generate_context_pack_v2(job_id: int):
             if profile.buyer_company_url:
                 all_urls.append(profile.buyer_company_url)
             
-            if profile.reference_vendor_urls:
-                all_urls.extend(profile.reference_vendor_urls[:3])
+            if profile.reference_company_urls:
+                all_urls.extend(profile.reference_company_urls[:3])
             
             if not all_urls:
                 job.state = JobState.failed
@@ -6569,7 +6569,7 @@ def run_monitoring_delta(job_id: int):
 
         monitor_cfg = job.result_json if isinstance(job.result_json, dict) else {}
         effective_policy = normalize_policy(workspace.decision_policy_json or DEFAULT_EVIDENCE_POLICY)
-        max_vendors = int(monitor_cfg.get("max_vendors") or 80)
+        max_companies = int(monitor_cfg.get("max_companies", monitor_cfg.get("max_vendors", 80)) or 80)
         stale_only = bool(monitor_cfg.get("stale_only", False))
         tracked_classes = set(
             monitor_cfg.get("classifications")
@@ -6577,21 +6577,21 @@ def run_monitoring_delta(job_id: int):
         )
 
         screenings = (
-            db.query(VendorScreening)
-            .filter(VendorScreening.workspace_id == workspace.id)
-            .order_by(VendorScreening.created_at.desc())
+            db.query(CompanyScreening)
+            .filter(CompanyScreening.workspace_id == workspace.id)
+            .order_by(CompanyScreening.created_at.desc())
             .all()
         )
-        latest_by_vendor: dict[int, VendorScreening] = {}
+        latest_by_company: dict[int, CompanyScreening] = {}
         for screening in screenings:
-            if screening.vendor_id and screening.vendor_id not in latest_by_vendor:
-                latest_by_vendor[screening.vendor_id] = screening
+            if screening.company_id and screening.company_id not in latest_by_company:
+                latest_by_company[screening.company_id] = screening
 
         candidate_rows = [
             screening
-            for screening in latest_by_vendor.values()
+            for screening in latest_by_company.values()
             if str(screening.decision_classification or "insufficient_evidence") in tracked_classes
-        ][:max_vendors]
+        ][:max_companies]
 
         now = datetime.utcnow()
         triggered: list[dict[str, Any]] = []
@@ -6599,19 +6599,19 @@ def run_monitoring_delta(job_id: int):
 
         total = max(1, len(candidate_rows))
         for index, screening in enumerate(candidate_rows):
-            vendor_id = screening.vendor_id
-            if not vendor_id:
+            company_id = screening.company_id
+            if not company_id:
                 continue
 
             evidence_rows = (
-                db.query(WorkspaceEvidence)
-                .filter(WorkspaceEvidence.workspace_id == workspace.id, WorkspaceEvidence.vendor_id == vendor_id)
-                .order_by(WorkspaceEvidence.captured_at.desc())
+                db.query(SourceEvidence)
+                .filter(SourceEvidence.workspace_id == workspace.id, SourceEvidence.company_id == company_id)
+                .order_by(SourceEvidence.captured_at.desc())
                 .all()
             )
             claim_rows = (
-                db.query(VendorClaim)
-                .filter(VendorClaim.workspace_id == workspace.id, VendorClaim.vendor_id == vendor_id)
+                db.query(CompanyClaim)
+                .filter(CompanyClaim.workspace_id == workspace.id, CompanyClaim.company_id == company_id)
                 .all()
             )
 
@@ -6661,13 +6661,13 @@ def run_monitoring_delta(job_id: int):
 
             if not should_refresh:
                 job.progress = 0.05 + (0.7 * (index + 1) / total)
-                job.progress_message = f"Checked {index + 1}/{total} watchlist vendors"
+                job.progress_message = f"Checked {index + 1}/{total} watchlist companies"
                 db.commit()
                 continue
 
             enrich_job = Job(
                 workspace_id=workspace.id,
-                vendor_id=vendor_id,
+                company_id=company_id,
                 job_type=JobType.enrich_full,
                 state=JobState.queued,
                 provider=JobProvider.gemini_flash,
@@ -6682,7 +6682,7 @@ def run_monitoring_delta(job_id: int):
             enrich_job_ids.append(enrich_job.id)
             triggered.append(
                 {
-                    "vendor_id": vendor_id,
+                    "company_id": company_id,
                     "classification": screening.decision_classification,
                     "trigger_reasons": trigger_reasons,
                     "stale_evidence_count": len(stale_evidence) + len(stale_claims) + len(missing_ttl_evidence),
@@ -6691,11 +6691,11 @@ def run_monitoring_delta(job_id: int):
             )
 
             job.progress = 0.05 + (0.7 * (index + 1) / total)
-            job.progress_message = f"Checked {index + 1}/{total} watchlist vendors"
+            job.progress_message = f"Checked {index + 1}/{total} watchlist companies"
             db.commit()
 
         for enrich_job_id in enrich_job_ids:
-            run_enrich_vendor.delay(enrich_job_id)
+            run_enrich_company.delay(enrich_job_id)
 
         claims_graph_metrics = rebuild_workspace_claims_graph(db, workspace.id)
         job.state = JobState.completed
@@ -6703,8 +6703,8 @@ def run_monitoring_delta(job_id: int):
         job.progress_message = "Monitoring delta complete"
         job.result_json = {
             "watchlist_candidates_checked": len(candidate_rows),
-            "triggered_vendor_count": len(triggered),
-            "triggered_vendor_ids": [entry["vendor_id"] for entry in triggered],
+            "triggered_company_count": len(triggered),
+            "triggered_company_ids": [entry["company_id"] for entry in triggered],
             "triggered": triggered[:200],
             "enrichment_job_ids": enrich_job_ids,
             "policy_version": effective_policy.get("version"),
@@ -6712,7 +6712,7 @@ def run_monitoring_delta(job_id: int):
         }
         job.finished_at = datetime.utcnow()
         db.commit()
-        return {"success": True, "triggered_vendor_count": len(triggered)}
+        return {"success": True, "triggered_company_count": len(triggered)}
     except Exception as exc:
         job = db.query(Job).filter(Job.id == job_id).first()
         if job:
@@ -6841,7 +6841,7 @@ def _run_discovery_universe_monolith(job_id: int):
                     official_website_url = str(mention.get("official_website_url") or "").strip() or None
                     if official_website_url and _is_non_first_party_profile_domain(normalize_domain(official_website_url)):
                         official_website_url = None
-                    record = VendorMention(
+                    record = CompanyMention(
                         workspace_id=workspace.id,
                         source_run_id=run_row.id,
                         source_name=source_result["source_name"],
@@ -6976,7 +6976,7 @@ def _run_discovery_universe_monolith(job_id: int):
             }
 
             seed_urls = _normalize_string_list(query_plan.get("seed_urls"), max_items=8, max_len=220)
-            for url in (profile.reference_vendor_urls or [])[:6]:
+            for url in (profile.reference_company_urls or [])[:6]:
                 seed_urls.append(str(url))
             seed_urls = _dedupe_strings([normalize_url(url) for url in seed_urls if normalize_url(url)])
             high_confidence_seed_urls: list[str] = []
@@ -7171,7 +7171,7 @@ def _run_discovery_universe_monolith(job_id: int):
 
             seeded_candidates = _seed_candidates_from_mentions(mention_records)
             reference_seeded_candidates = _seed_candidates_from_reference_urls(
-                profile.reference_vendor_urls or []
+                profile.reference_company_urls or []
             )
             benchmark_seeded_candidates: list[dict[str, Any]] = []
             if _should_add_wealth_benchmark_seeds(profile, segment_hints, mention_records):
@@ -7422,15 +7422,15 @@ def _run_discovery_universe_monolith(job_id: int):
                         )
                     )
 
-            # Existing vendors index
-            existing_vendors = db.query(Vendor).filter(Vendor.workspace_id == workspace.id).all()
-            existing_by_domain: dict[str, Vendor] = {}
-            existing_by_name: dict[str, Vendor] = {}
-            for vendor in existing_vendors:
-                domain = normalize_domain(vendor.website)
+            # Existing companies index
+            existing_companies = db.query(Company).filter(Company.workspace_id == workspace.id).all()
+            existing_by_domain: dict[str, Company] = {}
+            existing_by_name: dict[str, Company] = {}
+            for company in existing_companies:
+                domain = normalize_domain(company.website)
                 if domain:
-                    existing_by_domain[domain] = vendor
-                existing_by_name[vendor.name.strip().lower()] = vendor
+                    existing_by_domain[domain] = company
+                existing_by_name[company.name.strip().lower()] = company
 
             registry_neighbors_with_first_party_website_count = int(
                 registry_expansion_metrics.get("registry_neighbors_with_first_party_website_count", 0)
@@ -7444,7 +7444,7 @@ def _run_discovery_universe_monolith(job_id: int):
                 else {}
             )
 
-            created_vendors = 0
+            created_companies = 0
             updated_existing = 0
             kept_count = 0
             review_count = 0
@@ -7459,7 +7459,7 @@ def _run_discovery_universe_monolith(job_id: int):
             decision_class_counts: dict[str, int] = {}
             evidence_sufficiency_counts: dict[str, int] = {}
             ranking_eligible_count = 0
-            run_screenings_for_quality_audit: list[VendorScreening] = []
+            run_screenings_for_quality_audit: list[CompanyScreening] = []
             run_claims_by_screening_id: dict[int, list[dict[str, Any]]] = {}
             solution_entity_screening_count = 0
             first_party_reason_cache: dict[str, list[dict[str, str]]] = {}
@@ -7573,11 +7573,11 @@ def _run_discovery_universe_monolith(job_id: int):
                 origin_types = set(entity.get("origin_types") or [])
                 priority_score = _candidate_priority_score(entity)
                 if not is_solution_entity and candidate_domain and not _is_non_first_party_profile_domain(candidate_domain):
-                    existing_vendor = existing_by_domain.get(candidate_domain)
+                    existing_company = existing_by_domain.get(candidate_domain)
                 elif not is_solution_entity:
-                    existing_vendor = existing_by_name.get(candidate_name.lower())
+                    existing_company = existing_by_name.get(candidate_name.lower())
                 else:
-                    existing_vendor = None
+                    existing_company = None
 
                 capability_signals = _extract_capability_signals(candidate)
                 employee_estimate = _extract_employee_estimate(candidate)
@@ -7944,42 +7944,42 @@ def _run_discovery_universe_monolith(job_id: int):
                     ]
                 )
 
-                vendor_ref: Optional[Vendor] = existing_vendor
+                company_ref: Optional[Company] = existing_company
 
                 if screening_status in {"kept", "review"} and not is_solution_entity:
-                    target_vendor_status = VendorStatus.kept if screening_status == "kept" else VendorStatus.candidate
-                    if vendor_ref is None:
-                        vendor_ref = Vendor(
+                    target_company_status = CompanyStatus.kept if screening_status == "kept" else CompanyStatus.candidate
+                    if company_ref is None:
+                        company_ref = Company(
                             workspace_id=workspace.id,
                             name=candidate_name,
                             website=candidate.get("website"),
                             hq_country=candidate.get("hq_country", "Unknown"),
                             tags_custom=tags_custom,
-                            status=target_vendor_status,
+                            status=target_company_status,
                             why_relevant=trusted_reason_items[:10],
                             is_manual=False,
                         )
-                        db.add(vendor_ref)
+                        db.add(company_ref)
                         db.flush()
-                        created_vendors += 1
+                        created_companies += 1
                         if candidate_domain and not _is_non_first_party_profile_domain(candidate_domain):
-                            existing_by_domain[candidate_domain] = vendor_ref
-                        existing_by_name[candidate_name.lower()] = vendor_ref
+                            existing_by_domain[candidate_domain] = company_ref
+                        existing_by_name[candidate_name.lower()] = company_ref
                     else:
-                        merged_reasons = _normalize_reasons((vendor_ref.why_relevant or []) + trusted_reason_items)
-                        vendor_ref.why_relevant = merged_reasons[:12]
-                        vendor_ref.tags_custom = _dedupe_strings((vendor_ref.tags_custom or []) + tags_custom)
-                        if not vendor_ref.hq_country or vendor_ref.hq_country == "Unknown":
-                            vendor_ref.hq_country = candidate.get("hq_country", vendor_ref.hq_country)
-                        if not vendor_ref.is_manual:
-                            vendor_ref.status = target_vendor_status
+                        merged_reasons = _normalize_reasons((company_ref.why_relevant or []) + trusted_reason_items)
+                        company_ref.why_relevant = merged_reasons[:12]
+                        company_ref.tags_custom = _dedupe_strings((company_ref.tags_custom or []) + tags_custom)
+                        if not company_ref.hq_country or company_ref.hq_country == "Unknown":
+                            company_ref.hq_country = candidate.get("hq_country", company_ref.hq_country)
+                        if not company_ref.is_manual:
+                            company_ref.status = target_company_status
                         updated_existing += 1
                 else:
-                    if vendor_ref and not vendor_ref.is_manual and vendor_ref.status == VendorStatus.candidate:
-                        vendor_ref.status = VendorStatus.removed
+                    if company_ref and not company_ref.is_manual and company_ref.status == CompanyStatus.candidate:
+                        company_ref.status = CompanyStatus.removed
                         updated_existing += 1
 
-                if vendor_ref and trusted_reason_items:
+                if company_ref and trusted_reason_items:
                     trusted_evidence_urls: list[str] = []
                     source_evidence_ids: dict[str, int] = {}
                     for item in trusted_reason_items:
@@ -7988,12 +7988,12 @@ def _run_discovery_universe_monolith(job_id: int):
                         if not citation_url or not is_trusted_source_url(citation_url):
                             continue
                         exists = (
-                            db.query(WorkspaceEvidence)
+                            db.query(SourceEvidence)
                             .filter(
-                                WorkspaceEvidence.workspace_id == workspace.id,
-                                WorkspaceEvidence.vendor_id == vendor_ref.id,
-                                WorkspaceEvidence.source_url == citation_url,
-                                WorkspaceEvidence.excerpt_text == reason_text,
+                                SourceEvidence.workspace_id == workspace.id,
+                                SourceEvidence.company_id == company_ref.id,
+                                SourceEvidence.source_url == citation_url,
+                                SourceEvidence.excerpt_text == reason_text,
                             )
                             .first()
                         )
@@ -8019,9 +8019,9 @@ def _run_discovery_universe_monolith(job_id: int):
                             claim_group,
                             policy=effective_policy,
                         )
-                        evidence_row = WorkspaceEvidence(
+                        evidence_row = SourceEvidence(
                             workspace_id=workspace.id,
-                            vendor_id=vendor_ref.id,
+                            company_id=company_ref.id,
                             source_url=citation_url,
                             source_title=source_label_for_url(citation_url),
                             excerpt_text=reason_text[:1200],
@@ -8037,24 +8037,24 @@ def _run_discovery_universe_monolith(job_id: int):
                         source_evidence_ids[citation_url.lower()] = evidence_row.id
                         trusted_evidence_urls.append(citation_url)
 
-                    if not trusted_evidence_urls and vendor_ref.website and is_trusted_source_url(vendor_ref.website):
+                    if not trusted_evidence_urls and company_ref.website and is_trusted_source_url(company_ref.website):
                         fallback_source_type = _source_type_for_url(
-                            vendor_ref.website,
+                            company_ref.website,
                             candidate_domain,
                             first_party_domains=candidate_first_party_domains,
                         )
                         if fallback_source_type == "first_party_website":
-                            fallback_source_tier = infer_source_tier(vendor_ref.website, fallback_source_type, candidate_domain)
-                            fallback_source_kind = infer_source_kind(vendor_ref.website, fallback_source_type, candidate_domain)
+                            fallback_source_tier = infer_source_tier(company_ref.website, fallback_source_type, candidate_domain)
+                            fallback_source_kind = infer_source_kind(company_ref.website, fallback_source_type, candidate_domain)
                             ttl_days, valid_through = valid_through_from_claim_group(
                                 "identity_scope",
                                 policy=effective_policy,
                             )
-                            fallback_row = WorkspaceEvidence(
+                            fallback_row = SourceEvidence(
                                 workspace_id=workspace.id,
-                                vendor_id=vendor_ref.id,
-                                source_url=vendor_ref.website,
-                                source_title=f"{vendor_ref.name} website",
+                                company_id=company_ref.id,
+                                source_url=company_ref.website,
+                                source_title=f"{company_ref.name} website",
                                 excerpt_text="First-party website baseline source.",
                                 content_type="web",
                                 source_tier=fallback_source_tier,
@@ -8065,14 +8065,14 @@ def _run_discovery_universe_monolith(job_id: int):
                             )
                             db.add(fallback_row)
                             db.flush()
-                            source_evidence_ids[vendor_ref.website.lower()] = fallback_row.id
-                            trusted_evidence_urls.append(vendor_ref.website)
+                            source_evidence_ids[company_ref.website.lower()] = fallback_row.id
+                            trusted_evidence_urls.append(company_ref.website)
 
                     if screening_status in {"kept", "review"}:
                         existing_dossier = (
-                            db.query(VendorDossier)
-                            .filter(VendorDossier.vendor_id == vendor_ref.id)
-                            .order_by(VendorDossier.version.desc())
+                            db.query(CompanyDossier)
+                            .filter(CompanyDossier.company_id == company_ref.id)
+                            .order_by(CompanyDossier.version.desc())
                             .first()
                         )
                         if not existing_dossier:
@@ -8094,16 +8094,16 @@ def _run_discovery_universe_monolith(job_id: int):
                                 "integrations": [],
                             }
                             db.add(
-                                VendorDossier(
-                                    vendor_id=vendor_ref.id,
+                                CompanyDossier(
+                                    company_id=company_ref.id,
                                     dossier_json=bootstrap_dossier,
                                     version=1,
                                 )
                             )
 
-                screening = VendorScreening(
+                screening = CompanyScreening(
                     workspace_id=workspace.id,
-                    vendor_id=vendor_ref.id if vendor_ref else None,
+                    company_id=company_ref.id if company_ref else None,
                     candidate_entity_id=entity.get("db_entity_id"),
                     candidate_name=candidate_name,
                     candidate_website=str(candidate.get("website") or "")[:1000] or None,
@@ -8218,17 +8218,17 @@ def _run_discovery_universe_monolith(job_id: int):
 
                 claim_records = _build_claim_records(
                     workspace_id=workspace.id,
-                    vendor_id=vendor_ref.id if vendor_ref else None,
-                    screening_id=screening.id,
+                    company_id=company_ref.id if company_ref else None,
+                    company_screening_id=screening.id,
                     candidate=candidate,
                     trusted_reasons=trusted_reason_items,
                     matched_mentions=matched_mentions,
                     policy=effective_policy,
-                    source_evidence_ids=(source_evidence_ids if vendor_ref and trusted_reason_items else None),
+                    source_evidence_ids=(source_evidence_ids if company_ref and trusted_reason_items else None),
                     first_party_domains=candidate_first_party_domains,
                 )
                 for record in claim_records:
-                    db.add(VendorClaim(**record))
+                    db.add(CompanyClaim(**record))
                 claims_created += len(claim_records)
                 citation_summary_v1 = _build_citation_summary_v1(claim_records)
 
@@ -8494,7 +8494,7 @@ def _run_discovery_universe_monolith(job_id: int):
                         )
                     ),
                 },
-                "vendors_created": created_vendors,
+                "companies_created": created_companies,
                 "vendors_updated": updated_existing,
                 "kept_count": kept_count,
                 "review_count": review_count,
@@ -8626,7 +8626,7 @@ def _run_discovery_universe_monolith(job_id: int):
             job.finished_at = datetime.utcnow()
             db.commit()
 
-            return {"success": True, "created": created_vendors, "screening_run_id": screening_run_id}
+            return {"success": True, "created": created_companies, "screening_run_id": screening_run_id}
 
         except Exception as e:
             job.state = JobState.failed
@@ -9152,9 +9152,9 @@ def discovery_watchdog(job_id: int):
         db.close()
 
 
-@celery_app.task(name="app.workers.workspace_tasks.run_enrich_vendor")
-def run_enrich_vendor(job_id: int):
-    """Enrich a single vendor with dossier data."""
+@celery_app.task(name="app.workers.workspace_tasks.run_enrich_company")
+def run_enrich_company(job_id: int):
+    """Enrich a single company with dossier data."""
     from app.services.gemini_workspace import GeminiWorkspaceClient
     
     db = SessionLocal()
@@ -9169,18 +9169,18 @@ def run_enrich_vendor(job_id: int):
         job.progress_message = "Starting enrichment..."
         db.commit()
         
-        # Get vendor
-        vendor = db.query(Vendor).filter(Vendor.id == job.vendor_id).first()
-        if not vendor:
+        # Get company
+        company = db.query(Company).filter(Company.id == job.company_id).first()
+        if not company:
             job.state = JobState.failed
-            job.error_message = "Vendor not found"
+            job.error_message = "Company not found"
             job.finished_at = datetime.utcnow()
             db.commit()
-            return {"error": "Vendor not found"}
+            return {"error": "Company not found"}
         
         workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
         effective_policy = normalize_policy((workspace.decision_policy_json if workspace else None) or DEFAULT_EVIDENCE_POLICY)
-        candidate_domain = normalize_domain(vendor.website)
+        candidate_domain = normalize_domain(company.website)
         
         try:
             gemini = GeminiWorkspaceClient()
@@ -9192,15 +9192,15 @@ def run_enrich_vendor(job_id: int):
             # Run appropriate enrichment based on job type
             if job.job_type == JobType.enrich_full:
                 dossier_json = gemini.run_enrich_full(
-                    vendor_url=vendor.website or "",
-                    vendor_name=vendor.name,
+                    company_url=company.website or "",
+                    company_name=company.name,
                 )
             elif job.job_type == JobType.enrich_modules:
-                dossier_json = gemini.run_enrich_modules(vendor.website or "")
+                dossier_json = gemini.run_enrich_modules(company.website or "")
             elif job.job_type == JobType.enrich_customers:
-                dossier_json = gemini.run_enrich_customers(vendor.website or "")
+                dossier_json = gemini.run_enrich_customers(company.website or "")
             elif job.job_type == JobType.enrich_hiring:
-                dossier_json = gemini.run_enrich_hiring(vendor.website or "")
+                dossier_json = gemini.run_enrich_hiring(company.website or "")
             else:
                 dossier_json = {}
             
@@ -9209,9 +9209,9 @@ def run_enrich_vendor(job_id: int):
             db.commit()
             
             # Get latest version
-            existing_dossier = db.query(VendorDossier).filter(
-                VendorDossier.vendor_id == vendor.id
-            ).order_by(VendorDossier.version.desc()).first()
+            existing_dossier = db.query(CompanyDossier).filter(
+                CompanyDossier.company_id == company.id
+            ).order_by(CompanyDossier.version.desc()).first()
             
             new_version = (existing_dossier.version + 1) if existing_dossier else 1
             
@@ -9222,16 +9222,16 @@ def run_enrich_vendor(job_id: int):
                 dossier_json = merged
             
             # Create new dossier
-            dossier = VendorDossier(
-                vendor_id=vendor.id,
+            dossier = CompanyDossier(
+                company_id=company.id,
                 dossier_json=dossier_json,
                 version=new_version
             )
             db.add(dossier)
             
-            # Update vendor status
-            vendor.status = VendorStatus.enriched
-            vendor.updated_at = datetime.utcnow()
+            # Update company status
+            company.status = CompanyStatus.enriched
+            company.updated_at = datetime.utcnow()
             
             # Create evidence items from dossier
             canonical_sections = {
@@ -9257,9 +9257,9 @@ def run_enrich_vendor(job_id: int):
                         claim_group,
                         policy=effective_policy,
                     )
-                    evidence = WorkspaceEvidence(
+                    evidence = SourceEvidence(
                         workspace_id=job.workspace_id,
-                        vendor_id=vendor.id,
+                        company_id=company.id,
                         source_url=source_url,
                         excerpt_text=excerpt_text[:2000],
                         content_type="web",
@@ -9267,7 +9267,7 @@ def run_enrich_vendor(job_id: int):
                         source_kind=source_kind,
                         freshness_ttl_days=ttl_days,
                         valid_through=valid_through,
-                        asserted_by="run_enrich_vendor",
+                        asserted_by="run_enrich_company",
                     )
                     db.add(evidence)
 
@@ -9286,9 +9286,9 @@ def run_enrich_vendor(job_id: int):
                     claim_group,
                     policy=effective_policy,
                 )
-                evidence = WorkspaceEvidence(
+                evidence = SourceEvidence(
                     workspace_id=job.workspace_id,
-                    vendor_id=vendor.id,
+                    company_id=company.id,
                     source_url=source_url,
                     excerpt_text=f"{metric_name}: {value}",
                     content_type="web",
@@ -9296,7 +9296,7 @@ def run_enrich_vendor(job_id: int):
                     source_kind=source_kind,
                     freshness_ttl_days=ttl_days,
                     valid_through=valid_through,
-                    asserted_by="run_enrich_vendor",
+                    asserted_by="run_enrich_company",
                 )
                 db.add(evidence)
 
@@ -9312,18 +9312,17 @@ def run_enrich_vendor(job_id: int):
                         claim_group,
                         policy=effective_policy,
                     )
-                    evidence = WorkspaceEvidence(
+                    evidence = SourceEvidence(
                         workspace_id=job.workspace_id,
-                        vendor_id=vendor.id,
+                        company_id=company.id,
                         source_url=url,
                         excerpt_text=module.get("description", ""),
                         content_type="web",
-                        brick_ids=module.get("brick_id", ""),
                         source_tier=source_tier,
                         source_kind=source_kind,
                         freshness_ttl_days=ttl_days,
                         valid_through=valid_through,
-                        asserted_by="run_enrich_vendor",
+                        asserted_by="run_enrich_company",
                     )
                     db.add(evidence)
             
@@ -9338,9 +9337,9 @@ def run_enrich_vendor(job_id: int):
                         claim_group,
                         policy=effective_policy,
                     )
-                    evidence = WorkspaceEvidence(
+                    evidence = SourceEvidence(
                         workspace_id=job.workspace_id,
-                        vendor_id=vendor.id,
+                        company_id=company.id,
                         source_url=source_url,
                         excerpt_text=f"Customer: {customer.get('name', '')}",
                         content_type="case_study",
@@ -9348,7 +9347,7 @@ def run_enrich_vendor(job_id: int):
                         source_kind=source_kind,
                         freshness_ttl_days=ttl_days,
                         valid_through=valid_through,
-                        asserted_by="run_enrich_vendor",
+                        asserted_by="run_enrich_company",
                     )
                     db.add(evidence)
             
@@ -9384,8 +9383,8 @@ def _extract_reference_tokens(profile: CompanyProfile | None) -> set[str]:
     urls = []
     if profile.buyer_company_url:
         urls.append(profile.buyer_company_url)
-    if profile.reference_vendor_urls:
-        urls.extend(profile.reference_vendor_urls)
+    if profile.reference_company_urls:
+        urls.extend(profile.reference_company_urls)
     if profile.reference_evidence_urls:
         urls.extend(profile.reference_evidence_urls)
 
@@ -9441,25 +9440,25 @@ def generate_static_report(job_id: int, filters: dict | None = None):
         include_outside_sme = bool(filters.get("include_outside_sme", False))
         allowed_countries = include_countries if include_countries else set(DISCOVERY_COUNTRIES)
 
-        vendors = (
-            db.query(Vendor)
+        companies = (
+            db.query(Company)
             .filter(
-                Vendor.workspace_id == workspace.id,
-                Vendor.status.in_([VendorStatus.kept, VendorStatus.enriched]),
+                Company.workspace_id == workspace.id,
+                Company.status.in_([CompanyStatus.kept, CompanyStatus.enriched]),
             )
-            .order_by(Vendor.created_at.asc())
+            .order_by(Company.created_at.asc())
             .all()
         )
         screenings = (
-            db.query(VendorScreening)
-            .filter(VendorScreening.workspace_id == workspace.id)
-            .order_by(VendorScreening.created_at.desc())
+            db.query(CompanyScreening)
+            .filter(CompanyScreening.workspace_id == workspace.id)
+            .order_by(CompanyScreening.created_at.desc())
             .all()
         )
-        latest_screening_by_vendor: dict[int, VendorScreening] = {}
+        latest_screening_by_company: dict[int, CompanyScreening] = {}
         for screening in screenings:
-            if screening.vendor_id and screening.vendor_id not in latest_screening_by_vendor:
-                latest_screening_by_vendor[screening.vendor_id] = screening
+            if screening.company_id and screening.company_id not in latest_screening_by_company:
+                latest_screening_by_company[screening.company_id] = screening
 
         normalized_filters = {
             "size_bucket_default": "sme_in_range",
@@ -9481,23 +9480,23 @@ def generate_static_report(job_id: int, filters: dict | None = None):
         bucket_counts = {"sme_in_range": 0, "unknown": 0, "outside_sme_range": 0}
         filing_fact_count = 0
 
-        total = len(vendors)
-        for index, vendor in enumerate(vendors):
-            if not _vendor_passes_enterprise_screen(vendor.tags_custom or []):
+        total = len(companies)
+        for index, company in enumerate(companies):
+            if not _company_passes_enterprise_screen(company.tags_custom or []):
                 continue
 
-            vendor_evidence = (
-                db.query(WorkspaceEvidence)
-                .filter(WorkspaceEvidence.vendor_id == vendor.id)
-                .order_by(WorkspaceEvidence.captured_at.desc())
+            company_evidence = (
+                db.query(SourceEvidence)
+                .filter(SourceEvidence.company_id == company.id)
+                .order_by(SourceEvidence.captured_at.desc())
                 .all()
             )
 
-            normalized_country = normalize_country(vendor.hq_country)
+            normalized_country = normalize_country(company.hq_country)
 
             # Promote filing-like discovery claims into structured evidence rows when source is reliable.
             filing_claims_created = False
-            for claim in vendor.why_relevant or []:
+            for claim in company.why_relevant or []:
                 if not isinstance(claim, dict):
                     continue
                 citation_url = claim.get("citation_url")
@@ -9507,20 +9506,20 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                 if not is_reliable_filing_source_url(normalized_country, citation_url):
                     continue
                 exists = (
-                    db.query(WorkspaceEvidence)
+                    db.query(SourceEvidence)
                     .filter(
-                        WorkspaceEvidence.vendor_id == vendor.id,
-                        WorkspaceEvidence.source_url == citation_url,
-                        WorkspaceEvidence.excerpt_text == excerpt_text,
+                        SourceEvidence.company_id == company.id,
+                        SourceEvidence.source_url == citation_url,
+                        SourceEvidence.excerpt_text == excerpt_text,
                     )
                     .first()
                 )
                 if exists:
                     continue
                 db.add(
-                    WorkspaceEvidence(
+                    SourceEvidence(
                         workspace_id=workspace.id,
-                        vendor_id=vendor.id,
+                        company_id=company.id,
                         source_url=citation_url,
                         source_title="Discovery filing citation",
                         excerpt_text=excerpt_text[:2000],
@@ -9536,29 +9535,29 @@ def generate_static_report(job_id: int, filters: dict | None = None):
 
             if filing_claims_created:
                 db.flush()
-                vendor_evidence = (
-                    db.query(WorkspaceEvidence)
-                    .filter(WorkspaceEvidence.vendor_id == vendor.id)
-                    .order_by(WorkspaceEvidence.captured_at.desc())
+                company_evidence = (
+                    db.query(SourceEvidence)
+                    .filter(SourceEvidence.company_id == company.id)
+                    .order_by(SourceEvidence.captured_at.desc())
                     .all()
                 )
 
             latest_dossier = (
-                db.query(VendorDossier)
-                .filter(VendorDossier.vendor_id == vendor.id)
-                .order_by(VendorDossier.version.desc())
+                db.query(CompanyDossier)
+                .filter(CompanyDossier.company_id == company.id)
+                .order_by(CompanyDossier.version.desc())
                 .first()
             )
             dossier_json = latest_dossier.dossier_json if latest_dossier else {}
 
             fallback_capabilities = [
                 tag.split(":", 1)[1].strip()
-                for tag in (vendor.tags_custom or [])
+                for tag in (company.tags_custom or [])
                 if isinstance(tag, str) and tag.startswith("capability:")
             ]
             fallback_evidence_urls = [
                 e.source_url
-                for e in vendor_evidence
+                for e in company_evidence
                 if e.source_url and is_trusted_source_url(e.source_url)
             ]
             modules = modules_with_evidence(
@@ -9580,21 +9579,21 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                 continue
 
             existing_facts = (
-                db.query(VendorFact)
-                .filter(VendorFact.vendor_id == vendor.id)
+                db.query(CompanyFact)
+                .filter(CompanyFact.company_id == company.id)
                 .all()
             )
 
-            filing_facts = extract_filing_facts_from_evidence(normalized_country, vendor_evidence)
+            filing_facts = extract_filing_facts_from_evidence(normalized_country, company_evidence)
             facts_for_size = list(existing_facts)
             facts_for_size.extend(filing_facts)
 
             size_estimate = estimate_size_from_signals(
                 dossier_json=dossier_json,
                 facts=facts_for_size,
-                evidence_items=vendor_evidence,
-                tags_custom=vendor.tags_custom or [],
-                why_relevant=vendor.why_relevant or [],
+                evidence_items=company_evidence,
+                tags_custom=company.tags_custom or [],
+                why_relevant=company.why_relevant or [],
             )
             size_bucket = classify_size_bucket(size_estimate)
             if size_bucket == "outside_sme_range" and not include_outside_sme:
@@ -9603,7 +9602,7 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                 continue
             bucket_counts[size_bucket] = bucket_counts.get(size_bucket, 0) + 1
 
-            latest_screening = latest_screening_by_vendor.get(vendor.id)
+            latest_screening = latest_screening_by_company.get(company.id)
             fit_score = 0.0
             if latest_screening and latest_screening.total_score is not None:
                 fit_score = round(max(0.0, min(100.0, float(latest_screening.total_score))), 2)
@@ -9614,11 +9613,11 @@ def generate_static_report(job_id: int, filters: dict | None = None):
             elif latest_screening and latest_screening.decision_classification == "not_good_target":
                 fit_score = 20.0
 
-            fresh_evidence_count = len([row for row in vendor_evidence if is_fresh(row.valid_through)])
+            fresh_evidence_count = len([row for row in company_evidence if is_fresh(row.valid_through)])
             evidence_score = round(
                 min(
                     100.0,
-                    (min(len(vendor_evidence), 12) * 5.0)
+                    (min(len(company_evidence), 12) * 5.0)
                     + (min(fresh_evidence_count, 12) * 3.0)
                     + (20.0 if normalized_country in RELIABLE_FILINGS_COUNTRIES else 0.0),
                 ),
@@ -9629,21 +9628,21 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                 filing_fact_count += len(filing_facts)
                 for fact in filing_facts:
                     exists = (
-                        db.query(VendorFact)
+                        db.query(CompanyFact)
                         .filter(
-                            VendorFact.vendor_id == vendor.id,
-                            VendorFact.fact_key == fact.fact_key,
-                            VendorFact.fact_value == fact.fact_value,
-                            VendorFact.period == fact.period,
-                            VendorFact.source_evidence_id == fact.source_evidence_id,
+                            CompanyFact.company_id == company.id,
+                            CompanyFact.fact_key == fact.fact_key,
+                            CompanyFact.fact_value == fact.fact_value,
+                            CompanyFact.period == fact.period,
+                            CompanyFact.source_evidence_id == fact.source_evidence_id,
                         )
                         .first()
                     )
                     if exists:
                         continue
                     db.add(
-                        VendorFact(
-                            vendor_id=vendor.id,
+                        CompanyFact(
+                            company_id=company.id,
                             fact_key=fact.fact_key,
                             fact_value=fact.fact_value,
                             fact_unit=fact.fact_unit,
@@ -9656,31 +9655,31 @@ def generate_static_report(job_id: int, filters: dict | None = None):
 
             item_payloads.append(
                 {
-                    "vendor_id": vendor.id,
+                    "company_id": company.id,
                     "compete_score": fit_score,
                     "complement_score": evidence_score,
                     "decision_classification": (
-                        latest_screening_by_vendor[vendor.id].decision_classification
-                        if vendor.id in latest_screening_by_vendor
+                        latest_screening_by_company[company.id].decision_classification
+                        if company.id in latest_screening_by_company
                         else "insufficient_evidence"
                     ),
                     "reason_codes_json": (
                         {
-                            "positive": latest_screening_by_vendor[vendor.id].positive_reason_codes_json or [],
-                            "caution": latest_screening_by_vendor[vendor.id].caution_reason_codes_json or [],
-                            "reject": latest_screening_by_vendor[vendor.id].reject_reason_codes_json or [],
+                            "positive": latest_screening_by_company[company.id].positive_reason_codes_json or [],
+                            "caution": latest_screening_by_company[company.id].caution_reason_codes_json or [],
+                            "reject": latest_screening_by_company[company.id].reject_reason_codes_json or [],
                         }
-                        if vendor.id in latest_screening_by_vendor
+                        if company.id in latest_screening_by_company
                         else {"positive": [], "caution": [], "reject": []}
                     ),
                     "evidence_summary_json": {
-                        "evidence_count": len(vendor_evidence),
+                        "evidence_count": len(company_evidence),
                         "freshness_ratio": round(
-                            len([row for row in vendor_evidence if is_fresh(row.valid_through)]) / max(1, len(vendor_evidence)),
+                            len([row for row in company_evidence if is_fresh(row.valid_through)]) / max(1, len(company_evidence)),
                             4,
                         ),
                         "tier_counts": {
-                            tier: len([row for row in vendor_evidence if str(row.source_tier or "") == tier])
+                            tier: len([row for row in company_evidence if str(row.source_tier or "") == tier])
                             for tier in ["tier0_registry", "tier1_vendor", "tier2_partner_customer", "tier3_third_party", "tier4_discovery"]
                         },
                     },
@@ -9698,7 +9697,7 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                             if normalized_country in RELIABLE_FILINGS_COUNTRIES
                             else "not_available_in_current_reliable_filings_coverage"
                         ),
-                        "evidence_count": len(vendor_evidence),
+                        "evidence_count": len(company_evidence),
                         "fresh_evidence_count": fresh_evidence_count,
                     },
                 }
@@ -9706,7 +9705,7 @@ def generate_static_report(job_id: int, filters: dict | None = None):
 
             if total:
                 job.progress = 0.10 + (0.75 * (index + 1) / total)
-                job.progress_message = f"Scored {index + 1}/{total} vendors"
+                job.progress_message = f"Scored {index + 1}/{total} companies"
                 db.commit()
 
         job.progress = 0.9
@@ -9733,7 +9732,7 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                 db.add(
                     ReportSnapshotItem(
                         report_id=snapshot.id,
-                        vendor_id=payload["vendor_id"],
+                        company_id=payload["company_id"],
                         compete_score=payload["compete_score"],
                         complement_score=payload["complement_score"],
                         decision_classification=payload.get("decision_classification"),

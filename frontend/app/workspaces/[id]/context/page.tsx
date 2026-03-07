@@ -116,7 +116,7 @@ export default function ThesisPackPage() {
   useEffect(() => {
     if (profile) {
       setBuyerUrl(profile.buyer_company_url || "");
-      setReferenceUrls(profile.reference_vendor_urls || []);
+      setReferenceUrls(profile.reference_company_urls || []);
       setEvidenceUrls(profile.reference_evidence_urls || []);
     }
   }, [profile]);
@@ -161,7 +161,7 @@ export default function ThesisPackPage() {
   const saveProfileInputs = async () => {
     await updateProfile.mutateAsync({
       buyer_company_url: buyerUrl,
-      reference_vendor_urls: referenceUrls,
+      reference_company_urls: referenceUrls,
       reference_evidence_urls: evidenceUrls,
     });
   };
@@ -441,7 +441,7 @@ export default function ThesisPackPage() {
               job={jobRunner.job ?? {
                 id: 0,
                 workspace_id: workspaceId,
-                vendor_id: null,
+                company_id: null,
                 job_type: "context_pack",
                 state: "queued",
                 provider: "crawler",

@@ -12,8 +12,8 @@ class WorkspaceFeedbackEvent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
-    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=True, index=True)
-    screening_id = Column(Integer, ForeignKey("vendor_screenings.id"), nullable=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
+    company_screening_id = Column(Integer, ForeignKey("company_screenings.id"), nullable=True, index=True)
 
     feedback_type = Column(String(64), nullable=False, default="classification_override")
     previous_classification = Column(String(40), nullable=True)
@@ -26,6 +26,5 @@ class WorkspaceFeedbackEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     workspace = relationship("Workspace", back_populates="feedback_events")
-    vendor = relationship("Vendor")
-    screening = relationship("VendorScreening")
-
+    company = relationship("Company")
+    company_screening = relationship("CompanyScreening")

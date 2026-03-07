@@ -56,11 +56,11 @@ def test_normalize_policy_preserves_defaults_and_overrides():
     policy = normalize_policy(
         {
             "claim_group_ttl_days": {"traction": 999},
-            "gate_requirements": {"universe": {"min_decision_qualified_vendors": 9}},
+            "gate_requirements": {"universe": {"min_decision_qualified_companies": 9}},
             "tier4_cannot_justify_good_target": True,
         }
     )
     assert policy["claim_group_ttl_days"]["traction"] == 999
-    assert policy["gate_requirements"]["universe"]["min_decision_qualified_vendors"] == 9
+    assert policy["gate_requirements"]["universe"]["min_decision_qualified_companies"] == 9
     # Defaults remain for untouched sections.
     assert "context_pack" in policy["gate_requirements"]

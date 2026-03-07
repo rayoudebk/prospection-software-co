@@ -50,7 +50,7 @@ class Job(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False)
-    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=True)  # Nullable for workspace-level jobs
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)  # Nullable for workspace-level jobs
     
     job_type = Column(Enum(JobType), nullable=False)
     state = Column(Enum(JobState), default=JobState.queued)
@@ -74,4 +74,4 @@ class Job(Base):
 
     # Relationships
     workspace = relationship("Workspace", back_populates="jobs")
-    vendor = relationship("Vendor")
+    company = relationship("Company")

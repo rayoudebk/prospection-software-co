@@ -194,13 +194,13 @@ def test_resolve_identities_canonicalizes_redirected_first_party_domain(monkeypa
     assert "jump-technology.com" in candidate["first_party_domains"]
 
 
-def test_build_first_party_hint_url_map_uses_evidence_urls_and_path_vendor_urls():
+def test_build_first_party_hint_url_map_uses_evidence_urls_and_path_company_urls():
     profile = SimpleNamespace(
         reference_evidence_urls=[
             "https://upvest.co/blog/zopa-bank-partners-with-upvest",
             "https://upvest.co/blog/boerse-stuttgart-and-upvest/",
         ],
-        reference_vendor_urls=[
+        reference_company_urls=[
             "https://upvest.co/blog/liqid-enters-partnership-with-upvest-for-its-eltif-offering",
             "https://upvest.co",  # root URL should be ignored for path-required vendor hints
         ],
@@ -606,8 +606,8 @@ def test_build_claim_records_maps_product_icp_signal_to_vertical_workflow():
 
     records = workspace_tasks._build_claim_records(
         workspace_id=1,
-        vendor_id=None,
-        screening_id=1,
+        company_id=None,
+        company_screening_id=1,
         candidate=candidate,
         trusted_reasons=trusted_reasons,
         matched_mentions=[],
@@ -636,8 +636,8 @@ def test_build_claim_records_keeps_generic_product_as_product_depth():
 
     records = workspace_tasks._build_claim_records(
         workspace_id=1,
-        vendor_id=None,
-        screening_id=1,
+        company_id=None,
+        company_screening_id=1,
         candidate=candidate,
         trusted_reasons=trusted_reasons,
         matched_mentions=[],

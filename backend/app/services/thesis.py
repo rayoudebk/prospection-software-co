@@ -116,14 +116,14 @@ def _pill_label_for_url(
     url: str,
     *,
     buyer_url: Optional[str],
-    reference_vendor_urls: Iterable[str],
+    reference_company_urls: Iterable[str],
     reference_evidence_urls: Iterable[str],
 ) -> str:
     normalized = normalize_url(url)
     domain = normalize_domain(normalized) or "source"
     if normalized and normalize_domain(normalized) == normalize_domain(buyer_url):
         return "Buyer website"
-    if normalized in {normalize_url(item) for item in reference_vendor_urls if normalize_url(item)}:
+    if normalized in {normalize_url(item) for item in reference_company_urls if normalize_url(item)}:
         return f"Comparator seed: {domain}"
     if normalized in {normalize_url(item) for item in reference_evidence_urls if normalize_url(item)}:
         return f"Evidence source: {domain}"
@@ -134,12 +134,12 @@ def normalize_source_pills(
     source_pills: Any,
     *,
     buyer_url: Optional[str] = None,
-    reference_vendor_urls: Optional[Iterable[str]] = None,
+    reference_company_urls: Optional[Iterable[str]] = None,
     reference_evidence_urls: Optional[Iterable[str]] = None,
 ) -> list[dict[str, Any]]:
     pills: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
-    vendor_urls = list(reference_vendor_urls or [])
+    company_urls = list(reference_company_urls or [])
     evidence_urls = list(reference_evidence_urls or [])
 
     if not isinstance(source_pills, list):
@@ -159,7 +159,7 @@ def normalize_source_pills(
         label = str(payload.get("label") or "").strip() or _pill_label_for_url(
             url,
             buyer_url=buyer_url,
-            reference_vendor_urls=vendor_urls,
+            reference_company_urls=company_urls,
             reference_evidence_urls=evidence_urls,
         )
         pills.append(
@@ -320,7 +320,7 @@ def _site_source_pill_ids_by_url(profile: CompanyProfile, source_pills: list[dic
     normalized = normalize_source_pills(
         source_pills,
         buyer_url=profile.buyer_company_url,
-        reference_vendor_urls=profile.reference_vendor_urls or [],
+        reference_company_urls=profile.reference_company_urls or [],
         reference_evidence_urls=profile.reference_evidence_urls or [],
     )
     source_pills[:] = normalized
@@ -347,7 +347,7 @@ def _extract_keyword_claims(text: str, patterns: Iterable[tuple[str, str]]) -> l
 
 def _derive_source_pills_from_profile(profile: CompanyProfile) -> list[dict[str, Any]]:
     source_items: list[dict[str, Any]] = []
-    for url in [profile.buyer_company_url, *(profile.reference_vendor_urls or []), *(profile.reference_evidence_urls or [])]:
+    for url in [profile.buyer_company_url, *(profile.reference_company_urls or []), *(profile.reference_evidence_urls or [])]:
         if normalize_url(url):
             source_items.append({"url": url})
 
@@ -386,7 +386,7 @@ def _derive_source_pills_from_profile(profile: CompanyProfile) -> list[dict[str,
     return normalize_source_pills(
         source_items,
         buyer_url=profile.buyer_company_url,
-        reference_vendor_urls=profile.reference_vendor_urls or [],
+        reference_company_urls=profile.reference_company_urls or [],
         reference_evidence_urls=profile.reference_evidence_urls or [],
     )
 
@@ -600,7 +600,7 @@ def derive_search_lane_payloads(
     include_terms = section_values.get("include_constraint", [])
     exclude_terms = section_values.get("exclude_constraint", [])
     customer_tags = section_values.get("customer_profile", [])
-    reference_seed_urls = _normalize_string_list(profile.reference_vendor_urls or [], max_items=8, max_len=220)
+    reference_seed_urls = _normalize_string_list(profile.reference_company_urls or [], max_items=8, max_len=220)
 
     core_capabilities = section_values.get("core_capability", [])[:8]
     adjacent_capabilities = section_values.get("adjacent_capability", [])[:8]

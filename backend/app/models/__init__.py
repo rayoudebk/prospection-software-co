@@ -8,10 +8,10 @@ from app.models.feedback import FeedbackEvent
 # New workspace-based models
 from app.models.workspace import Workspace, CompanyProfile
 from app.models.thesis import BuyerThesisPack, SearchLane
-from app.models.vendor import Vendor, VendorDossier, VendorStatus
+from app.models.company import Company, CompanyDossier, CompanyStatus
 from app.models.job import Job, JobType, JobState, JobProvider
-from app.models.workspace_evidence import WorkspaceEvidence
-from app.models.report import ReportSnapshot, ReportSnapshotItem, VendorFact
+from app.models.source_evidence import SourceEvidence
+from app.models.report import ReportSnapshot, ReportSnapshotItem, CompanyFact
 from app.models.workspace_feedback import WorkspaceFeedbackEvent
 from app.models.intelligence import (
     ComparatorSourceRun,
@@ -19,9 +19,9 @@ from app.models.intelligence import (
     CandidateEntityAlias,
     CandidateOriginEdge,
     RegistryQueryLog,
-    VendorMention,
-    VendorScreening,
-    VendorClaim,
+    CompanyMention,
+    CompanyScreening,
+    CompanyClaim,
 )
 from app.models.claims_graph import ClaimGraphNode, ClaimGraphEdge, ClaimGraphEdgeEvidence
 from app.models.evaluation import EvaluationRun, EvaluationSampleResult
@@ -33,13 +33,13 @@ __all__ = [
     # New workspace models
     "Workspace", "CompanyProfile",
     "BuyerThesisPack", "SearchLane",
-    "Vendor", "VendorDossier", "VendorStatus",
+    "Company", "CompanyDossier", "CompanyStatus",
     "Job", "JobType", "JobState", "JobProvider",
-    "WorkspaceEvidence",
-    "ReportSnapshot", "ReportSnapshotItem", "VendorFact",
+    "SourceEvidence",
+    "ReportSnapshot", "ReportSnapshotItem", "CompanyFact",
     "WorkspaceFeedbackEvent",
     "ComparatorSourceRun", "CandidateEntity", "CandidateEntityAlias", "CandidateOriginEdge", "RegistryQueryLog",
-    "VendorMention", "VendorScreening", "VendorClaim",
+    "CompanyMention", "CompanyScreening", "CompanyClaim",
     "ClaimGraphNode", "ClaimGraphEdge", "ClaimGraphEdgeEvidence",
     "EvaluationRun", "EvaluationSampleResult",
     "ExternalSearchRun", "ExternalSearchResult",

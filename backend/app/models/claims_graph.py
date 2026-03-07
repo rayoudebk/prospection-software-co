@@ -1,4 +1,4 @@
-"""Normalized claims graph entities and relations for cross-vendor reasoning."""
+"""Normalized claims graph entities and relations for cross-company reasoning."""
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text
@@ -42,12 +42,11 @@ class ClaimGraphEdgeEvidence(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     edge_id = Column(Integer, ForeignKey("claim_graph_edges.id"), nullable=False, index=True)
-    claim_id = Column(Integer, ForeignKey("vendor_claims.id"), nullable=True, index=True)
-    source_evidence_id = Column(Integer, ForeignKey("workspace_evidence.id"), nullable=True, index=True)
+    claim_id = Column(Integer, ForeignKey("company_claims.id"), nullable=True, index=True)
+    source_evidence_id = Column(Integer, ForeignKey("source_evidence.id"), nullable=True, index=True)
     explanation = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     edge = relationship("ClaimGraphEdge")
-    claim = relationship("VendorClaim")
-    source_evidence = relationship("WorkspaceEvidence")
-
+    claim = relationship("CompanyClaim")
+    source_evidence = relationship("SourceEvidence")

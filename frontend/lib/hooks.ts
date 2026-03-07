@@ -64,7 +64,7 @@ export function useUpdateContextPack(workspaceId: number) {
   return useMutation({
     mutationFn: (data: {
       buyer_company_url?: string;
-      reference_vendor_urls?: string[];
+      reference_company_urls?: string[];
       reference_evidence_urls?: string[];
       geo_scope?: GeoScope;
     }) => workspaceApi.updateContextPack(workspaceId, data),
@@ -170,22 +170,22 @@ export function useConfirmSearchLanes(workspaceId: number) {
   });
 }
 
-// Discovery & Vendors
+// Discovery & Companies
 export function useRunDiscovery(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => workspaceApi.runDiscovery(workspaceId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["vendors", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["workspace-jobs", workspaceId] });
     },
   });
 }
 
-export function useVendors(workspaceId: number, status?: string) {
+export function useCompanies(workspaceId: number, status?: string) {
   return useQuery({
-    queryKey: ["vendors", workspaceId, status],
-    queryFn: () => workspaceApi.listVendors(workspaceId, status),
+    queryKey: ["companies", workspaceId, status],
+    queryFn: () => workspaceApi.listCompanies(workspaceId, status),
     enabled: !!workspaceId,
   });
 }
@@ -198,28 +198,28 @@ export function useTopCandidates(workspaceId: number, limit = 25, allowDegraded 
   });
 }
 
-export function useCreateVendor(workspaceId: number) {
+export function useCreateCompany(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (data: {
       name: string;
       website?: string;
       hq_country?: string;
-    }) => workspaceApi.createVendor(workspaceId, data),
+    }) => workspaceApi.createCompany(workspaceId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["vendors", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
     },
   });
 }
 
-export function useUpdateVendor(workspaceId: number) {
+export function useUpdateCompany(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
-      vendorId,
+      companyId,
       data,
     }: {
-      vendorId: number;
+      companyId: number;
       data: {
         name?: string;
         website?: string;
@@ -228,31 +228,31 @@ export function useUpdateVendor(workspaceId: number) {
         tags_custom?: string[];
         status?: string;
       };
-    }) => workspaceApi.updateVendor(workspaceId, vendorId, data),
+    }) => workspaceApi.updateCompany(workspaceId, companyId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["vendors", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
     },
   });
 }
 
 // Enrichment
-export function useEnrichVendors(workspaceId: number) {
+export function useEnrichCompanies(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { vendor_ids: number[]; job_types?: string[] }) =>
-      workspaceApi.enrichVendors(workspaceId, data),
+    mutationFn: (data: { company_ids: number[]; job_types?: string[] }) =>
+      workspaceApi.enrichCompanies(workspaceId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["vendors", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["workspace-jobs", workspaceId] });
     },
   });
 }
 
-export function useVendorDossier(workspaceId: number, vendorId: number) {
+export function useCompanyDossier(workspaceId: number, companyId: number) {
   return useQuery({
-    queryKey: ["vendor-dossier", vendorId],
-    queryFn: () => workspaceApi.getVendorDossier(workspaceId, vendorId),
-    enabled: !!workspaceId && !!vendorId,
+    queryKey: ["company-dossier", companyId],
+    queryFn: () => workspaceApi.getCompanyDossier(workspaceId, companyId),
+    enabled: !!workspaceId && !!companyId,
   });
 }
 
@@ -334,11 +334,11 @@ export function useUpdateEvidencePolicy(workspaceId: number) {
   });
 }
 
-export function useVendorDecision(workspaceId: number, vendorId: number | null) {
+export function useCompanyDecision(workspaceId: number, companyId: number | null) {
   return useQuery({
-    queryKey: ["vendor-decision", workspaceId, vendorId],
-    queryFn: () => workspaceApi.getVendorDecision(workspaceId, vendorId!),
-    enabled: !!workspaceId && !!vendorId,
+    queryKey: ["company-decision", workspaceId, companyId],
+    queryFn: () => workspaceApi.getCompanyDecision(workspaceId, companyId!),
+    enabled: !!workspaceId && !!companyId,
   });
 }
 
@@ -353,7 +353,7 @@ export function useDecisionQualityDiagnostics(workspaceId: number) {
 export function useRunMonitoring(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data?: { max_vendors?: number; stale_only?: boolean; classifications?: string[] }) =>
+    mutationFn: (data?: { max_companies?: number; stale_only?: boolean; classifications?: string[] }) =>
       workspaceApi.runMonitoring(workspaceId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["workspace-jobs", workspaceId] });
@@ -392,8 +392,8 @@ export function useCreateWorkspaceFeedback(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (data: {
-      vendor_id?: number;
-      screening_id?: number;
+      company_id?: number;
+      company_screening_id?: number;
       feedback_type?: string;
       previous_classification?: string;
       new_classification?: string;
@@ -404,7 +404,7 @@ export function useCreateWorkspaceFeedback(workspaceId: number) {
     }) => workspaceApi.createFeedback(workspaceId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["workspace-feedback", workspaceId] });
-      queryClient.invalidateQueries({ queryKey: ["vendors", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["decision-quality", workspaceId] });
     },
   });
@@ -477,7 +477,7 @@ export function useWorkspaceJobWithPolling(
         queryClient.invalidateQueries({ queryKey: ["context-pack", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
-        queryClient.invalidateQueries({ queryKey: ["vendors", workspaceId] });
+        queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
         onComplete?.();
       }

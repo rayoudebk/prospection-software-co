@@ -1,4 +1,4 @@
-"""Workspace-level evidence model."""
+"""Source evidence model."""
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -6,13 +6,13 @@ from datetime import datetime
 from app.models.base import Base
 
 
-class WorkspaceEvidence(Base):
-    """Evidence items for workspace - can be linked to vendor or workspace-level."""
-    __tablename__ = "workspace_evidence"
+class SourceEvidence(Base):
+    """Evidence items for a workspace with optional company linkage."""
+    __tablename__ = "source_evidence"
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False)
-    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=True)  # Nullable for workspace-level evidence
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)  # Nullable for workspace-level evidence
     
     # Source information
     source_url = Column(String(1000), nullable=False)
@@ -41,9 +41,6 @@ class WorkspaceEvidence(Base):
     )  # registry|first_party|customer_partner|third_party|directory
     asserted_by = Column(String(120), nullable=True)
 
-    # Which brick(s) this evidence supports
-    brick_ids = Column(String(500), nullable=True)  # Comma-separated brick IDs
-
     # Relationships
     workspace = relationship("Workspace", back_populates="evidence_items")
-    vendor = relationship("Vendor", back_populates="evidence_items")
+    company = relationship("Company", back_populates="evidence_items")

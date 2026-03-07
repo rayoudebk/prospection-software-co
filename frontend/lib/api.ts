@@ -28,7 +28,7 @@ export interface Workspace {
   name: string;
   region_scope: string;
   created_at: string;
-  vendor_count: number;
+  company_count: number;
   has_context_pack: boolean;
   has_confirmed_search_lanes: boolean;
 }
@@ -44,7 +44,7 @@ export interface CompanyProfile {
   workspace_id: number;
   buyer_company_url: string | null;
   buyer_context_summary: string | null;
-  reference_vendor_urls: string[];
+  reference_company_urls: string[];
   reference_evidence_urls: string[];
   reference_summaries: Record<string, string>;
   geo_scope: GeoScope;
@@ -143,7 +143,7 @@ export interface WhyRelevant {
   citation_url: string;
 }
 
-export interface Vendor {
+export interface Company {
   id: number;
   workspace_id: number;
   name: string;
@@ -191,7 +191,7 @@ export interface Vendor {
 }
 
 export interface UniverseTopCandidate {
-  vendor_id: number | null;
+  company_id: number | null;
   candidate_entity_id: number | null;
   company_name: string;
   official_website_url: string | null;
@@ -228,9 +228,9 @@ export interface UniverseTopCandidate {
   degraded_reasons?: string[];
 }
 
-export interface VendorDossier {
+export interface CompanyDossier {
   id: number;
-  vendor_id: number;
+  company_id: number;
   dossier_json: {
     workflow?: Array<{
       text: string;
@@ -299,7 +299,7 @@ export interface VendorDossier {
 export interface Job {
   id: number;
   workspace_id: number;
-  vendor_id: number | null;
+  company_id: number | null;
   job_type: string;
   state: "queued" | "running" | "polling" | "completed" | "failed";
   provider: string;
@@ -355,7 +355,7 @@ export interface ReportSnapshot {
 }
 
 export interface ReportCard {
-  vendor_id: number;
+  company_id: number;
   name: string;
   website: string | null;
   hq_country: string | null;
@@ -400,8 +400,8 @@ export interface EvidencePolicyResponse {
   policy: Record<string, unknown>;
 }
 
-export interface VendorDecision {
-  vendor_id: number;
+export interface CompanyDecision {
+  company_id: number;
   workspace_id: number;
   classification: string;
   evidence_sufficiency: string;
@@ -448,8 +448,8 @@ export interface ClaimsGraphSummary {
 export interface WorkspaceFeedback {
   id: number;
   workspace_id: number;
-  vendor_id: number | null;
-  screening_id: number | null;
+  company_id: number | null;
+  company_screening_id: number | null;
   feedback_type: string;
   previous_classification: string | null;
   new_classification: string | null;
@@ -537,7 +537,7 @@ export const workspaceApi = {
     id: number,
     data: {
       buyer_company_url?: string;
-      reference_vendor_urls?: string[];
+      reference_company_urls?: string[];
       reference_evidence_urls?: string[];
       geo_scope?: GeoScope;
     }
@@ -623,13 +623,13 @@ export const workspaceApi = {
       `/workspaces/${id}/universe/top-candidates?limit=${encodeURIComponent(String(limit))}&allow_degraded=${allowDegraded ? "true" : "false"}`
     ),
 
-  // Vendors
-  listVendors: (id: number, status?: string) =>
-    fetchJSON<Vendor[]>(
-      `/workspaces/${id}/vendors${status ? `?status=${status}` : ""}`
+  // Companies
+  listCompanies: (id: number, status?: string) =>
+    fetchJSON<Company[]>(
+      `/workspaces/${id}/companies${status ? `?status=${status}` : ""}`
     ),
 
-  createVendor: (
+  createCompany: (
     id: number,
     data: {
       name: string;
@@ -637,14 +637,14 @@ export const workspaceApi = {
       hq_country?: string;
     }
   ) =>
-    fetchJSON<Vendor>(`/workspaces/${id}/vendors`, {
+    fetchJSON<Company>(`/workspaces/${id}/companies`, {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  updateVendor: (
+  updateCompany: (
     workspaceId: number,
-    vendorId: number,
+    companyId: number,
     data: {
       name?: string;
       website?: string;
@@ -654,24 +654,24 @@ export const workspaceApi = {
       status?: string;
     }
   ) =>
-    fetchJSON<Vendor>(`/workspaces/${workspaceId}/vendors/${vendorId}`, {
+    fetchJSON<Company>(`/workspaces/${workspaceId}/companies/${companyId}`, {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
 
   // Enrichment
-  enrichVendors: (
+  enrichCompanies: (
     id: number,
-    data: { vendor_ids: number[]; job_types?: string[] }
+    data: { company_ids: number[]; job_types?: string[] }
   ) =>
-    fetchJSON<Job[]>(`/workspaces/${id}/vendors:enrich`, {
+    fetchJSON<Job[]>(`/workspaces/${id}/companies:enrich`, {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  getVendorDossier: (workspaceId: number, vendorId: number) =>
-    fetchJSON<VendorDossier | null>(
-      `/workspaces/${workspaceId}/vendors/${vendorId}/dossier`
+  getCompanyDossier: (workspaceId: number, companyId: number) =>
+    fetchJSON<CompanyDossier | null>(
+      `/workspaces/${workspaceId}/companies/${companyId}/dossier`
     ),
 
   // Static Reports
@@ -722,8 +722,8 @@ export const workspaceApi = {
       body: JSON.stringify({ policy }),
     }),
 
-  getVendorDecision: (workspaceId: number, vendorId: number) =>
-    fetchJSON<VendorDecision>(`/workspaces/${workspaceId}/vendors/${vendorId}/decision`),
+  getCompanyDecision: (workspaceId: number, companyId: number) =>
+    fetchJSON<CompanyDecision>(`/workspaces/${workspaceId}/companies/${companyId}/decision`),
 
   getDecisionQualityDiagnostics: (workspaceId: number) =>
     fetchJSON<DecisionQualityDiagnostics>(`/workspaces/${workspaceId}/diagnostics/decision-quality`),
@@ -731,7 +731,7 @@ export const workspaceApi = {
   runMonitoring: (
     workspaceId: number,
     data?: {
-      max_vendors?: number;
+      max_companies?: number;
       stale_only?: boolean;
       classifications?: string[];
     }
@@ -758,8 +758,8 @@ export const workspaceApi = {
   createFeedback: (
     workspaceId: number,
     data: {
-      vendor_id?: number;
-      screening_id?: number;
+      company_id?: number;
+      company_screening_id?: number;
       feedback_type?: string;
       previous_classification?: string;
       new_classification?: string;

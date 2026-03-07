@@ -3,15 +3,15 @@
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import {
-  useVendors,
-  useUpdateVendor,
-  useCreateVendor,
+  useCompanies,
+  useUpdateCompany,
+  useCreateCompany,
   useTopCandidates,
   useGates,
   useWorkspaceJobs,
   useWorkspaceJobWithPolling,
 } from "@/lib/hooks";
-import { workspaceApi, Vendor } from "@/lib/api";
+import { workspaceApi, Company } from "@/lib/api";
 import {
   Globe,
   Search,
@@ -43,14 +43,14 @@ function classificationBadgeClass(classification?: string | null) {
   return "badge-neutral";
 }
 
-function reasonCodeChips(vendor: Vendor): string[] {
-  const codes = vendor.reason_codes || { positive: [], caution: [], reject: [] };
+function reasonCodeChips(company: Company): string[] {
+  const codes = company.reason_codes || { positive: [], caution: [], reject: [] };
   return [...codes.positive, ...codes.caution, ...codes.reject].slice(0, 5);
 }
 
-function CitedSummary({ vendor }: { vendor: Vendor }) {
-  const summary = vendor.citation_summary_v1;
-  const fallback = vendor.rationale_summary || vendor.why_relevant[0]?.text || "No rationale generated yet.";
+function CitedSummary({ company }: { company: Company }) {
+  const summary = company.citation_summary_v1;
+  const fallback = company.rationale_summary || company.why_relevant[0]?.text || "No rationale generated yet.";
   if (!summary || !summary.sentences?.length || !summary.source_pills?.length) {
     return <div className="text-sm text-steel-600 mb-3 line-clamp-3">{fallback}</div>;
   }
@@ -71,7 +71,7 @@ function CitedSummary({ vendor }: { vendor: Vendor }) {
   return (
     <div className="text-sm text-steel-600 mb-3 space-y-2">
       {sentences.map((sentence) => (
-        <p key={`${vendor.id}-${sentence.id}`} className="leading-relaxed">
+        <p key={`${company.id}-${sentence.id}`} className="leading-relaxed">
           {sentence.text}{" "}
           {sentence.citation_pill_ids.map((pillId) => {
             const pill = pillById.get(pillId);
@@ -101,21 +101,21 @@ export default function UniversePage() {
   const workspaceId = Number(params.id);
   const [allowDegradedRun, setAllowDegradedRun] = useState(false);
 
-  const { data: vendors, isLoading, refetch } = useVendors(workspaceId);
+  const { data: companies, isLoading, refetch } = useCompanies(workspaceId);
   const {
     data: topCandidates,
     error: topCandidatesError,
   } = useTopCandidates(workspaceId, 25, allowDegradedRun);
   const { data: gates } = useGates(workspaceId);
   const { data: discoveryJobs } = useWorkspaceJobs(workspaceId, "discovery_universe");
-  const updateVendor = useUpdateVendor(workspaceId);
-  const createVendor = useCreateVendor(workspaceId);
+  const updateCompany = useUpdateCompany(workspaceId);
+  const createCompany = useCreateCompany(workspaceId);
 
   const [filter, setFilter] = useState<
     "all" | "good_target" | "borderline_watchlist" | "not_good_target" | "insufficient_evidence"
   >("all");
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newVendor, setNewVendor] = useState({ name: "", website: "", hq_country: "" });
+  const [newCompany, setNewCompany] = useState({ name: "", website: "", hq_country: "" });
 
   const jobRunner = useWorkspaceJobWithPolling(
     workspaceId,
@@ -124,48 +124,48 @@ export default function UniversePage() {
     (jobId) => workspaceApi.cancelJob(workspaceId, jobId)
   );
 
-  const handleKeep = async (vendor: Vendor) => {
-    await updateVendor.mutateAsync({
-      vendorId: vendor.id,
+  const handleKeep = async (company: Company) => {
+    await updateCompany.mutateAsync({
+      companyId: company.id,
       data: { status: "kept" },
     });
   };
 
-  const handleRemove = async (vendor: Vendor) => {
-    await updateVendor.mutateAsync({
-      vendorId: vendor.id,
+  const handleRemove = async (company: Company) => {
+    await updateCompany.mutateAsync({
+      companyId: company.id,
       data: { status: "removed" },
     });
   };
 
-  const handleRestore = async (vendor: Vendor) => {
-    await updateVendor.mutateAsync({
-      vendorId: vendor.id,
+  const handleRestore = async (company: Company) => {
+    await updateCompany.mutateAsync({
+      companyId: company.id,
       data: { status: "candidate" },
     });
   };
 
-  const handleAddVendor = async () => {
-    if (!newVendor.name) return;
-    await createVendor.mutateAsync(newVendor);
-    setNewVendor({ name: "", website: "", hq_country: "" });
+  const handleAddCompany = async () => {
+    if (!newCompany.name) return;
+    await createCompany.mutateAsync(newCompany);
+    setNewCompany({ name: "", website: "", hq_country: "" });
     setShowAddModal(false);
   };
 
-  const nonSolutionVendors = vendors?.filter((v) => (v.entity_type || "company") !== "solution") || [];
-  const filteredVendors = nonSolutionVendors.filter((v) => {
+  const nonSolutionCompanies = companies?.filter((company) => (company.entity_type || "company") !== "solution") || [];
+  const filteredCompanies = nonSolutionCompanies.filter((company) => {
     if (filter === "all") return true;
-    return (v.decision_classification || "insufficient_evidence") === filter;
+    return (company.decision_classification || "insufficient_evidence") === filter;
   });
 
-  const keptCount = nonSolutionVendors.filter((v) => v.status === "kept" || v.status === "enriched").length || 0;
-  const goodCount = nonSolutionVendors.filter((v) => (v.decision_classification || "insufficient_evidence") === "good_target").length || 0;
+  const keptCount = nonSolutionCompanies.filter((company) => company.status === "kept" || company.status === "enriched").length || 0;
+  const goodCount = nonSolutionCompanies.filter((company) => (company.decision_classification || "insufficient_evidence") === "good_target").length || 0;
   const borderlineCount =
-    nonSolutionVendors.filter((v) => (v.decision_classification || "insufficient_evidence") === "borderline_watchlist").length || 0;
+    nonSolutionCompanies.filter((company) => (company.decision_classification || "insufficient_evidence") === "borderline_watchlist").length || 0;
   const notGoodCount =
-    nonSolutionVendors.filter((v) => (v.decision_classification || "insufficient_evidence") === "not_good_target").length || 0;
+    nonSolutionCompanies.filter((company) => (company.decision_classification || "insufficient_evidence") === "not_good_target").length || 0;
   const insufficientCount =
-    nonSolutionVendors.filter((v) => (v.decision_classification || "insufficient_evidence") === "insufficient_evidence").length || 0;
+    nonSolutionCompanies.filter((company) => (company.decision_classification || "insufficient_evidence") === "insufficient_evidence").length || 0;
   const latestCompletedDiscoveryJob = discoveryJobs?.find((job) => job.state === "completed") ?? null;
 
   if (isLoading) {
@@ -217,7 +217,7 @@ export default function UniversePage() {
         <div>
           <h2 className="text-xl font-semibold text-oxford">Candidate Universe</h2>
           <p className="text-steel-500">
-            {nonSolutionVendors.length || 0} companies surfaced • {goodCount} strong fit • {borderlineCount} watchlist • {notGoodCount} weak fit
+            {nonSolutionCompanies.length || 0} companies surfaced • {goodCount} strong fit • {borderlineCount} watchlist • {notGoodCount} weak fit
           </p>
         </div>
         <div className="flex gap-3">
@@ -254,7 +254,7 @@ export default function UniversePage() {
             jobRunner.job ?? {
               id: 0,
               workspace_id: workspaceId,
-              vendor_id: null,
+              company_id: null,
               job_type: "discovery_universe",
               state: "queued",
               provider: "gemini_flash",
@@ -286,8 +286,8 @@ export default function UniversePage() {
                 </label>
                 <input
                   type="text"
-                  value={newVendor.name}
-                  onChange={(e) => setNewVendor({ ...newVendor, name: e.target.value })}
+                  value={newCompany.name}
+                  onChange={(e) => setNewCompany({ ...newCompany, name: e.target.value })}
                   className="input"
                 />
               </div>
@@ -297,8 +297,8 @@ export default function UniversePage() {
                 </label>
                 <input
                   type="url"
-                  value={newVendor.website}
-                  onChange={(e) => setNewVendor({ ...newVendor, website: e.target.value })}
+                  value={newCompany.website}
+                  onChange={(e) => setNewCompany({ ...newCompany, website: e.target.value })}
                   placeholder="https://..."
                   className="input"
                 />
@@ -309,8 +309,8 @@ export default function UniversePage() {
                 </label>
                 <input
                   type="text"
-                  value={newVendor.hq_country}
-                  onChange={(e) => setNewVendor({ ...newVendor, hq_country: e.target.value })}
+                  value={newCompany.hq_country}
+                  onChange={(e) => setNewCompany({ ...newCompany, hq_country: e.target.value })}
                   placeholder="e.g., UK"
                   className="input"
                 />
@@ -324,8 +324,8 @@ export default function UniversePage() {
                 Cancel
               </button>
               <button
-                onClick={handleAddVendor}
-                disabled={!newVendor.name || createVendor.isPending}
+                onClick={handleAddCompany}
+                disabled={!newCompany.name || createCompany.isPending}
                 className="flex-1 btn-primary disabled:opacity-50"
               >
                 Add Company
@@ -348,7 +348,7 @@ export default function UniversePage() {
                 : "text-steel-600 hover:bg-steel-100"
             )}
           >
-            {f === "all" && `All (${nonSolutionVendors.length || 0})`}
+            {f === "all" && `All (${nonSolutionCompanies.length || 0})`}
             {f === "good_target" && `Good (${goodCount})`}
             {f === "borderline_watchlist" && `Watchlist (${borderlineCount})`}
             {f === "not_good_target" && `Not Good (${notGoodCount})`}
@@ -399,8 +399,8 @@ export default function UniversePage() {
         </div>
       )}
 
-      {/* Vendor Grid */}
-      {filteredVendors && filteredVendors.length === 0 ? (
+      {/* Company Grid */}
+      {filteredCompanies && filteredCompanies.length === 0 ? (
         <div className="text-center py-16 bg-steel-50 border border-steel-200">
           <Globe className="w-12 h-12 text-steel-300 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-oxford mb-2">No companies found</h3>
@@ -410,31 +410,31 @@ export default function UniversePage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredVendors?.map((vendor) => (
+          {filteredCompanies?.map((company) => (
             <div
-              key={vendor.id}
+              key={company.id}
               className={clsx(
                 "bg-steel-50 border p-4 transition",
-                vendor.decision_classification === "good_target"
+                company.decision_classification === "good_target"
                   ? "border-success"
-                  : vendor.decision_classification === "not_good_target"
+                  : company.decision_classification === "not_good_target"
                   ? "border-danger/50"
-                  : vendor.decision_classification === "borderline_watchlist"
+                  : company.decision_classification === "borderline_watchlist"
                   ? "border-warning/60"
                   : "border-steel-200 hover:border-oxford"
               )}
             >
               <div className="flex items-start justify-between mb-3">
                 <div>
-                  <h3 className="font-semibold text-oxford">{vendor.name}</h3>
-                  {(vendor.official_website_url || vendor.website) && (
+                  <h3 className="font-semibold text-oxford">{company.name}</h3>
+                  {(company.official_website_url || company.website) && (
                     <a
-                      href={vendor.official_website_url || vendor.website || undefined}
+                      href={company.official_website_url || company.website || undefined}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-sm text-info hover:underline flex items-center gap-1"
                     >
-                      {new URL((vendor.official_website_url || vendor.website) as string).hostname}
+                      {new URL((company.official_website_url || company.website) as string).hostname}
                       <ExternalLink className="w-3 h-3" />
                     </a>
                   )}
@@ -442,23 +442,23 @@ export default function UniversePage() {
                 <span
                   className={clsx(
                     "badge",
-                    classificationBadgeClass(vendor.decision_classification)
+                    classificationBadgeClass(company.decision_classification)
                   )}
                 >
-                  {CLASSIFICATION_LABELS[vendor.decision_classification || "insufficient_evidence"] || "Insufficient evidence"}
+                  {CLASSIFICATION_LABELS[company.decision_classification || "insufficient_evidence"] || "Insufficient evidence"}
                 </span>
               </div>
 
               <div className="flex items-center gap-2 text-sm text-steel-500 mb-2">
                 <Building2 className="w-4 h-4" />
-                {vendor.hq_country || "Unknown"} • status: {vendor.status}
+                {company.hq_country || "Unknown"} • status: {company.status}
               </div>
 
-              {vendor.lane_types && vendor.lane_types.length > 0 && (
+              {company.lane_types && company.lane_types.length > 0 && (
                 <div className="flex flex-wrap gap-1 mb-2">
-                  {vendor.lane_types.map((laneType) => (
+                  {company.lane_types.map((laneType) => (
                     <span
-                      key={`${vendor.id}-${laneType}`}
+                      key={`${company.id}-${laneType}`}
                       className="px-2 py-0.5 text-xs border border-info/30 bg-info/10 text-info"
                     >
                       {laneType} lane
@@ -467,15 +467,15 @@ export default function UniversePage() {
                 </div>
               )}
 
-              {vendor.entity_type && vendor.entity_type !== "company" && (
-                <div className="text-xs text-warning mb-2">Entity type: {vendor.entity_type}</div>
+              {company.entity_type && company.entity_type !== "company" && (
+                <div className="text-xs text-warning mb-2">Entity type: {company.entity_type}</div>
               )}
 
-              {reasonCodeChips(vendor).length > 0 && (
+              {reasonCodeChips(company).length > 0 && (
                 <div className="flex flex-wrap gap-1 mb-2">
-                  {reasonCodeChips(vendor).map((code) => (
+                  {reasonCodeChips(company).map((code) => (
                     <span
-                      key={`${vendor.id}-${code}`}
+                      key={`${company.id}-${code}`}
                       className={clsx(
                         "px-2 py-0.5 text-xs border",
                         code.startsWith("POS-")
@@ -491,19 +491,19 @@ export default function UniversePage() {
                 </div>
               )}
 
-              {((vendor.unresolved_contradictions_count || 0) > 0 || vendor.evidence_sufficiency === "insufficient") && (
+              {((company.unresolved_contradictions_count || 0) > 0 || company.evidence_sufficiency === "insufficient") && (
                 <div className="flex flex-wrap gap-2 mb-2">
-                  {!(vendor.official_website_url || vendor.website) && (
+                  {!(company.official_website_url || company.website) && (
                     <span className="px-2 py-0.5 text-xs border border-warning/30 bg-warning/10 text-warning">
                       official website unresolved
                     </span>
                   )}
-                  {(vendor.unresolved_contradictions_count || 0) > 0 && (
+                  {(company.unresolved_contradictions_count || 0) > 0 && (
                     <span className="px-2 py-0.5 text-xs border border-danger/30 bg-danger/10 text-danger">
-                      {vendor.unresolved_contradictions_count} contradiction(s)
+                      {company.unresolved_contradictions_count} contradiction(s)
                     </span>
                   )}
-                  {vendor.evidence_sufficiency === "insufficient" && (
+                  {company.evidence_sufficiency === "insufficient" && (
                     <span className="px-2 py-0.5 text-xs border border-warning/30 bg-warning/10 text-warning">
                       Unknown/missing evidence
                     </span>
@@ -511,20 +511,20 @@ export default function UniversePage() {
                 </div>
               )}
 
-              {vendor.top_claim?.text && vendor.top_claim?.source_url && (
+              {company.top_claim?.text && company.top_claim?.source_url && (
                 <div className="mt-2 p-2 bg-steel-100 border border-steel-200">
                   <div className="text-xs text-steel-500 mb-1">
-                    Top claim • {vendor.top_claim.source_tier || "unknown tier"}
+                    Top claim • {company.top_claim.source_tier || "unknown tier"}
                   </div>
-                  <div className="text-sm text-steel-700 line-clamp-3">{vendor.top_claim.text}</div>
+                  <div className="text-sm text-steel-700 line-clamp-3">{company.top_claim.text}</div>
                 </div>
               )}
 
-              {vendor.why_fit_bullets && vendor.why_fit_bullets.length > 0 && (
+              {company.why_fit_bullets && company.why_fit_bullets.length > 0 && (
                 <div className="mt-3 space-y-2">
                   <div className="text-xs uppercase tracking-wide text-steel-500">Why It Fits</div>
-                  {vendor.why_fit_bullets.slice(0, 3).map((bullet, index) => (
-                    <div key={`${vendor.id}-fit-${index}`} className="text-sm text-steel-700">
+                  {company.why_fit_bullets.slice(0, 3).map((bullet, index) => (
+                    <div key={`${company.id}-fit-${index}`} className="text-sm text-steel-700">
                       - {bullet.text}
                       {bullet.citation_url ? (
                         <a
@@ -541,27 +541,27 @@ export default function UniversePage() {
                 </div>
               )}
 
-              {(vendor.business_model_signal || vendor.employee_signal) && (
+              {(company.business_model_signal || company.employee_signal) && (
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {vendor.business_model_signal ? (
+                  {company.business_model_signal ? (
                     <span className="px-2 py-0.5 text-xs border border-steel-200 bg-steel-100 text-steel-700">
-                      {vendor.business_model_signal}
+                      {company.business_model_signal}
                     </span>
                   ) : null}
-                  {vendor.employee_signal ? (
+                  {company.employee_signal ? (
                     <span className="px-2 py-0.5 text-xs border border-steel-200 bg-steel-100 text-steel-700">
-                      {vendor.employee_signal}
+                      {company.employee_signal}
                     </span>
                   ) : null}
                 </div>
               )}
 
-              {vendor.customer_proof && vendor.customer_proof.length > 0 && (
+              {company.customer_proof && company.customer_proof.length > 0 && (
                 <div className="mt-3">
                   <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Customer Proof</div>
                   <div className="space-y-1">
-                    {vendor.customer_proof.slice(0, 3).map((proof, index) => (
-                      <div key={`${vendor.id}-proof-${index}`} className="text-sm text-steel-700">
+                    {company.customer_proof.slice(0, 3).map((proof, index) => (
+                      <div key={`${company.id}-proof-${index}`} className="text-sm text-steel-700">
                         - {proof}
                       </div>
                     ))}
@@ -569,15 +569,15 @@ export default function UniversePage() {
                 </div>
               )}
 
-              <CitedSummary vendor={vendor} />
+              <CitedSummary company={company} />
 
-              {vendor.open_questions && vendor.open_questions.length > 0 && (
+              {company.open_questions && company.open_questions.length > 0 && (
                 <div className="mt-3">
                   <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Open Questions</div>
                   <div className="flex flex-wrap gap-2">
-                    {vendor.open_questions.slice(0, 3).map((question) => (
+                    {company.open_questions.slice(0, 3).map((question) => (
                       <span
-                        key={`${vendor.id}-${question}`}
+                        key={`${company.id}-${question}`}
                         className="px-2 py-0.5 text-xs border border-warning/30 bg-warning/10 text-warning"
                       >
                         {question}
@@ -589,12 +589,12 @@ export default function UniversePage() {
 
               <div className="flex items-center justify-between pt-3 border-t border-steel-100">
                 <span className="text-xs text-steel-400">
-                  {vendor.evidence_count} citations
+                  {company.evidence_count} citations
                 </span>
                 <div className="flex gap-2">
-                  {vendor.status === "removed" ? (
+                  {company.status === "removed" ? (
                     <button
-                      onClick={() => handleRestore(vendor)}
+                      onClick={() => handleRestore(company)}
                       className="btn-secondary text-sm py-1 px-3"
                     >
                       Restore
@@ -602,17 +602,17 @@ export default function UniversePage() {
                   ) : (
                     <>
                       <button
-                        onClick={() => handleRemove(vendor)}
+                        onClick={() => handleRemove(company)}
                         className="p-1.5 text-steel-400 hover:text-danger hover:bg-danger/10 transition"
                       >
                         <X className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => handleKeep(vendor)}
-                        disabled={vendor.status === "kept" || vendor.status === "enriched"}
+                        onClick={() => handleKeep(company)}
+                        disabled={company.status === "kept" || company.status === "enriched"}
                         className={clsx(
                           "p-1.5 transition",
-                          vendor.status === "kept" || vendor.status === "enriched"
+                          company.status === "kept" || company.status === "enriched"
                             ? "text-success bg-success/10"
                             : "text-steel-400 hover:text-success hover:bg-success/10"
                         )}

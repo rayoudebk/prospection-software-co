@@ -27,7 +27,7 @@ def test_thesis_sourcing_migration_creates_tables_and_backfills_workspace():
                 workspace_id=workspace.id,
                 buyer_company_url="https://acme.example.com",
                 buyer_context_summary="Acme is a SaaS reporting platform with implementation services.",
-                reference_vendor_urls=["https://comp-one.example.com"],
+                reference_company_urls=["https://comp-one.example.com"],
                 reference_evidence_urls=["https://acme.example.com/customers"],
                 context_pack_markdown="# Acme\n\nReporting workflow platform.",
                 context_pack_json={

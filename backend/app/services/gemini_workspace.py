@@ -295,14 +295,14 @@ Malformed payload:
             print(f"Gemini API error in discovery: {e}")
             raise
     
-    def run_enrich_modules(self, vendor_url: str) -> Dict[str, Any]:
+    def run_enrich_modules(self, company_url: str) -> Dict[str, Any]:
         """
-        Enrich vendor with evidence-backed workflow capabilities.
+        Enrich a company with evidence-backed workflow capabilities.
         """
-        prompt = f"""Research the company at {vendor_url} and identify their software products/modules.
+        prompt = f"""Research the company at {company_url} and identify their software products/modules.
 
 ## TASK
-1. Search for {vendor_url} products, solutions, platform, modules
+1. Search for {company_url} products, solutions, platform, modules
 2. Identify their distinct software capabilities
 3. Keep the capability names generic and factual
 4. Include evidence URLs for each claim
@@ -351,16 +351,16 @@ Return ONLY the JSON object."""
             print(f"Gemini API error in enrich_modules: {e}")
             raise
     
-    def run_enrich_customers(self, vendor_url: str) -> Dict[str, Any]:
+    def run_enrich_customers(self, company_url: str) -> Dict[str, Any]:
         """
-        Enrich vendor with customer information.
+        Enrich a company with customer information.
         
         Returns strict JSON with customer list.
         """
-        prompt = f"""Research the company at {vendor_url} and find their customers/clients.
+        prompt = f"""Research the company at {company_url} and find their customers/clients.
 
 ## TASK
-1. Search for {vendor_url} customers, clients, case studies, testimonials
+1. Search for {company_url} customers, clients, case studies, testimonials
 2. Identify named customers with evidence
 3. Note the context (case study, logo, press release, etc.)
 
@@ -408,16 +408,16 @@ Return ONLY the JSON object."""
             print(f"Gemini API error in enrich_customers: {e}")
             raise
     
-    def run_enrich_hiring(self, vendor_url: str) -> Dict[str, Any]:
+    def run_enrich_hiring(self, company_url: str) -> Dict[str, Any]:
         """
-        Enrich vendor with hiring/team information.
+        Enrich a company with hiring/team information.
         
         Returns strict JSON with hiring insights.
         """
-        prompt = f"""Research the company at {vendor_url} and find hiring/team information.
+        prompt = f"""Research the company at {company_url} and find hiring/team information.
 
 ## TASK
-1. Search for {vendor_url} careers, jobs, team, employees
+1. Search for {company_url} careers, jobs, team, employees
 2. Look for job postings, LinkedIn company page, team pages
 3. Identify engineering vs sales/ops mix signals
 4. Note approximate team size if discoverable
@@ -476,15 +476,15 @@ Return ONLY the JSON object."""
     
     def run_enrich_full(
         self,
-        vendor_url: str,
-        vendor_name: str,
+        company_url: str,
+        company_name: str,
     ) -> Dict[str, Any]:
         """
         Full enrichment in a single call.
         
         Returns complete dossier JSON.
         """
-        prompt = f"""Research the company "{vendor_name}" at {vendor_url} thoroughly.
+        prompt = f"""Research the company "{company_name}" at {company_url} thoroughly.
 
 ## TASKS
 1. **Workflow**: Find the workflows, capabilities, modules, and integrations the company owns

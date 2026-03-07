@@ -1,4 +1,4 @@
-"""Vendor models - Replaces Target for workspace-based approach."""
+"""Company models for target sourcing workflows."""
 from sqlalchemy import Column, Integer, String, DateTime, JSON, Text, ForeignKey, Enum, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -7,16 +7,16 @@ import enum
 from app.models.base import Base
 
 
-class VendorStatus(enum.Enum):
+class CompanyStatus(enum.Enum):
     candidate = "candidate"
     kept = "kept"
     removed = "removed"
     enriched = "enriched"
 
 
-class Vendor(Base):
+class Company(Base):
     """A potential acquisition target within a workspace."""
-    __tablename__ = "vendors"
+    __tablename__ = "companies"
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False)
@@ -31,7 +31,7 @@ class Vendor(Base):
     tags_custom = Column(JSON, default=list)  # User-defined tags
     
     # Status
-    status = Column(Enum(VendorStatus), default=VendorStatus.candidate)
+    status = Column(Enum(CompanyStatus, name="companystatus"), default=CompanyStatus.candidate)
     
     # Why relevant (from discovery)
     why_relevant = Column(JSON, default=list)  # [{"text": "...", "citation_url": "..."}, ...]
@@ -43,20 +43,20 @@ class Vendor(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    workspace = relationship("Workspace", back_populates="vendors")
-    dossiers = relationship("VendorDossier", back_populates="vendor", cascade="all, delete-orphan")
-    evidence_items = relationship("WorkspaceEvidence", back_populates="vendor", cascade="all, delete-orphan")
-    facts = relationship("VendorFact", back_populates="vendor", cascade="all, delete-orphan")
-    screenings = relationship("VendorScreening", cascade="all, delete-orphan")
-    claims = relationship("VendorClaim", cascade="all, delete-orphan")
+    workspace = relationship("Workspace", back_populates="companies")
+    dossiers = relationship("CompanyDossier", back_populates="company", cascade="all, delete-orphan")
+    evidence_items = relationship("SourceEvidence", back_populates="company", cascade="all, delete-orphan")
+    facts = relationship("CompanyFact", back_populates="company", cascade="all, delete-orphan")
+    screenings = relationship("CompanyScreening", back_populates="company", cascade="all, delete-orphan")
+    claims = relationship("CompanyClaim", back_populates="company", cascade="all, delete-orphan")
 
 
-class VendorDossier(Base):
-    """Versioned enrichment data for a vendor."""
-    __tablename__ = "vendor_dossiers"
+class CompanyDossier(Base):
+    """Versioned enrichment data for a company."""
+    __tablename__ = "company_dossiers"
 
     id = Column(Integer, primary_key=True, index=True)
-    vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=False)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
     
     # The full dossier as JSON. The canonical structure is organized into
     # evidence-backed company-card buckets:
@@ -87,7 +87,7 @@ class VendorDossier(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
-    vendor = relationship("Vendor", back_populates="dossiers")
+    company = relationship("Company", back_populates="dossiers")
 
     @property
     def modules(self):

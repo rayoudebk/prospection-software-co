@@ -46,7 +46,7 @@ def _seed_company_profile(session_maker: async_sessionmaker[AsyncSession], works
                 "Acme is a SaaS fund operations workflow platform with implementation services "
                 "and API integrations for private equity and fund teams."
             )
-            profile.reference_vendor_urls = ["https://comp-one.example.com"]
+            profile.reference_company_urls = ["https://comp-one.example.com"]
             profile.reference_evidence_urls = ["https://acme.example.com/customers"]
             profile.context_pack_markdown = "# Acme\n\nPortfolio analytics and reporting for fund operations teams."
             profile.product_pages_found = 4

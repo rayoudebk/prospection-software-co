@@ -14,7 +14,7 @@ def _build_profile() -> CompanyProfile:
             "Acme is a SaaS portfolio analytics platform for private equity and fund operations teams. "
             "The company also offers implementation services and API-based integrations."
         ),
-        reference_vendor_urls=["https://comp-one.example.com"],
+        reference_company_urls=["https://comp-one.example.com"],
         reference_evidence_urls=["https://acme.example.com/customers"],
         reference_summaries={"https://comp-one.example.com": "Comparable analytics vendor."},
         geo_scope={"region": "US", "include_countries": ["US"], "exclude_countries": ["RU"]},
