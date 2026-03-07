@@ -6,6 +6,9 @@ import {
   BrickItem,
   Job,
   GeoScope,
+  ThesisClaim,
+  ThesisSourcePill,
+  SearchLane,
 } from "./api";
 import { useEffect, useState } from "react";
 
@@ -97,12 +100,97 @@ export function useRefreshContextPack(workspaceId: number) {
   });
 }
 
+// Thesis Pack
+export function useThesisPack(workspaceId: number) {
+  return useQuery({
+    queryKey: ["thesis-pack", workspaceId],
+    queryFn: () => workspaceApi.getThesisPack(workspaceId),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useUpdateThesisPack(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      summary?: string | null;
+      claims?: ThesisClaim[];
+      source_pills?: ThesisSourcePill[];
+      open_questions?: string[];
+      confirmed?: boolean;
+    }) => workspaceApi.updateThesisPack(workspaceId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
+    },
+  });
+}
+
+export function useRefreshThesisPack(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => workspaceApi.refreshThesisPack(workspaceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
+    },
+  });
+}
+
+export function useApplyThesisAdjustment(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { message?: string; operations?: Array<Record<string, unknown>> }) =>
+      workspaceApi.applyThesisAdjustment(workspaceId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
+    },
+  });
+}
+
 // Bricks
 export function useBricks(workspaceId: number) {
   return useQuery({
     queryKey: ["bricks", workspaceId],
     queryFn: () => workspaceApi.getBricks(workspaceId),
     enabled: !!workspaceId,
+  });
+}
+
+// Search Lanes
+export function useSearchLanes(workspaceId: number) {
+  return useQuery({
+    queryKey: ["search-lanes", workspaceId],
+    queryFn: () => workspaceApi.getSearchLanes(workspaceId),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useUpdateSearchLanes(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { lanes: SearchLane[] }) =>
+      workspaceApi.updateSearchLanes(workspaceId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
+    },
+  });
+}
+
+export function useConfirmSearchLanes(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => workspaceApi.confirmSearchLanes(workspaceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
+    },
   });
 }
 
@@ -462,6 +550,8 @@ export function useWorkspaceJobWithPolling(
       setIsRunning(false);
       if (jobQuery.data?.state === "completed") {
         queryClient.invalidateQueries({ queryKey: ["context-pack", workspaceId] });
+        queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
+        queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["vendors", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
         onComplete?.();

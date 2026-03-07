@@ -295,8 +295,8 @@ export default function ReportPage() {
       <StepHeader
         icon={FileSpreadsheet}
         step={4}
-        title="Static Report"
-        subtitle="Generate immutable snapshot cards with classification-first narratives, reason highlights, and source-backed filing metrics when coverage is reliable."
+        title="Cards"
+        subtitle="Generate exportable candidate cards and adjacency summaries with source pills, validation questions, and snapshot-level evidence context."
       />
 
       <div className="bg-steel-50 border border-steel-200 p-4 space-y-4">
@@ -306,7 +306,7 @@ export default function ReportPage() {
             <input
               value={reportName}
               onChange={(e) => setReportName(e.target.value)}
-              placeholder="e.g. Q1 EU Wealth SME Radar"
+              placeholder="e.g. Software sourcing snapshot"
               className="input"
             />
           </div>
@@ -323,7 +323,7 @@ export default function ReportPage() {
             ) : (
               <>
                 <RefreshCw className="w-4 h-4" />
-                Generate Snapshot
+                Generate Cards
               </>
             )}
           </button>
@@ -350,7 +350,7 @@ export default function ReportPage() {
             className="btn-secondary flex items-center gap-2 disabled:opacity-50"
           >
             {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-            Export
+            Export JSON
           </button>
         </div>
 
@@ -410,13 +410,13 @@ export default function ReportPage() {
         </div>
       ) : !selectedReportId ? (
         <div className="text-center py-12 bg-steel-50 border border-steel-200 text-steel-600">
-          Generate or select a snapshot to view report cards.
+          Generate or select a snapshot to view candidate cards.
         </div>
       ) : (
         <>
           {lens && (
             <div className="bg-steel-50 border border-steel-200 p-4 text-sm text-steel-700">
-              <div className="font-medium text-oxford mb-2">Lens Summary ({mode})</div>
+              <div className="font-medium text-oxford mb-2">Adjacency Summary ({mode})</div>
               <div className="flex flex-wrap gap-4">
                 <span>Total companies: {lens.total_count}</span>
                 <span>SME in range: {lens.counts_by_bucket?.sme_in_range ?? 0}</span>

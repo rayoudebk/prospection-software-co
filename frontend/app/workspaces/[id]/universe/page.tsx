@@ -176,7 +176,7 @@ export default function UniversePage() {
         icon={Globe}
         step={3}
         title="Universe"
-        subtitle="Build a curated longlist of potential acquisition targets matching your brick model. Keep strong fits, remove weak fits, and prepare for static report generation."
+        subtitle="Run lane-driven sourcing, inspect why each company fits, and triage the resulting candidate universe with auditable source-backed evidence."
       />
 
       {/* Status Banner */}
@@ -197,7 +197,7 @@ export default function UniversePage() {
             )}
             <span className={gates.universe ? "text-success font-medium" : "text-warning font-medium"}>
               {gates.universe
-                ? `${keptCount} vendors kept — you can proceed to Report`
+                ? `${keptCount} companies kept — you can proceed to Cards`
                 : gates.missing_items.universe?.join(", ") || "Keep at least 5 vendors to continue"}
             </span>
           </div>
@@ -209,7 +209,7 @@ export default function UniversePage() {
         <div>
           <h2 className="text-xl font-semibold text-oxford">Candidate Universe</h2>
           <p className="text-steel-500">
-            {nonSolutionVendors.length || 0} companies discovered • {goodCount} good • {borderlineCount} watchlist • {notGoodCount} not-good
+            {nonSolutionVendors.length || 0} companies surfaced • {goodCount} strong fit • {borderlineCount} watchlist • {notGoodCount} weak fit
           </p>
         </div>
         <div className="flex gap-3">
@@ -342,7 +342,7 @@ export default function UniversePage() {
         <div className="bg-steel-50 border border-steel-200 p-4">
           <div className="text-sm font-medium text-oxford mb-2">Top 25 Ranking-Eligible Companies</div>
           <div className="text-xs text-steel-500 mb-3">
-            Directory-only and solution-level entities are excluded.
+            Directory-only and solution-level entities are excluded from this view.
           </div>
           {topCandidates[0]?.run_quality_tier && (
             <div className="text-xs text-steel-500 mb-2">
@@ -420,6 +420,19 @@ export default function UniversePage() {
                 {vendor.hq_country || "Unknown"} • status: {vendor.status}
               </div>
 
+              {vendor.lane_types && vendor.lane_types.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {vendor.lane_types.map((laneType) => (
+                    <span
+                      key={`${vendor.id}-${laneType}`}
+                      className="px-2 py-0.5 text-xs border border-info/30 bg-info/10 text-info"
+                    >
+                      {laneType} lane
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {vendor.entity_type && vendor.entity_type !== "company" && (
                 <div className="text-xs text-warning mb-2">Entity type: {vendor.entity_type}</div>
               )}
@@ -486,7 +499,72 @@ export default function UniversePage() {
                 </div>
               )}
 
+              {vendor.why_fit_bullets && vendor.why_fit_bullets.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-steel-500">Why It Fits</div>
+                  {vendor.why_fit_bullets.slice(0, 3).map((bullet, index) => (
+                    <div key={`${vendor.id}-fit-${index}`} className="text-sm text-steel-700">
+                      - {bullet.text}
+                      {bullet.citation_url ? (
+                        <a
+                          href={bullet.citation_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-2 text-xs text-info hover:underline"
+                        >
+                          source
+                        </a>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(vendor.business_model_signal || vendor.employee_signal) && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {vendor.business_model_signal ? (
+                    <span className="px-2 py-0.5 text-xs border border-steel-200 bg-steel-100 text-steel-700">
+                      {vendor.business_model_signal}
+                    </span>
+                  ) : null}
+                  {vendor.employee_signal ? (
+                    <span className="px-2 py-0.5 text-xs border border-steel-200 bg-steel-100 text-steel-700">
+                      {vendor.employee_signal}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+
+              {vendor.customer_proof && vendor.customer_proof.length > 0 && (
+                <div className="mt-3">
+                  <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Customer Proof</div>
+                  <div className="space-y-1">
+                    {vendor.customer_proof.slice(0, 3).map((proof, index) => (
+                      <div key={`${vendor.id}-proof-${index}`} className="text-sm text-steel-700">
+                        - {proof}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <CitedSummary vendor={vendor} />
+
+              {vendor.open_questions && vendor.open_questions.length > 0 && (
+                <div className="mt-3">
+                  <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Open Questions</div>
+                  <div className="flex flex-wrap gap-2">
+                    {vendor.open_questions.slice(0, 3).map((question) => (
+                      <span
+                        key={`${vendor.id}-${question}`}
+                        className="px-2 py-0.5 text-xs border border-warning/30 bg-warning/10 text-warning"
+                      >
+                        {question}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="flex items-center justify-between pt-3 border-t border-steel-100">
                 <span className="text-xs text-steel-400">

@@ -33,6 +33,7 @@ export interface CompanyProfile {
   context_pack_markdown: string | null;
   context_pack_generated_at: string | null;
   product_pages_found: number;
+  context_pack_json?: Record<string, unknown> | null;
 }
 
 export interface CitationSentence {
@@ -71,6 +72,68 @@ export interface BrickTaxonomy {
   vertical_focus: string[];
   version: number;
   confirmed: boolean;
+}
+
+export interface ThesisClaim {
+  id: string;
+  section:
+    | "core_capability"
+    | "adjacent_capability"
+    | "business_model"
+    | "customer_profile"
+    | "deployment_model"
+    | "size_signal"
+    | "geography"
+    | "include_constraint"
+    | "exclude_constraint"
+    | string;
+  value: string;
+  rendering: "fact" | "hypothesis" | string;
+  confidence: number;
+  source_pill_ids: string[];
+  user_status: "system" | "confirmed" | "edited" | "removed" | string;
+}
+
+export interface ThesisSourcePill {
+  id: string;
+  label: string;
+  url: string;
+}
+
+export interface BuyerThesisPack {
+  id: number;
+  workspace_id: number;
+  summary: string | null;
+  claims: ThesisClaim[];
+  source_pills: ThesisSourcePill[];
+  open_questions: string[];
+  generated_at: string | null;
+  confirmed_at: string | null;
+}
+
+export interface SearchLane {
+  id?: number | null;
+  workspace_id?: number | null;
+  lane_type: "core" | "adjacent" | string;
+  title: string;
+  intent: string | null;
+  capabilities: string[];
+  customer_tags: string[];
+  must_include_terms: string[];
+  must_exclude_terms: string[];
+  seed_urls: string[];
+  status: "draft" | "confirmed" | string;
+  confirmed_at?: string | null;
+}
+
+export interface SearchLanes {
+  workspace_id: number;
+  lanes: SearchLane[];
+}
+
+export interface ThesisAdjustmentResult {
+  thesis_pack: BuyerThesisPack;
+  applied_operations: Array<Record<string, unknown>>;
 }
 
 export interface WhyRelevant {
@@ -118,6 +181,12 @@ export interface Vendor {
   first_party_hint_urls_used_count?: number;
   first_party_hint_pages_crawled_total?: number;
   unresolved_contradictions_count?: number;
+  lane_types?: string[];
+  why_fit_bullets?: Array<{ text: string; citation_url?: string | null }>;
+  business_model_signal?: string | null;
+  customer_proof?: string[];
+  employee_signal?: string | null;
+  open_questions?: string[];
 }
 
 export interface UniverseTopCandidate {
@@ -154,6 +223,7 @@ export interface UniverseTopCandidate {
   ranking_eligible: boolean;
   run_quality_tier?: "high_quality" | "degraded" | string;
   quality_gate_passed?: boolean;
+  quality_audit_passed?: boolean;
   degraded_reasons?: string[];
 }
 
@@ -497,6 +567,62 @@ export const workspaceApi = {
       method: "POST",
     }),
 
+  // Thesis Pack
+  getThesisPack: (id: number) =>
+    fetchJSON<BuyerThesisPack>(`/workspaces/${id}/thesis-pack`),
+
+  updateThesisPack: (
+    id: number,
+    data: {
+      summary?: string | null;
+      claims?: ThesisClaim[];
+      source_pills?: ThesisSourcePill[];
+      open_questions?: string[];
+      confirmed?: boolean;
+    }
+  ) =>
+    fetchJSON<BuyerThesisPack>(`/workspaces/${id}/thesis-pack`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  refreshThesisPack: (id: number) =>
+    fetchJSON<BuyerThesisPack>(`/workspaces/${id}/thesis-pack:refresh`, {
+      method: "POST",
+    }),
+
+  applyThesisAdjustment: (
+    id: number,
+    data: {
+      message?: string;
+      operations?: Array<Record<string, unknown>>;
+    }
+  ) =>
+    fetchJSON<ThesisAdjustmentResult>(`/workspaces/${id}/thesis-pack:apply-adjustment`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Search Lanes
+  getSearchLanes: (id: number) =>
+    fetchJSON<SearchLanes>(`/workspaces/${id}/search-lanes`),
+
+  updateSearchLanes: (
+    id: number,
+    data: {
+      lanes: SearchLane[];
+    }
+  ) =>
+    fetchJSON<SearchLanes>(`/workspaces/${id}/search-lanes`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  confirmSearchLanes: (id: number) =>
+    fetchJSON<SearchLanes>(`/workspaces/${id}/search-lanes:confirm`, {
+      method: "POST",
+    }),
+
   // Bricks
   getBricks: (id: number) =>
     fetchJSON<BrickTaxonomy>(`/workspaces/${id}/bricks`),
@@ -521,8 +647,10 @@ export const workspaceApi = {
       method: "POST",
     }),
 
-  getDiscoveryDiagnostics: (id: number) =>
-    fetchJSON<Record<string, unknown>>(`/workspaces/${id}/discovery:diagnostics`),
+  getDiscoveryDiagnostics: (id: number, includeQualityAudit = true) =>
+    fetchJSON<Record<string, unknown>>(
+      `/workspaces/${id}/discovery:diagnostics?include_quality_audit=${includeQualityAudit ? "true" : "false"}`
+    ),
   getTopCandidates: (id: number, limit = 25, allowDegraded = false) =>
     fetchJSON<UniverseTopCandidate[]>(
       `/workspaces/${id}/universe/top-candidates?limit=${encodeURIComponent(String(limit))}&allow_degraded=${allowDegraded ? "true" : "false"}`

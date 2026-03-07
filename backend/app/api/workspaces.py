@@ -2,14 +2,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-import uuid
+import math
 
 from app.models.base import get_db
-from app.models.workspace import Workspace, CompanyProfile, BrickTaxonomy, BrickMapping, DEFAULT_BRICKS
+from app.models.workspace import Workspace, CompanyProfile, BrickTaxonomy, BrickMapping
+from app.models.thesis import BuyerThesisPack, SearchLane
 from app.models.vendor import Vendor, VendorDossier, VendorStatus
 from app.models.job import Job, JobType, JobState, JobProvider
 from app.models.workspace_evidence import WorkspaceEvidence
@@ -47,6 +47,19 @@ from app.services.reporting import (
     modules_with_evidence,
     normalize_country,
     source_label_for_url,
+)
+from app.services.quality_audit import normalize_quality_audit_v1
+from app.services.thesis import (
+    apply_thesis_adjustment_operations,
+    bootstrap_thesis_payload,
+    derive_search_lane_payloads,
+    infer_adjustment_operations_from_message,
+    normalize_open_questions,
+    normalize_search_lane_payload,
+    normalize_source_pills,
+    normalize_thesis_claims,
+    search_lane_to_payload,
+    thesis_pack_to_payload,
 )
 
 router = APIRouter()
@@ -118,6 +131,61 @@ class CompanyProfileResponse(BaseModel):
         from_attributes = True
 
 
+class ThesisClaimInput(BaseModel):
+    id: Optional[str] = None
+    section: str
+    value: str
+    rendering: str = "fact"
+    confidence: float = 0.65
+    source_pill_ids: List[str] = Field(default_factory=list)
+    user_status: str = "system"
+
+
+class ThesisClaimResponse(ThesisClaimInput):
+    id: str
+
+
+class ThesisSourcePillInput(BaseModel):
+    id: Optional[str] = None
+    label: Optional[str] = None
+    url: str
+
+
+class ThesisSourcePillResponse(BaseModel):
+    id: str
+    label: str
+    url: str
+
+
+class BuyerThesisPackResponse(BaseModel):
+    id: int
+    workspace_id: int
+    summary: Optional[str]
+    claims: List[ThesisClaimResponse] = Field(default_factory=list)
+    source_pills: List[ThesisSourcePillResponse] = Field(default_factory=list)
+    open_questions: List[str] = Field(default_factory=list)
+    generated_at: Optional[datetime]
+    confirmed_at: Optional[datetime]
+
+
+class BuyerThesisPackUpdate(BaseModel):
+    summary: Optional[str] = None
+    claims: Optional[List[ThesisClaimInput]] = None
+    source_pills: Optional[List[ThesisSourcePillInput]] = None
+    open_questions: Optional[List[str]] = None
+    confirmed: Optional[bool] = None
+
+
+class ThesisAdjustmentRequest(BaseModel):
+    message: Optional[str] = None
+    operations: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ThesisAdjustmentResponse(BaseModel):
+    thesis_pack: BuyerThesisPackResponse
+    applied_operations: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class BrickItem(BaseModel):
     id: str
     name: str
@@ -141,6 +209,30 @@ class BrickTaxonomyResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class SearchLaneItem(BaseModel):
+    id: Optional[int] = None
+    workspace_id: Optional[int] = None
+    lane_type: str
+    title: str
+    intent: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
+    customer_tags: List[str] = Field(default_factory=list)
+    must_include_terms: List[str] = Field(default_factory=list)
+    must_exclude_terms: List[str] = Field(default_factory=list)
+    seed_urls: List[str] = Field(default_factory=list)
+    status: str = "draft"
+    confirmed_at: Optional[datetime] = None
+
+
+class SearchLanesResponse(BaseModel):
+    workspace_id: int
+    lanes: List[SearchLaneItem] = Field(default_factory=list)
+
+
+class SearchLanesUpdate(BaseModel):
+    lanes: List[SearchLaneItem] = Field(default_factory=list)
 
 
 class VendorCreate(BaseModel):
@@ -189,6 +281,12 @@ class VendorResponse(BaseModel):
     first_party_hint_urls_used_count: int = 0
     first_party_hint_pages_crawled_total: int = 0
     unresolved_contradictions_count: int = 0
+    lane_types: List[str] = Field(default_factory=list)
+    why_fit_bullets: List[Dict[str, Any]] = Field(default_factory=list)
+    business_model_signal: Optional[str] = None
+    customer_proof: List[str] = Field(default_factory=list)
+    employee_signal: Optional[str] = None
+    open_questions: List[str] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
@@ -351,7 +449,30 @@ class UniverseTopCandidateResponse(BaseModel):
     ranking_eligible: bool = False
     run_quality_tier: str = "degraded"
     quality_gate_passed: bool = False
+    quality_audit_passed: bool = False
     degraded_reasons: List[str] = Field(default_factory=list)
+
+
+class QualityAuditPattern(BaseModel):
+    pattern_key: str
+    count: int
+    sample_screening_ids: List[int] = Field(default_factory=list)
+    sample_candidate_names: List[str] = Field(default_factory=list)
+
+
+class QualityAuditImpactedCandidate(BaseModel):
+    screening_id: int
+    candidate_name: str
+    reasons: List[str] = Field(default_factory=list)
+
+
+class QualityAuditV1(BaseModel):
+    run_id: str
+    pass_: bool = Field(alias="pass")
+    patterns: List[QualityAuditPattern] = Field(default_factory=list)
+    thresholds: Dict[str, int] = Field(default_factory=dict)
+    top_impacted_candidates: List[QualityAuditImpactedCandidate] = Field(default_factory=list)
+    generated_at: Optional[str] = None
 
 
 class ReportSnapshotResponse(BaseModel):
@@ -590,8 +711,21 @@ def _screening_diagnostics_from_meta(screening_meta: Dict[str, Any]) -> Dict[str
     }
 
 
+def _quality_audit_from_job_result(result_json: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    payload = result_json if isinstance(result_json, dict) else {}
+    normalized = normalize_quality_audit_v1(payload.get("quality_audit_v1"))
+    if not normalized:
+        return None
+    try:
+        model = QualityAuditV1.model_validate(normalized)
+    except Exception:
+        return None
+    return model.model_dump(by_alias=True)
+
+
 def _quality_payload_from_job_result(result_json: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     payload = result_json if isinstance(result_json, dict) else {}
+    screening_run_id = str(payload.get("screening_run_id") or "").strip() or None
     run_quality_tier = str(payload.get("run_quality_tier") or "").strip().lower()
     if run_quality_tier not in {"high_quality", "degraded"}:
         fallback_mode = bool(payload.get("fallback_mode"))
@@ -604,15 +738,144 @@ def _quality_payload_from_job_result(result_json: Optional[Dict[str, Any]]) -> D
     quality_gate_passed = bool(payload.get("quality_gate_passed"))
     if "quality_gate_passed" not in payload:
         quality_gate_passed = run_quality_tier == "high_quality"
+    quality_audit_v1 = _quality_audit_from_job_result(payload)
+    if quality_audit_v1 and screening_run_id and str(quality_audit_v1.get("run_id") or "").strip() != screening_run_id:
+        quality_audit_v1 = None
+    quality_audit_passed = bool(payload.get("quality_audit_passed"))
+    if quality_audit_v1 is not None:
+        quality_audit_passed = bool(quality_audit_v1.get("pass"))
+    quality_validation_ready = bool(payload.get("quality_validation_ready"))
+    if "quality_validation_ready" not in payload and quality_audit_v1 is not None:
+        quality_validation_ready = bool(quality_audit_v1.get("pass"))
     return {
         "run_quality_tier": run_quality_tier,
         "quality_gate_passed": quality_gate_passed,
+        "quality_audit_v1": quality_audit_v1,
+        "quality_audit_passed": quality_audit_passed,
+        "quality_validation_ready": quality_validation_ready,
+        "quality_validation_blocked_reasons": [
+            str(item).strip()
+            for item in (payload.get("quality_validation_blocked_reasons") or [])
+            if str(item).strip()
+        ],
+        "pre_rerun_quality_audit_v1": normalize_quality_audit_v1(payload.get("pre_rerun_quality_audit_v1")),
+        "pre_rerun_quality_audit_run_id": str(payload.get("pre_rerun_quality_audit_run_id") or "").strip() or None,
+        "pre_rerun_quality_validation_ready": bool(payload.get("pre_rerun_quality_validation_ready", False)),
+        "pre_rerun_quality_validation_blocked_reasons": [
+            str(item).strip()
+            for item in (payload.get("pre_rerun_quality_validation_blocked_reasons") or [])
+            if str(item).strip()
+        ],
         "degraded_reasons": degraded_reasons,
         "model_attempt_trace": payload.get("model_attempt_trace") if isinstance(payload.get("model_attempt_trace"), list) else [],
         "stage_time_ms": payload.get("stage_time_ms") if isinstance(payload.get("stage_time_ms"), dict) else {},
         "timeout_events": payload.get("timeout_events") if isinstance(payload.get("timeout_events"), list) else [],
-        "screening_run_id": str(payload.get("screening_run_id") or "").strip() or None,
+        "queue_wait_ms_by_stage": (
+            payload.get("queue_wait_ms_by_stage")
+            if isinstance(payload.get("queue_wait_ms_by_stage"), dict)
+            else {}
+        ),
+        "stage_retry_counts": (
+            payload.get("stage_retry_counts")
+            if isinstance(payload.get("stage_retry_counts"), dict)
+            else {}
+        ),
+        "cache_hit_rates": (
+            payload.get("cache_hit_rates")
+            if isinstance(payload.get("cache_hit_rates"), dict)
+            else {}
+        ),
+        "candidate_dropoff_funnel_v1": (
+            payload.get("candidate_dropoff_funnel_v1")
+            if isinstance(payload.get("candidate_dropoff_funnel_v1"), dict)
+            else {}
+        ),
+        "stage_execution_mode": str(payload.get("stage_execution_mode") or "hybrid_preflight_monolith"),
+        "screening_run_id": screening_run_id,
     }
+
+
+def _safe_metric_number(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def _compute_variance_hotspots_from_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    metric_extractors = {
+        "first_party_hint_urls_used_count": lambda row: row.get("first_party_hint_urls_used_count"),
+        "first_party_hint_pages_crawled_total": lambda row: row.get("first_party_hint_pages_crawled_total"),
+        "first_party_crawl_pages_total": lambda row: row.get("first_party_crawl_pages_total"),
+        "stage_llm_discovery_fanout.llm_ms": lambda row: (
+            (row.get("stage_time_ms") or {}).get("stage_llm_discovery_fanout")
+            if isinstance(row.get("stage_time_ms"), dict)
+            else None
+        ),
+        "ranking_eligible_count": lambda row: row.get("ranking_eligible_count"),
+    }
+
+    hotspots: List[Dict[str, Any]] = []
+    for metric_name, extractor in metric_extractors.items():
+        values: List[float] = []
+        for row in results:
+            if not isinstance(row, dict):
+                continue
+            value = _safe_metric_number(extractor(row))
+            if value is None:
+                continue
+            values.append(float(value))
+        if not values:
+            continue
+        run_count = len(values)
+        mean = sum(values) / run_count
+        variance = sum((value - mean) ** 2 for value in values) / max(1, run_count)
+        hotspots.append(
+            {
+                "metric": metric_name,
+                "min": min(values),
+                "max": max(values),
+                "avg": round(mean, 4),
+                "stddev": round(math.sqrt(variance), 4),
+                "run_count": run_count,
+            }
+        )
+
+    hotspots.sort(key=lambda row: float(row.get("stddev") or 0.0), reverse=True)
+    return hotspots
+
+
+async def _variance_hotspots_for_workspace(
+    db: AsyncSession,
+    workspace_id: int,
+    limit_runs: int = 25,
+) -> List[Dict[str, Any]]:
+    result = await db.execute(
+        select(Job)
+        .where(
+            Job.workspace_id == workspace_id,
+            Job.job_type == JobType.discovery_universe,
+            Job.state == JobState.completed,
+        )
+        .order_by(Job.finished_at.desc(), Job.created_at.desc())
+        .limit(max(3, int(limit_runs)))
+    )
+    rows = result.scalars().all()
+    payloads = [
+        row.result_json
+        for row in rows
+        if isinstance(row.result_json, dict)
+    ]
+    return _compute_variance_hotspots_from_results(payloads)
 
 
 async def _latest_completed_discovery_job(
@@ -630,6 +893,133 @@ async def _latest_completed_discovery_job(
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+def _buyer_thesis_response_from_payload(payload: Dict[str, Any]) -> BuyerThesisPackResponse:
+    return BuyerThesisPackResponse(
+        id=int(payload.get("id") or 0),
+        workspace_id=int(payload.get("workspace_id") or 0),
+        summary=payload.get("summary"),
+        claims=[ThesisClaimResponse.model_validate(item) for item in (payload.get("claims") or []) if isinstance(item, dict)],
+        source_pills=[
+            ThesisSourcePillResponse.model_validate(item)
+            for item in (payload.get("source_pills") or [])
+            if isinstance(item, dict)
+        ],
+        open_questions=normalize_open_questions(payload.get("open_questions") or []),
+        generated_at=payload.get("generated_at"),
+        confirmed_at=payload.get("confirmed_at"),
+    )
+
+
+def _search_lanes_response_from_payloads(
+    workspace_id: int,
+    payloads: List[Dict[str, Any]],
+) -> SearchLanesResponse:
+    return SearchLanesResponse(
+        workspace_id=workspace_id,
+        lanes=[SearchLaneItem.model_validate(payload) for payload in payloads if isinstance(payload, dict)],
+    )
+
+
+async def _get_company_profile(db: AsyncSession, workspace_id: int) -> Optional[CompanyProfile]:
+    result = await db.execute(
+        select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _get_brick_taxonomy(db: AsyncSession, workspace_id: int) -> Optional[BrickTaxonomy]:
+    result = await db.execute(
+        select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _ensure_thesis_pack(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    profile: Optional[CompanyProfile] = None,
+    taxonomy: Optional[BrickTaxonomy] = None,
+) -> BuyerThesisPack:
+    result = await db.execute(
+        select(BuyerThesisPack).where(BuyerThesisPack.workspace_id == workspace_id)
+    )
+    thesis_pack = result.scalar_one_or_none()
+    if thesis_pack:
+        return thesis_pack
+
+    profile = profile or await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    taxonomy = taxonomy or await _get_brick_taxonomy(db, workspace_id)
+    bootstrap_payload = bootstrap_thesis_payload(profile, taxonomy)
+    thesis_pack = BuyerThesisPack(
+        workspace_id=workspace_id,
+        summary=bootstrap_payload.get("summary"),
+        claims_json=bootstrap_payload.get("claims") or [],
+        source_pills_json=bootstrap_payload.get("source_pills") or [],
+        open_questions_json=bootstrap_payload.get("open_questions") or [],
+        generated_at=bootstrap_payload.get("generated_at"),
+        confirmed_at=bootstrap_payload.get("confirmed_at"),
+    )
+    db.add(thesis_pack)
+    await db.flush()
+    return thesis_pack
+
+
+async def _ensure_search_lanes(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    profile: Optional[CompanyProfile] = None,
+    taxonomy: Optional[BrickTaxonomy] = None,
+    thesis_pack: Optional[BuyerThesisPack] = None,
+) -> List[SearchLane]:
+    result = await db.execute(
+        select(SearchLane)
+        .where(SearchLane.workspace_id == workspace_id)
+        .order_by(SearchLane.lane_type.asc(), SearchLane.id.asc())
+    )
+    existing = result.scalars().all()
+    if {lane.lane_type for lane in existing} == {"core", "adjacent"}:
+        return existing
+
+    profile = profile or await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    taxonomy = taxonomy or await _get_brick_taxonomy(db, workspace_id)
+    thesis_pack = thesis_pack or await _ensure_thesis_pack(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+    )
+    lane_payloads = derive_search_lane_payloads(thesis_pack, profile, taxonomy)
+    by_type = {lane.lane_type: lane for lane in existing}
+    for payload in lane_payloads:
+        lane_type = payload["lane_type"]
+        lane = by_type.get(lane_type)
+        if lane is None:
+            lane = SearchLane(
+                workspace_id=workspace_id,
+                lane_type=lane_type,
+            )
+            db.add(lane)
+            by_type[lane_type] = lane
+        lane.title = payload["title"]
+        lane.intent = payload.get("intent")
+        lane.capabilities_json = payload.get("capabilities") or []
+        lane.customer_tags_json = payload.get("customer_tags") or []
+        lane.must_include_terms_json = payload.get("must_include_terms") or []
+        lane.must_exclude_terms_json = payload.get("must_exclude_terms") or []
+        lane.seed_urls_json = payload.get("seed_urls") or []
+        lane.status = payload.get("status") or "draft"
+        lane.confirmed_at = thesis_pack.confirmed_at if lane.status == "confirmed" else None
+        lane.updated_at = datetime.utcnow()
+    await db.flush()
+    return list(by_type.values())
 
 
 def _source_from_evidence(evidence: Optional[WorkspaceEvidence]) -> Optional[SourcePill]:
@@ -768,6 +1158,130 @@ async def _latest_screening_for_vendor(
     return screening_result.scalar_one_or_none()
 
 
+def _lane_types_from_meta(screening_meta: Dict[str, Any]) -> List[str]:
+    values: List[str] = []
+    for key in ["lane_types", "query_lane_types"]:
+        raw = screening_meta.get(key)
+        if isinstance(raw, list):
+            for item in raw:
+                text = str(item or "").strip().lower()
+                if text in {"core", "adjacent"} and text not in values:
+                    values.append(text)
+    if values:
+        return values
+    for item in (screening_meta.get("expansion_provenance") or [])[:6]:
+        if not isinstance(item, dict):
+            continue
+        query_intent = str(item.get("query_intent") or "").strip().lower()
+        if query_intent == "adjacent" and "adjacent" not in values:
+            values.append("adjacent")
+    return values or ["core"]
+
+
+def _vendor_claims_to_fit_card(
+    vendor: Vendor,
+    screening: Optional[VendorScreening],
+    screening_meta: Dict[str, Any],
+    citation_summary_v1: Optional[CitationSummaryV1],
+    vendor_claims: List[VendorClaim],
+) -> Dict[str, Any]:
+    why_fit_bullets: List[Dict[str, Any]] = []
+    business_model_signal: Optional[str] = None
+    customer_proof: List[str] = []
+    employee_signal: Optional[str] = None
+
+    if citation_summary_v1:
+        pill_by_id = {pill.pill_id: pill for pill in citation_summary_v1.source_pills}
+        for sentence in citation_summary_v1.sentences[:4]:
+            citation_url = None
+            for pill_id in sentence.citation_pill_ids:
+                pill = pill_by_id.get(pill_id)
+                if pill:
+                    citation_url = pill.url
+                    break
+            why_fit_bullets.append(
+                {
+                    "text": sentence.text,
+                    "citation_url": citation_url,
+                }
+            )
+    if not why_fit_bullets:
+        top_claim = screening.top_claim_json if screening and isinstance(screening.top_claim_json, dict) else {}
+        if top_claim.get("text"):
+            why_fit_bullets.append(
+                {
+                    "text": str(top_claim.get("text"))[:260],
+                    "citation_url": top_claim.get("source_url"),
+                }
+            )
+    if not why_fit_bullets:
+        for item in (vendor.why_relevant or [])[:4]:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            why_fit_bullets.append(
+                {
+                    "text": text[:260],
+                    "citation_url": item.get("citation_url"),
+                }
+            )
+
+    business_model_tokens = ("saas", "subscription", "license", "services", "implementation", "managed service", "contract")
+    customer_dimensions = {"customer", "customers", "case_study"}
+    for claim in vendor_claims:
+        claim_text = str(claim.claim_text or "").strip()
+        lowered = claim_text.lower()
+        if not business_model_signal and any(token in lowered for token in business_model_tokens):
+            business_model_signal = claim_text[:220]
+        if (claim.dimension or "").lower() in customer_dimensions and claim_text:
+            customer_proof.append(claim_text[:220])
+        if not employee_signal and claim.claim_key == "employees":
+            parsed = _parse_int(claim.numeric_value or claim.claim_text)
+            if parsed is not None:
+                employee_signal = f"Employee estimate: {parsed}"
+
+    first_party_enrichment = (
+        screening_meta.get("first_party_enrichment")
+        if isinstance(screening_meta.get("first_party_enrichment"), dict)
+        else {}
+    )
+    if not customer_proof and int(first_party_enrichment.get("customer_evidence_count") or 0) > 0:
+        customer_proof.append(
+            f"Customer proof signals detected on first-party site ({int(first_party_enrichment.get('customer_evidence_count') or 0)})."
+        )
+    if not employee_signal:
+        candidate_size = _parse_int(screening_meta.get("candidate_employee_estimate"))
+        if candidate_size is not None:
+            employee_signal = f"Employee estimate: {candidate_size}"
+        else:
+            for tag in vendor.tags_custom or []:
+                if not str(tag).startswith("employee_estimate:"):
+                    continue
+                parsed = _parse_int(str(tag).split(":", 1)[1])
+                if parsed is not None:
+                    employee_signal = f"Employee estimate: {parsed}"
+                    break
+
+    open_questions: List[str] = []
+    if not business_model_signal:
+        open_questions.append("Confirm the revenue model and services mix.")
+    if not customer_proof:
+        open_questions.append("Validate named customers or buyer-side proof.")
+    if not employee_signal:
+        open_questions.append("Confirm employee range or company-size proxy.")
+
+    return {
+        "lane_types": _lane_types_from_meta(screening_meta),
+        "why_fit_bullets": why_fit_bullets[:4],
+        "business_model_signal": business_model_signal,
+        "customer_proof": customer_proof[:4],
+        "employee_signal": employee_signal,
+        "open_questions": open_questions[:3],
+    }
+
+
 async def _vendor_response_from_row(db: AsyncSession, vendor: Vendor) -> VendorResponse:
     evidence_count_result = await db.execute(
         select(func.count(WorkspaceEvidence.id)).where(WorkspaceEvidence.vendor_id == vendor.id)
@@ -777,6 +1291,17 @@ async def _vendor_response_from_row(db: AsyncSession, vendor: Vendor) -> VendorR
     screening_meta = screening.screening_meta_json if screening and isinstance(screening.screening_meta_json, dict) else {}
     citation_summary_v1 = _citation_summary_from_meta(screening_meta)
     diagnostics = _screening_diagnostics_from_meta(screening_meta)
+    vendor_claims_result = await db.execute(
+        select(VendorClaim)
+        .where(
+            VendorClaim.workspace_id == vendor.workspace_id,
+            VendorClaim.vendor_id == vendor.id,
+        )
+        .order_by(VendorClaim.created_at.desc(), VendorClaim.id.desc())
+        .limit(24)
+    )
+    vendor_claims = vendor_claims_result.scalars().all()
+    fit_card = _vendor_claims_to_fit_card(vendor, screening, screening_meta, citation_summary_v1, vendor_claims)
     return VendorResponse(
         id=vendor.id,
         workspace_id=vendor.workspace_id,
@@ -812,6 +1337,12 @@ async def _vendor_response_from_row(db: AsyncSession, vendor: Vendor) -> VendorR
         first_party_hint_urls_used_count=int(diagnostics["first_party_hint_urls_used_count"]),
         first_party_hint_pages_crawled_total=int(diagnostics["first_party_hint_pages_crawled_total"]),
         unresolved_contradictions_count=screening.unresolved_contradictions_count if screening else 0,
+        lane_types=fit_card["lane_types"],
+        why_fit_bullets=fit_card["why_fit_bullets"],
+        business_model_signal=fit_card["business_model_signal"],
+        customer_proof=fit_card["customer_proof"],
+        employee_signal=fit_card["employee_signal"],
+        open_questions=fit_card["open_questions"],
     )
 
 
@@ -841,7 +1372,7 @@ async def create_workspace(
     data: WorkspaceCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new workspace with default taxonomy."""
+    """Create a new workspace with thesis-first scaffolding."""
     workspace = Workspace(
         name=data.name,
         region_scope=data.region_scope,
@@ -857,14 +1388,9 @@ async def create_workspace(
     )
     db.add(profile)
     
-    # Create default brick taxonomy
-    default_bricks = [
-        {"id": str(uuid.uuid4()), "name": brick, "description": None}
-        for brick in DEFAULT_BRICKS
-    ]
     taxonomy = BrickTaxonomy(
         workspace_id=workspace.id,
-        bricks=default_bricks,
+        bricks=[],
         priority_brick_ids=[]
     )
     db.add(taxonomy)
@@ -904,14 +1430,30 @@ async def list_workspaces(db: AsyncSession = Depends(get_db)):
             select(CompanyProfile).where(CompanyProfile.workspace_id == ws.id)
         )
         profile = profile_result.scalar_one_or_none()
-        has_context_pack = profile is not None and profile.context_pack_markdown is not None
-        
-        # Check taxonomy
-        taxonomy_result = await db.execute(
-            select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == ws.id)
+        thesis_result = await db.execute(
+            select(BuyerThesisPack).where(BuyerThesisPack.workspace_id == ws.id)
         )
-        taxonomy = taxonomy_result.scalar_one_or_none()
-        has_confirmed_taxonomy = taxonomy is not None and taxonomy.confirmed
+        thesis_pack = thesis_result.scalar_one_or_none()
+        has_context_pack = bool(
+            (thesis_pack and (thesis_pack.summary or thesis_pack.claims_json))
+            or (profile and profile.context_pack_markdown)
+        )
+
+        lanes_result = await db.execute(
+            select(SearchLane).where(SearchLane.workspace_id == ws.id)
+        )
+        lanes = lanes_result.scalars().all()
+        has_confirmed_taxonomy = bool(
+            lanes
+            and {lane.lane_type for lane in lanes} == {"core", "adjacent"}
+            and all((lane.status or "draft") == "confirmed" for lane in lanes)
+        )
+        if not has_confirmed_taxonomy:
+            taxonomy_result = await db.execute(
+                select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == ws.id)
+            )
+            taxonomy = taxonomy_result.scalar_one_or_none()
+            has_confirmed_taxonomy = taxonomy is not None and taxonomy.confirmed
         
         responses.append(WorkspaceResponse(
             id=ws.id,
@@ -945,13 +1487,30 @@ async def get_workspace(workspace_id: int, db: AsyncSession = Depends(get_db)):
         select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
     )
     profile = profile_result.scalar_one_or_none()
-    has_context_pack = profile is not None and profile.context_pack_markdown is not None
-    
-    taxonomy_result = await db.execute(
-        select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
+    thesis_result = await db.execute(
+        select(BuyerThesisPack).where(BuyerThesisPack.workspace_id == workspace_id)
     )
-    taxonomy = taxonomy_result.scalar_one_or_none()
-    has_confirmed_taxonomy = taxonomy is not None and taxonomy.confirmed
+    thesis_pack = thesis_result.scalar_one_or_none()
+    has_context_pack = bool(
+        (thesis_pack and (thesis_pack.summary or thesis_pack.claims_json))
+        or (profile and profile.context_pack_markdown)
+    )
+
+    lanes_result = await db.execute(
+        select(SearchLane).where(SearchLane.workspace_id == workspace_id)
+    )
+    lanes = lanes_result.scalars().all()
+    has_confirmed_taxonomy = bool(
+        lanes
+        and {lane.lane_type for lane in lanes} == {"core", "adjacent"}
+        and all((lane.status or "draft") == "confirmed" for lane in lanes)
+    )
+    if not has_confirmed_taxonomy:
+        taxonomy_result = await db.execute(
+            select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
+        )
+        taxonomy = taxonomy_result.scalar_one_or_none()
+        has_confirmed_taxonomy = taxonomy is not None and taxonomy.confirmed
     
     return WorkspaceResponse(
         id=workspace.id,
@@ -1153,6 +1712,323 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
 
 
 # ============================================================================
+# Thesis Pack
+# ============================================================================
+
+@router.get("/{workspace_id}/thesis-pack", response_model=BuyerThesisPackResponse)
+async def get_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_db)):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    taxonomy = await _get_brick_taxonomy(db, workspace_id)
+    thesis_pack = await _ensure_thesis_pack(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+    )
+    await db.commit()
+    await db.refresh(thesis_pack)
+    payload = thesis_pack_to_payload(thesis_pack)
+    payload["workspace_id"] = workspace_id
+    payload["id"] = thesis_pack.id
+    return _buyer_thesis_response_from_payload(payload)
+
+
+@router.patch("/{workspace_id}/thesis-pack", response_model=BuyerThesisPackResponse)
+async def update_thesis_pack(
+    workspace_id: int,
+    data: BuyerThesisPackUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    taxonomy = await _get_brick_taxonomy(db, workspace_id)
+    thesis_pack = await _ensure_thesis_pack(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+    )
+    existing_pills = normalize_source_pills(thesis_pack.source_pills_json or [])
+    if data.summary is not None:
+        thesis_pack.summary = str(data.summary or "").strip()[:8000] or None
+    if data.source_pills is not None:
+        thesis_pack.source_pills_json = normalize_source_pills(
+            [item.model_dump() for item in data.source_pills],
+            buyer_url=profile.buyer_company_url,
+            reference_vendor_urls=profile.reference_vendor_urls or [],
+            reference_evidence_urls=profile.reference_evidence_urls or [],
+        )
+        existing_pills = thesis_pack.source_pills_json or []
+    if data.claims is not None:
+        thesis_pack.claims_json = normalize_thesis_claims(
+            [item.model_dump() for item in data.claims],
+            available_pill_ids={str(pill.get("id")) for pill in existing_pills if isinstance(pill, dict)},
+        )
+    if data.open_questions is not None:
+        thesis_pack.open_questions_json = normalize_open_questions(data.open_questions)
+    if data.confirmed is not None:
+        thesis_pack.confirmed_at = datetime.utcnow() if data.confirmed else None
+    thesis_pack.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(thesis_pack)
+    payload = thesis_pack_to_payload(thesis_pack)
+    payload["workspace_id"] = workspace_id
+    payload["id"] = thesis_pack.id
+    return _buyer_thesis_response_from_payload(payload)
+
+
+@router.post("/{workspace_id}/thesis-pack:refresh", response_model=BuyerThesisPackResponse)
+async def refresh_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_db)):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    taxonomy = await _get_brick_taxonomy(db, workspace_id)
+    thesis_pack = await _ensure_thesis_pack(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+    )
+    refreshed = bootstrap_thesis_payload(profile, taxonomy)
+    thesis_pack.summary = refreshed.get("summary")
+    thesis_pack.claims_json = refreshed.get("claims") or []
+    thesis_pack.source_pills_json = refreshed.get("source_pills") or []
+    thesis_pack.open_questions_json = refreshed.get("open_questions") or []
+    thesis_pack.generated_at = refreshed.get("generated_at")
+    thesis_pack.confirmed_at = None
+    thesis_pack.updated_at = datetime.utcnow()
+
+    lanes = await _ensure_search_lanes(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+        thesis_pack=thesis_pack,
+    )
+    for lane in lanes:
+        if (lane.status or "draft") != "confirmed":
+            lane_payloads = {
+                payload["lane_type"]: payload
+                for payload in derive_search_lane_payloads(thesis_pack, profile, taxonomy)
+            }
+            payload = lane_payloads.get(lane.lane_type)
+            if not payload:
+                continue
+            lane.title = payload["title"]
+            lane.intent = payload.get("intent")
+            lane.capabilities_json = payload.get("capabilities") or []
+            lane.customer_tags_json = payload.get("customer_tags") or []
+            lane.must_include_terms_json = payload.get("must_include_terms") or []
+            lane.must_exclude_terms_json = payload.get("must_exclude_terms") or []
+            lane.seed_urls_json = payload.get("seed_urls") or []
+            lane.status = "draft"
+            lane.confirmed_at = None
+            lane.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(thesis_pack)
+    payload = thesis_pack_to_payload(thesis_pack)
+    payload["workspace_id"] = workspace_id
+    payload["id"] = thesis_pack.id
+    return _buyer_thesis_response_from_payload(payload)
+
+
+@router.post("/{workspace_id}/thesis-pack:apply-adjustment", response_model=ThesisAdjustmentResponse)
+async def apply_thesis_adjustment(
+    workspace_id: int,
+    request: ThesisAdjustmentRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    taxonomy = await _get_brick_taxonomy(db, workspace_id)
+    thesis_pack = await _ensure_thesis_pack(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+    )
+    operations = request.operations or infer_adjustment_operations_from_message(request.message or "", thesis_pack)
+    if not operations:
+        raise HTTPException(status_code=400, detail="No thesis adjustments could be derived from the request")
+
+    adjusted = apply_thesis_adjustment_operations(thesis_pack, operations)
+    thesis_pack.summary = adjusted.get("summary")
+    thesis_pack.claims_json = adjusted.get("claims") or []
+    thesis_pack.source_pills_json = adjusted.get("source_pills") or thesis_pack.source_pills_json
+    thesis_pack.open_questions_json = adjusted.get("open_questions") or []
+    thesis_pack.confirmed_at = adjusted.get("confirmed_at")
+    thesis_pack.updated_at = datetime.utcnow()
+
+    db.add(
+        WorkspaceFeedbackEvent(
+            workspace_id=workspace_id,
+            feedback_type="thesis_adjustment",
+            comment=request.message[:2000] if request.message else None,
+            metadata_json={
+                "applied_operations": adjusted.get("applied_operations") or [],
+            },
+            created_by="system",
+        )
+    )
+
+    lanes = await _ensure_search_lanes(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+        thesis_pack=thesis_pack,
+    )
+    lane_payloads = {
+        payload["lane_type"]: payload
+        for payload in derive_search_lane_payloads(thesis_pack, profile, taxonomy)
+    }
+    for lane in lanes:
+        if (lane.status or "draft") == "confirmed":
+            continue
+        payload = lane_payloads.get(lane.lane_type)
+        if not payload:
+            continue
+        lane.title = payload["title"]
+        lane.intent = payload.get("intent")
+        lane.capabilities_json = payload.get("capabilities") or []
+        lane.customer_tags_json = payload.get("customer_tags") or []
+        lane.must_include_terms_json = payload.get("must_include_terms") or []
+        lane.must_exclude_terms_json = payload.get("must_exclude_terms") or []
+        lane.seed_urls_json = payload.get("seed_urls") or []
+        lane.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(thesis_pack)
+    payload = thesis_pack_to_payload(thesis_pack)
+    payload["workspace_id"] = workspace_id
+    payload["id"] = thesis_pack.id
+    return ThesisAdjustmentResponse(
+        thesis_pack=_buyer_thesis_response_from_payload(payload),
+        applied_operations=adjusted.get("applied_operations") or [],
+    )
+
+
+# ============================================================================
+# Search Lanes
+# ============================================================================
+
+@router.get("/{workspace_id}/search-lanes", response_model=SearchLanesResponse)
+async def get_search_lanes(workspace_id: int, db: AsyncSession = Depends(get_db)):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    taxonomy = await _get_brick_taxonomy(db, workspace_id)
+    thesis_pack = await _ensure_thesis_pack(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+    )
+    lanes = await _ensure_search_lanes(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+        thesis_pack=thesis_pack,
+    )
+    await db.commit()
+    refreshed_payloads = [search_lane_to_payload(lane) for lane in sorted(lanes, key=lambda item: item.lane_type)]
+    for payload in refreshed_payloads:
+        payload["workspace_id"] = workspace_id
+    return _search_lanes_response_from_payloads(workspace_id, refreshed_payloads)
+
+
+@router.patch("/{workspace_id}/search-lanes", response_model=SearchLanesResponse)
+async def update_search_lanes(
+    workspace_id: int,
+    data: SearchLanesUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    taxonomy = await _get_brick_taxonomy(db, workspace_id)
+    thesis_pack = await _ensure_thesis_pack(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+    )
+    existing_lanes = await _ensure_search_lanes(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+        thesis_pack=thesis_pack,
+    )
+    by_type = {lane.lane_type: lane for lane in existing_lanes}
+    for item in data.lanes:
+        payload = normalize_search_lane_payload(item.model_dump())
+        lane = by_type.get(payload["lane_type"])
+        if lane is None:
+            lane = SearchLane(
+                workspace_id=workspace_id,
+                lane_type=payload["lane_type"],
+            )
+            db.add(lane)
+            by_type[payload["lane_type"]] = lane
+        lane.title = payload["title"]
+        lane.intent = payload.get("intent")
+        lane.capabilities_json = payload.get("capabilities") or []
+        lane.customer_tags_json = payload.get("customer_tags") or []
+        lane.must_include_terms_json = payload.get("must_include_terms") or []
+        lane.must_exclude_terms_json = payload.get("must_exclude_terms") or []
+        lane.seed_urls_json = payload.get("seed_urls") or []
+        lane.status = payload.get("status") or lane.status or "draft"
+        lane.confirmed_at = datetime.utcnow() if lane.status == "confirmed" else None
+        lane.updated_at = datetime.utcnow()
+    await db.commit()
+    refreshed = list(by_type.values())
+    payloads = [search_lane_to_payload(lane) for lane in sorted(refreshed, key=lambda item: item.lane_type)]
+    for payload in payloads:
+        payload["workspace_id"] = workspace_id
+    return _search_lanes_response_from_payloads(workspace_id, payloads)
+
+
+@router.post("/{workspace_id}/search-lanes:confirm", response_model=SearchLanesResponse)
+async def confirm_search_lanes(workspace_id: int, db: AsyncSession = Depends(get_db)):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    taxonomy = await _get_brick_taxonomy(db, workspace_id)
+    thesis_pack = await _ensure_thesis_pack(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+    )
+    lanes = await _ensure_search_lanes(
+        db,
+        workspace_id,
+        profile=profile,
+        taxonomy=taxonomy,
+        thesis_pack=thesis_pack,
+    )
+    confirmed_at = datetime.utcnow()
+    for lane in lanes:
+        lane.status = "confirmed"
+        lane.confirmed_at = confirmed_at
+        lane.updated_at = confirmed_at
+    thesis_pack.confirmed_at = confirmed_at
+    thesis_pack.updated_at = confirmed_at
+    await db.commit()
+    refreshed_payloads = [search_lane_to_payload(lane) for lane in sorted(lanes, key=lambda item: item.lane_type)]
+    for payload in refreshed_payloads:
+        payload["workspace_id"] = workspace_id
+    return _search_lanes_response_from_payloads(workspace_id, refreshed_payloads)
+
+
+# ============================================================================
 # Brick Taxonomy
 # ============================================================================
 
@@ -1274,6 +2150,7 @@ async def run_discovery(workspace_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/{workspace_id}/discovery:diagnostics")
 async def get_discovery_diagnostics(
     workspace_id: int,
+    include_quality_audit: bool = Query(True),
     db: AsyncSession = Depends(get_db),
 ):
     """Return screening diagnostics for the latest discovery run."""
@@ -1292,6 +2169,7 @@ async def get_discovery_diagnostics(
     )
     quality_payload = _quality_payload_from_job_result(latest_discovery_job_result)
     latest_run_id = quality_payload.get("screening_run_id")
+    variance_hotspots_v1 = await _variance_hotspots_for_workspace(db, workspace_id, limit_runs=30)
 
     screenings_query = (
         select(VendorScreening)
@@ -1551,6 +2429,11 @@ async def get_discovery_diagnostics(
             "first_party_hint_pages_crawled_total": int(
                 latest_discovery_job_result.get("first_party_hint_pages_crawled_total", 0)
             ),
+            "first_party_hint_domain_stats": (
+                latest_discovery_job_result.get("first_party_hint_domain_stats")
+                if isinstance(latest_discovery_job_result.get("first_party_hint_domain_stats"), dict)
+                else {}
+            ),
         },
         "origin_mix_distribution": latest_discovery_job_result.get("origin_mix_distribution", origin_mix_distribution),
         "dedupe_quality_metrics": latest_discovery_job_result.get("dedupe_quality_metrics", {}),
@@ -1567,12 +2450,30 @@ async def get_discovery_diagnostics(
         "official_website_resolution_rate": official_website_resolution_rate,
         "run_quality_tier": quality_payload["run_quality_tier"],
         "quality_gate_passed": bool(quality_payload["quality_gate_passed"]),
+        "quality_audit_passed": bool(quality_payload["quality_audit_passed"]),
+        "quality_validation_ready": bool(quality_payload["quality_validation_ready"]),
+        "quality_validation_blocked_reasons": quality_payload["quality_validation_blocked_reasons"],
+        "pre_rerun_quality_audit_run_id": quality_payload["pre_rerun_quality_audit_run_id"],
+        "pre_rerun_quality_validation_ready": bool(quality_payload["pre_rerun_quality_validation_ready"]),
+        "pre_rerun_quality_validation_blocked_reasons": quality_payload[
+            "pre_rerun_quality_validation_blocked_reasons"
+        ],
         "degraded_reasons": quality_payload["degraded_reasons"],
         "model_attempt_trace": quality_payload["model_attempt_trace"],
         "stage_time_ms": quality_payload["stage_time_ms"],
         "timeout_events": quality_payload["timeout_events"],
+        "queue_wait_ms_by_stage": quality_payload["queue_wait_ms_by_stage"],
+        "stage_retry_counts": quality_payload["stage_retry_counts"],
+        "cache_hit_rates": quality_payload["cache_hit_rates"],
+        "candidate_dropoff_funnel_v1": quality_payload["candidate_dropoff_funnel_v1"],
+        "stage_execution_mode": quality_payload["stage_execution_mode"],
+        "variance_hotspots_v1": variance_hotspots_v1,
         "generated_at": datetime.utcnow().isoformat(),
     }
+    if include_quality_audit:
+        response_payload["quality_audit_v1"] = quality_payload["quality_audit_v1"]
+        response_payload["pre_rerun_quality_audit_v1"] = quality_payload["pre_rerun_quality_audit_v1"]
+    return response_payload
 
 
 @router.get("/{workspace_id}/vendors", response_model=List[VendorResponse])
@@ -1653,6 +2554,7 @@ async def list_top_candidates(
                 "screening_run_id": latest_run_id,
                 "run_quality_tier": quality_payload["run_quality_tier"],
                 "quality_gate_passed": bool(quality_payload["quality_gate_passed"]),
+                "quality_audit_passed": bool(quality_payload["quality_audit_passed"]),
                 "degraded_reasons": quality_payload["degraded_reasons"],
             },
         )
@@ -1788,6 +2690,7 @@ async def list_top_candidates(
                 ranking_eligible=bool(screening.ranking_eligible),
                 run_quality_tier=quality_payload["run_quality_tier"],
                 quality_gate_passed=bool(quality_payload["quality_gate_passed"]),
+                quality_audit_passed=bool(quality_payload["quality_audit_passed"]),
                 degraded_reasons=quality_payload["degraded_reasons"],
             )
         )
@@ -3855,49 +4758,78 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         "enrichment": []
     }
     
-    # Check context pack
-    profile_result = await db.execute(
-        select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
-    )
-    profile = profile_result.scalar_one_or_none()
+    # Check thesis/context pack
+    profile = await _get_company_profile(db, workspace_id)
+    taxonomy = await _get_brick_taxonomy(db, workspace_id)
     context_pack_ready = False
     if profile:
         context_claim_groups_available = set()
+        thesis_result = await db.execute(
+            select(BuyerThesisPack).where(BuyerThesisPack.workspace_id == workspace_id)
+        )
+        thesis_pack = thesis_result.scalar_one_or_none()
+        thesis_payload = (
+            thesis_pack_to_payload(thesis_pack)
+            if thesis_pack
+            else bootstrap_thesis_payload(profile, taxonomy)
+        )
         if not profile.buyer_company_url:
             missing_items["context_pack"].append("Add your company URL")
         else:
             context_claim_groups_available.add("identity_scope")
-        if not profile.context_pack_markdown:
-            missing_items["context_pack"].append("Generate context pack")
-        elif profile.reference_vendor_urls:
-            context_claim_groups_available.add("vertical_workflow")
-        if profile.product_pages_found < 3:
-            missing_items["context_pack"].append(f"Need more product pages (found {profile.product_pages_found})")
+        if not (thesis_payload.get("summary") or thesis_payload.get("claims")):
+            missing_items["context_pack"].append("Generate or refresh thesis pack")
         else:
             context_claim_groups_available.add("product_depth")
+        if profile.reference_vendor_urls:
+            context_claim_groups_available.add("vertical_workflow")
+        if not thesis_payload.get("source_pills"):
+            missing_items["context_pack"].append("Need auditable sources on the thesis pack")
 
         required_groups = gate_cfg.get("context_pack", {}).get("required_claim_groups", ["identity_scope", "product_depth"])
-        min_required = int(gate_cfg.get("context_pack", {}).get("min_required_groups_met", 2))
+        min_required = min(
+            int(gate_cfg.get("context_pack", {}).get("min_required_groups_met", 2)),
+            len(required_groups),
+        )
         covered = len([group for group in required_groups if group in context_claim_groups_available])
         if covered < min_required:
             missing_items["context_pack"].append(
                 f"Evidence pattern coverage too low ({covered}/{len(required_groups)})"
             )
         context_pack_ready = bool(
-            profile.context_pack_markdown
-            and profile.product_pages_found >= 3
+            profile.buyer_company_url
+            and (thesis_payload.get("summary") or thesis_payload.get("claims"))
             and covered >= min_required
         )
     else:
         missing_items["context_pack"].append("Create company profile")
     
-    # Check brick model
-    taxonomy_result = await db.execute(
-        select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
-    )
-    taxonomy = taxonomy_result.scalar_one_or_none()
+    # Check search lanes with legacy brick-model fallback
     brick_model_ready = False
-    if taxonomy:
+    lanes_result = await db.execute(
+        select(SearchLane).where(SearchLane.workspace_id == workspace_id)
+    )
+    lanes = lanes_result.scalars().all()
+    if lanes:
+        lane_payloads = [search_lane_to_payload(lane) for lane in lanes]
+        lane_types = {payload["lane_type"] for payload in lane_payloads}
+        core_lane = next((payload for payload in lane_payloads if payload["lane_type"] == "core"), None)
+        adjacent_lane = next((payload for payload in lane_payloads if payload["lane_type"] == "adjacent"), None)
+        if lane_types != {"core", "adjacent"}:
+            missing_items["brick_model"].append("Need both core and adjacent search lanes")
+        if not core_lane or not (core_lane.get("capabilities") or []):
+            missing_items["brick_model"].append("Add at least 1 core capability to the search lanes")
+        if not adjacent_lane:
+            missing_items["brick_model"].append("Create the adjacent search lane")
+        if any((payload.get("status") or "draft") != "confirmed" for payload in lane_payloads):
+            missing_items["brick_model"].append("Confirm search lanes")
+        brick_model_ready = bool(
+            lane_types == {"core", "adjacent"}
+            and core_lane
+            and (core_lane.get("capabilities") or [])
+            and all((payload.get("status") or "draft") == "confirmed" for payload in lane_payloads)
+        )
+    elif taxonomy:
         if not taxonomy.confirmed:
             missing_items["brick_model"].append("Confirm taxonomy")
         min_priority = int(gate_cfg.get("brick_model", {}).get("min_priority_bricks", 3))
@@ -3940,7 +4872,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
             and mapped_priority >= required_mapped
         )
     else:
-        missing_items["brick_model"].append("Create brick taxonomy")
+        missing_items["brick_model"].append("Generate search lanes from the thesis pack")
     
     # Check universe with evidence-pattern decisions
     screenings_result = await db.execute(

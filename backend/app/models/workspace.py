@@ -27,6 +27,8 @@ class Workspace(Base):
     # Relationships
     company_profile = relationship("CompanyProfile", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
     brick_taxonomy = relationship("BrickTaxonomy", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
+    thesis_pack = relationship("BuyerThesisPack", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
+    search_lanes = relationship("SearchLane", back_populates="workspace", cascade="all, delete-orphan")
     vendors = relationship("Vendor", back_populates="workspace", cascade="all, delete-orphan")
     evidence_items = relationship("WorkspaceEvidence", back_populates="workspace", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="workspace", cascade="all, delete-orphan")

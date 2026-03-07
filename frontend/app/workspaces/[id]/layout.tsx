@@ -18,16 +18,16 @@ import clsx from "clsx";
 const navItems = [
   {
     href: "context",
-    label: "Context Pack",
-    description: "Crawl your website & references to ground buyer context",
+    label: "Thesis Pack",
+    description: "Review and correct the system's understanding of the buyer thesis",
     icon: FileText,
     step: 1,
     gateKey: null,
   },
   {
     href: "bricks",
-    label: "Brick Model",
-    description: "Define capabilities and customer segments for target fit",
+    label: "Search Lanes",
+    description: "Confirm direct and adjacent sourcing lanes before discovery",
     icon: Layers,
     step: 2,
     gateKey: "context_pack",
@@ -42,8 +42,8 @@ const navItems = [
   },
   {
     href: "report",
-    label: "Report",
-    description: "Generate static compete/complement cards with source pills",
+    label: "Cards",
+    description: "Export candidate cards and adjacency summaries with source pills",
     icon: FileSpreadsheet,
     step: 4,
     gateKey: "universe",

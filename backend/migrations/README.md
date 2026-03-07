@@ -175,3 +175,36 @@ Adds explicit context evidence-link storage on company profiles.
 cd backend
 python -m migrations.migrate_company_profile_reference_evidence_v1
 ```
+
+## migrate_external_search_persistence_v1.py
+
+Adds external search persistence tables:
+
+- `external_search_runs`
+- `external_search_results`
+
+### How to run:
+
+```bash
+cd backend
+python -m migrations.migrate_external_search_persistence_v1
+```
+
+## migrate_thesis_sourcing_v1.py
+
+Adds the thesis-first sourcing tables and backfills existing workspaces.
+
+### What it does:
+
+1. Creates `buyer_thesis_packs`
+2. Creates `search_lanes`
+3. Backfills missing thesis packs from `company_profiles` and `brick_taxonomies`
+4. Backfills missing `core` and `adjacent` search lanes from the generated thesis pack
+5. Preserves existing thesis/search-lane rows if they already contain data
+
+### How to run:
+
+```bash
+cd backend
+python -m migrations.migrate_thesis_sourcing_v1
+```
