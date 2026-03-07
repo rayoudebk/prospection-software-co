@@ -28,7 +28,6 @@ class Vendor(Base):
     operating_countries = Column(JSON, default=list)  # ["UK", "DE", "FR", ...]
     
     # Tags/classification
-    tags_vertical = Column(JSON, default=list)  # ["asset_manager", "wealth_manager", ...]
     tags_custom = Column(JSON, default=list)  # User-defined tags
     
     # Status
@@ -59,13 +58,26 @@ class VendorDossier(Base):
     id = Column(Integer, primary_key=True, index=True)
     vendor_id = Column(Integer, ForeignKey("vendors.id"), nullable=False)
     
-    # The full dossier as JSON
-    # Schema:
+    # The full dossier as JSON. The canonical structure is organized into
+    # evidence-backed company-card buckets:
     # {
-    #   "modules": [{"name": "...", "brick_id": "...", "evidence_urls": [...]}],
-    #   "customers": [{"name": "...", "context": "case_study", "evidence_url": "..."}],
-    #   "hiring": {"postings": [...], "mix_summary": {...}},
-    #   "integrations": [{"name": "...", "type": "...", "evidence_url": "..."}]
+    #   "workflow": [{"text": "...", "evidence_url": "..."}],
+    #   "customer": [{"text": "...", "evidence_url": "..."}],
+    #   "business_model": [{"text": "...", "evidence_url": "..."}],
+    #   "ownership": [{"text": "...", "evidence_url": "..."}],
+    #   "transaction_feasibility": [{"text": "...", "evidence_url": "..."}],
+    #   "kpis": {
+    #     "revenue": {"value": "...", "period": "...", "confidence": "...", "evidence_url": "..."},
+    #     "net_income": {...},
+    #     "employee_count": {...},
+    #     "debt": {...},
+    #     "retained_earnings": {...},
+    #     "book_value": {...}
+    #   },
+    #   "modules": [...],        # legacy compatibility
+    #   "customers": [...],      # legacy compatibility
+    #   "hiring": {...},         # legacy compatibility
+    #   "integrations": [...]    # legacy compatibility
     # }
     dossier_json = Column(JSON, nullable=False)
     
@@ -80,15 +92,39 @@ class VendorDossier(Base):
     @property
     def modules(self):
         return self.dossier_json.get("modules", []) if self.dossier_json else []
+
+    @property
+    def workflow(self):
+        return self.dossier_json.get("workflow", []) if self.dossier_json else []
     
     @property
     def customers(self):
         return self.dossier_json.get("customers", []) if self.dossier_json else []
+
+    @property
+    def customer(self):
+        return self.dossier_json.get("customer", []) if self.dossier_json else []
     
     @property
     def hiring(self):
         return self.dossier_json.get("hiring", {}) if self.dossier_json else {}
+
+    @property
+    def business_model(self):
+        return self.dossier_json.get("business_model", []) if self.dossier_json else []
     
     @property
     def integrations(self):
         return self.dossier_json.get("integrations", []) if self.dossier_json else []
+
+    @property
+    def ownership(self):
+        return self.dossier_json.get("ownership", []) if self.dossier_json else []
+
+    @property
+    def transaction_feasibility(self):
+        return self.dossier_json.get("transaction_feasibility", []) if self.dossier_json else []
+
+    @property
+    def kpis(self):
+        return self.dossier_json.get("kpis", {}) if self.dossier_json else {}

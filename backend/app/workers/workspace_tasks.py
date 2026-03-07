@@ -21,7 +21,7 @@ from celery import chain
 
 from app.workers.celery_app import celery_app
 from app.config import get_settings
-from app.models.workspace import Workspace, CompanyProfile, BrickTaxonomy
+from app.models.workspace import Workspace, CompanyProfile
 from app.models.thesis import SearchLane
 from app.models.vendor import Vendor, VendorDossier, VendorStatus
 from app.models.job import Job, JobType, JobState
@@ -45,9 +45,7 @@ from app.services.comparator_sources import (
 from app.services.reporting import (
     DISCOVERY_COUNTRIES,
     RELIABLE_FILINGS_COUNTRIES,
-    build_adjacency_map,
     classify_size_bucket,
-    compute_lens_scores,
     estimate_size_from_signals,
     extract_customers_and_integrations,
     extract_filing_facts_from_evidence,
@@ -4737,7 +4735,7 @@ def _seed_candidates_from_reference_urls(reference_urls: list[str] | None) -> li
 
 def _should_add_wealth_benchmark_seeds(
     profile: CompanyProfile,
-    taxonomy: BrickTaxonomy,
+    segment_hints: list[str],
     mentions: list[dict[str, Any]],
 ) -> bool:
     text_chunks: list[str] = []
@@ -4746,7 +4744,7 @@ def _should_add_wealth_benchmark_seeds(
         if normalized:
             text_chunks.append(normalized[:4000])
 
-    for value in (taxonomy.vertical_focus or []):
+    for value in (segment_hints or []):
         normalized = str(value or "").strip()
         if normalized:
             text_chunks.append(normalized)
@@ -4953,6 +4951,28 @@ def _normalize_search_lane_payloads(search_lanes: Any) -> list[dict[str, Any]]:
         )
     confirmed = [payload for payload in payloads if payload["status"] == "confirmed"]
     return confirmed or payloads
+
+
+def _taxonomy_compatible_hints_from_search_lanes(
+    search_lanes: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    capability_hints = _dedupe_strings(
+        [
+            str(capability)
+            for lane in (search_lanes or [])
+            for capability in (lane.get("capabilities") or [])
+            if str(capability).strip()
+        ]
+    )
+    segment_hints = _dedupe_strings(
+        [
+            str(value)
+            for lane in (search_lanes or [])
+            for value in ((lane.get("customer_tags") or []) + (lane.get("must_include_terms") or []))
+            if str(value).strip()
+        ]
+    )
+    return ([{"name": name} for name in capability_hints], segment_hints)
 
 
 def _default_discovery_query_plan(
@@ -6738,14 +6758,12 @@ def _run_discovery_universe_monolith(job_id: int):
         # Get workspace data
         workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
         profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == job.workspace_id).first()
-        taxonomy = db.query(BrickTaxonomy).filter(BrickTaxonomy.workspace_id == job.workspace_id).first()
-
-        if not workspace or not profile or not taxonomy:
+        if not workspace or not profile:
             job.state = JobState.failed
-            job.error_message = "Missing workspace data"
+            job.error_message = "Missing workspace/profile data"
             job.finished_at = datetime.utcnow()
             db.commit()
-            return {"error": "Missing workspace data"}
+            return {"error": "Missing workspace/profile data"}
         effective_policy = normalize_policy(workspace.decision_policy_json or DEFAULT_EVIDENCE_POLICY)
         discovery_ctx_snapshot = _load_discovery_context(job_id)
         buyer_employee_estimate = _sanitize_employee_estimate(
@@ -6904,20 +6922,21 @@ def _run_discovery_universe_monolith(job_id: int):
                 .all()
             )
             normalized_search_lanes = _normalize_search_lane_payloads(search_lanes)
+            capability_hints, segment_hints = _taxonomy_compatible_hints_from_search_lanes(normalized_search_lanes)
 
             fallback_plan = _default_discovery_query_plan(
-                taxonomy_bricks=taxonomy.bricks or [],
+                taxonomy_bricks=capability_hints,
                 geo_scope=profile.geo_scope or {},
-                vertical_focus=taxonomy.vertical_focus or [],
+                vertical_focus=segment_hints,
                 search_lanes=normalized_search_lanes,
             )
             query_plan = fallback_plan
             try:
                 plan_prompt = _build_discovery_query_plan_prompt(
                     context_pack=profile.context_pack_markdown or "",
-                    taxonomy_bricks=taxonomy.bricks or [],
+                    taxonomy_bricks=capability_hints,
                     geo_scope=profile.geo_scope or {},
-                    vertical_focus=taxonomy.vertical_focus or [],
+                    vertical_focus=segment_hints,
                     comparator_mentions=mention_records[:120],
                     search_lanes=normalized_search_lanes,
                 )
@@ -7087,9 +7106,9 @@ def _run_discovery_universe_monolith(job_id: int):
                     synthesis_prompt = _build_candidate_synthesis_prompt(
                         retrieval_results,
                         context_pack=profile.context_pack_markdown or "",
-                        taxonomy_bricks=taxonomy.bricks or [],
+                        taxonomy_bricks=capability_hints,
                         geo_scope=profile.geo_scope or {},
-                        vertical_focus=taxonomy.vertical_focus or [],
+                        vertical_focus=segment_hints,
                         search_lanes=normalized_search_lanes,
                     )
                     synthesis_response = LLMOrchestrator().run_stage(
@@ -7155,7 +7174,7 @@ def _run_discovery_universe_monolith(job_id: int):
                 profile.reference_vendor_urls or []
             )
             benchmark_seeded_candidates: list[dict[str, Any]] = []
-            if _should_add_wealth_benchmark_seeds(profile, taxonomy, mention_records):
+            if _should_add_wealth_benchmark_seeds(profile, segment_hints, mention_records):
                 benchmark_seeded_candidates = _seed_candidates_from_benchmark_list()
             first_party_hint_urls_by_domain = _build_first_party_hint_url_map(
                 profile=profile,
@@ -7935,7 +7954,6 @@ def _run_discovery_universe_monolith(job_id: int):
                             name=candidate_name,
                             website=candidate.get("website"),
                             hq_country=candidate.get("hq_country", "Unknown"),
-                            tags_vertical=likely_verticals,
                             tags_custom=tags_custom,
                             status=target_vendor_status,
                             why_relevant=trusted_reason_items[:10],
@@ -7950,7 +7968,6 @@ def _run_discovery_universe_monolith(job_id: int):
                     else:
                         merged_reasons = _normalize_reasons((vendor_ref.why_relevant or []) + trusted_reason_items)
                         vendor_ref.why_relevant = merged_reasons[:12]
-                        vendor_ref.tags_vertical = _dedupe_strings((vendor_ref.tags_vertical or []) + likely_verticals)
                         vendor_ref.tags_custom = _dedupe_strings((vendor_ref.tags_custom or []) + tags_custom)
                         if not vendor_ref.hq_country or vendor_ref.hq_country == "Unknown":
                             vendor_ref.hq_country = candidate.get("hq_country", vendor_ref.hq_country)
@@ -8062,7 +8079,7 @@ def _run_discovery_universe_monolith(job_id: int):
                             bootstrap_dossier = {
                                 "modules": _map_capabilities_to_modules(
                                     capabilities=capability_signals,
-                                    taxonomy_bricks=taxonomy.bricks or [],
+                                    taxonomy_bricks=capability_hints,
                                     trusted_urls=trusted_evidence_urls,
                                 ),
                                 "customers": [],
@@ -8732,9 +8749,14 @@ def stage_seed_ingest(self, job_id: int):
             raise RuntimeError("Job not found")
         workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
         profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == job.workspace_id).first()
-        taxonomy = db.query(BrickTaxonomy).filter(BrickTaxonomy.workspace_id == job.workspace_id).first()
-        if not workspace or not profile or not taxonomy:
-            raise RuntimeError("Missing workspace/profile/taxonomy")
+        search_lanes = (
+            db.query(SearchLane)
+            .filter(SearchLane.workspace_id == job.workspace_id)
+            .order_by(SearchLane.lane_type.asc(), SearchLane.id.asc())
+            .all()
+        )
+        if not workspace or not profile:
+            raise RuntimeError("Missing workspace/profile data")
         job.progress = 0.2
         job.progress_message = "Stage 1/5: seed ingest checks complete"
         db.commit()
@@ -8767,7 +8789,7 @@ def stage_seed_ingest(self, job_id: int):
             {
                 "workspace_id": job.workspace_id,
                 "profile_ready": bool(profile),
-                "taxonomy_ready": bool(taxonomy),
+                "search_lanes_ready": bool(search_lanes),
                 "buyer_employee_estimate": buyer_employee_estimate,
                 "pre_rerun_quality_audit_run_id": previous_run_id,
                 "pre_rerun_quality_validation_ready": pre_rerun_quality_validation_ready,
@@ -9156,9 +9178,6 @@ def run_enrich_vendor(job_id: int):
             db.commit()
             return {"error": "Vendor not found"}
         
-        # Get taxonomy
-        taxonomy = db.query(BrickTaxonomy).filter(BrickTaxonomy.workspace_id == job.workspace_id).first()
-        taxonomy_bricks = taxonomy.bricks if taxonomy else []
         workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
         effective_policy = normalize_policy((workspace.decision_policy_json if workspace else None) or DEFAULT_EVIDENCE_POLICY)
         candidate_domain = normalize_domain(vendor.website)
@@ -9175,13 +9194,9 @@ def run_enrich_vendor(job_id: int):
                 dossier_json = gemini.run_enrich_full(
                     vendor_url=vendor.website or "",
                     vendor_name=vendor.name,
-                    taxonomy_bricks=taxonomy_bricks
                 )
             elif job.job_type == JobType.enrich_modules:
-                dossier_json = gemini.run_enrich_modules(
-                    vendor_url=vendor.website or "",
-                    taxonomy_bricks=taxonomy_bricks
-                )
+                dossier_json = gemini.run_enrich_modules(vendor.website or "")
             elif job.job_type == JobType.enrich_customers:
                 dossier_json = gemini.run_enrich_customers(vendor.website or "")
             elif job.job_type == JobType.enrich_hiring:
@@ -9219,6 +9234,72 @@ def run_enrich_vendor(job_id: int):
             vendor.updated_at = datetime.utcnow()
             
             # Create evidence items from dossier
+            canonical_sections = {
+                "workflow": ("workflow", "workflow"),
+                "customer": ("customer", "customer"),
+                "business_model": ("business_model", "business_model"),
+                "ownership": ("ownership", "ownership"),
+                "transaction_feasibility": ("transaction_feasibility", "transaction_feasibility"),
+            }
+            for section_name, (dimension, claim_key) in canonical_sections.items():
+                for entry in dossier_json.get(section_name, []):
+                    if not isinstance(entry, dict):
+                        continue
+                    source_url = entry.get("evidence_url")
+                    excerpt_text = str(entry.get("text") or "").strip()
+                    if not source_url or not excerpt_text or not is_trusted_source_url(source_url):
+                        continue
+                    source_type = _source_type_for_url(source_url, candidate_domain)
+                    source_tier = infer_source_tier(source_url, source_type, candidate_domain)
+                    source_kind = infer_source_kind(source_url, source_type, candidate_domain)
+                    claim_group = claim_group_for_dimension(dimension, claim_key)
+                    ttl_days, valid_through = valid_through_from_claim_group(
+                        claim_group,
+                        policy=effective_policy,
+                    )
+                    evidence = WorkspaceEvidence(
+                        workspace_id=job.workspace_id,
+                        vendor_id=vendor.id,
+                        source_url=source_url,
+                        excerpt_text=excerpt_text[:2000],
+                        content_type="web",
+                        source_tier=source_tier,
+                        source_kind=source_kind,
+                        freshness_ttl_days=ttl_days,
+                        valid_through=valid_through,
+                        asserted_by="run_enrich_vendor",
+                    )
+                    db.add(evidence)
+
+            for metric_name, metric_payload in (dossier_json.get("kpis") or {}).items():
+                if not isinstance(metric_payload, dict):
+                    continue
+                source_url = metric_payload.get("evidence_url")
+                value = str(metric_payload.get("value") or "").strip()
+                if not source_url or not value or not is_trusted_source_url(source_url):
+                    continue
+                source_type = _source_type_for_url(source_url, candidate_domain)
+                source_tier = infer_source_tier(source_url, source_type, candidate_domain)
+                source_kind = infer_source_kind(source_url, source_type, candidate_domain)
+                claim_group = claim_group_for_dimension("financial", metric_name)
+                ttl_days, valid_through = valid_through_from_claim_group(
+                    claim_group,
+                    policy=effective_policy,
+                )
+                evidence = WorkspaceEvidence(
+                    workspace_id=job.workspace_id,
+                    vendor_id=vendor.id,
+                    source_url=source_url,
+                    excerpt_text=f"{metric_name}: {value}",
+                    content_type="web",
+                    source_tier=source_tier,
+                    source_kind=source_kind,
+                    freshness_ttl_days=ttl_days,
+                    valid_through=valid_through,
+                    asserted_by="run_enrich_vendor",
+                )
+                db.add(evidence)
+
             for module in dossier_json.get("modules", []):
                 for url in module.get("evidence_urls", []):
                     if not is_trusted_source_url(url):
@@ -9337,19 +9418,13 @@ def generate_static_report(job_id: int, filters: dict | None = None):
 
         workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
         profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == job.workspace_id).first()
-        taxonomy = db.query(BrickTaxonomy).filter(BrickTaxonomy.workspace_id == job.workspace_id).first()
-        if not workspace or not taxonomy:
+        if not workspace:
             job.state = JobState.failed
-            job.error_message = "Missing workspace or taxonomy for report generation"
+            job.error_message = "Missing workspace for report generation"
             job.finished_at = datetime.utcnow()
             db.commit()
-            return {"error": "Missing workspace or taxonomy"}
+            return {"error": "Missing workspace"}
         effective_policy = normalize_policy(workspace.decision_policy_json or DEFAULT_EVIDENCE_POLICY)
-
-        priority_bricks = set(taxonomy.priority_brick_ids or [])
-        if not priority_bricks:
-            priority_bricks = {b.get("id") for b in (taxonomy.bricks or []) if b.get("id")}
-        adjacency_map = build_adjacency_map(taxonomy.bricks or [])
 
         geo_scope = profile.geo_scope if profile and profile.geo_scope else {}
         include_countries = {
@@ -9362,8 +9437,6 @@ def generate_static_report(job_id: int, filters: dict | None = None):
             for c in geo_scope.get("exclude_countries", [])
             if normalize_country(c)
         }
-        reference_tokens = _extract_reference_tokens(profile)
-        vertical_focus = set(taxonomy.vertical_focus or [])
         include_unknown_size = bool(filters.get("include_unknown_size", False))
         include_outside_sme = bool(filters.get("include_outside_sme", False))
         allowed_countries = include_countries if include_countries else set(DISCOVERY_COUNTRIES)
@@ -9506,21 +9579,6 @@ def generate_static_report(job_id: int, filters: dict | None = None):
             if normalized_country and not geo_match:
                 continue
 
-            vertical_match = bool(set(vendor.tags_vertical or []).intersection(vertical_focus)) if vertical_focus else True
-            geo_vertical_match = geo_match and vertical_match
-            has_geo_vertical_evidence = bool(vendor_evidence)
-
-            lens = compute_lens_scores(
-                vendor_modules=modules,
-                customers=customers,
-                integrations=integrations,
-                priority_bricks=priority_bricks,
-                adjacency_map=adjacency_map,
-                reference_tokens=reference_tokens,
-                geo_vertical_match=geo_vertical_match,
-                has_geo_vertical_evidence=has_geo_vertical_evidence,
-            )
-
             existing_facts = (
                 db.query(VendorFact)
                 .filter(VendorFact.vendor_id == vendor.id)
@@ -9544,6 +9602,28 @@ def generate_static_report(job_id: int, filters: dict | None = None):
             if size_bucket == "unknown" and not include_unknown_size:
                 continue
             bucket_counts[size_bucket] = bucket_counts.get(size_bucket, 0) + 1
+
+            latest_screening = latest_screening_by_vendor.get(vendor.id)
+            fit_score = 0.0
+            if latest_screening and latest_screening.total_score is not None:
+                fit_score = round(max(0.0, min(100.0, float(latest_screening.total_score))), 2)
+            elif latest_screening and latest_screening.decision_classification == "good_target":
+                fit_score = 70.0
+            elif latest_screening and latest_screening.decision_classification == "borderline_watchlist":
+                fit_score = 50.0
+            elif latest_screening and latest_screening.decision_classification == "not_good_target":
+                fit_score = 20.0
+
+            fresh_evidence_count = len([row for row in vendor_evidence if is_fresh(row.valid_through)])
+            evidence_score = round(
+                min(
+                    100.0,
+                    (min(len(vendor_evidence), 12) * 5.0)
+                    + (min(fresh_evidence_count, 12) * 3.0)
+                    + (20.0 if normalized_country in RELIABLE_FILINGS_COUNTRIES else 0.0),
+                ),
+                2,
+            )
 
             if filing_facts:
                 filing_fact_count += len(filing_facts)
@@ -9577,8 +9657,8 @@ def generate_static_report(job_id: int, filters: dict | None = None):
             item_payloads.append(
                 {
                     "vendor_id": vendor.id,
-                    "compete_score": lens["compete_score"],
-                    "complement_score": lens["complement_score"],
+                    "compete_score": fit_score,
+                    "complement_score": evidence_score,
                     "decision_classification": (
                         latest_screening_by_vendor[vendor.id].decision_classification
                         if vendor.id in latest_screening_by_vendor
@@ -9605,7 +9685,8 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                         },
                     },
                     "lens_breakdown_json": {
-                        **lens,
+                        "fit_score": fit_score,
+                        "evidence_score": evidence_score,
                         "size_bucket": size_bucket,
                         "size_estimate": size_estimate,
                         "country": normalized_country,
@@ -9617,6 +9698,8 @@ def generate_static_report(job_id: int, filters: dict | None = None):
                             if normalized_country in RELIABLE_FILINGS_COUNTRIES
                             else "not_available_in_current_reliable_filings_coverage"
                         ),
+                        "evidence_count": len(vendor_evidence),
+                        "fresh_evidence_count": fresh_evidence_count,
                     },
                 }
             )

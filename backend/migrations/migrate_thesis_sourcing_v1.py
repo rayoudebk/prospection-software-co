@@ -7,7 +7,6 @@ Creates:
 
 Backfills missing thesis packs and search lanes for existing workspaces from:
 - company_profiles
-- brick_taxonomies
 """
 import sys
 from pathlib import Path
@@ -19,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
 from app.models.thesis import BuyerThesisPack, SearchLane
-from app.models.workspace import BrickTaxonomy, CompanyProfile, Workspace
+from app.models.workspace import CompanyProfile, Workspace
 from app.services.thesis import bootstrap_thesis_payload, derive_search_lane_payloads
 
 settings = get_settings()
@@ -104,14 +103,11 @@ def backfill_thesis_sourcing(session) -> dict[str, int]:
     for workspace in workspaces:
         counts["workspaces_seen"] += 1
         profile = workspace.company_profile
-        taxonomy = workspace.brick_taxonomy
         if not profile or not isinstance(profile, CompanyProfile):
             counts["workspaces_skipped_missing_profile"] += 1
             continue
-        if taxonomy is not None and not isinstance(taxonomy, BrickTaxonomy):
-            taxonomy = None
 
-        bootstrap_payload = bootstrap_thesis_payload(profile, taxonomy)
+        bootstrap_payload = bootstrap_thesis_payload(profile)
         thesis_pack = workspace.thesis_pack
         if thesis_pack is None:
             thesis_pack = BuyerThesisPack(
@@ -130,7 +126,7 @@ def backfill_thesis_sourcing(session) -> dict[str, int]:
             counts["thesis_packs_updated"] += 1
 
         existing_by_type = {lane.lane_type: lane for lane in (workspace.search_lanes or []) if lane.lane_type}
-        lane_payloads = derive_search_lane_payloads(thesis_pack, profile, taxonomy)
+        lane_payloads = derive_search_lane_payloads(thesis_pack, profile)
         for lane_payload in lane_payloads:
             lane_type = str(lane_payload.get("lane_type") or "").strip().lower()
             if lane_type not in {"core", "adjacent"}:

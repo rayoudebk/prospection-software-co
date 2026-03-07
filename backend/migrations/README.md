@@ -22,41 +22,25 @@ python -m migrations.migrate_canonical_entities
 docker-compose exec backend python -m migrations.migrate_canonical_entities
 ```
 
-## migrate_vertical_focus.py
+## migrate_remove_legacy_taxonomy_v1.py
 
-Migrates `vertical_focus` data from `company_profiles` table to `brick_taxonomies` table.
+Removes the deprecated taxonomy schema after search lanes are in place.
 
 ### What it does:
 
-1. Finds all `company_profiles` with `vertical_focus` data
-2. Finds their corresponding `brick_taxonomies` (via `workspace_id`)
-3. Copies `vertical_focus` from `company_profiles` to `brick_taxonomies`
-4. Merges values if `brick_taxonomy` already has `vertical_focus` data
-5. Optionally removes `vertical_focus` from `company_profiles` (commented out for safety)
+1. Ensures `buyer_thesis_packs` and `search_lanes` exist
+2. Backfills missing thesis/search-lane data for older workspaces
+3. Normalizes `decision_policy_json` to use `search_lanes`
+4. Drops `brick_mappings`
+5. Drops `brick_taxonomies`
+6. Drops `vendors.tags_vertical`
 
 ### How to run:
 
-**From project root:**
 ```bash
 cd backend
-python -m migrations.migrate_vertical_focus
+python -m migrations.migrate_remove_legacy_taxonomy_v1
 ```
-
-**Or with Docker:**
-```bash
-docker-compose exec backend python -m migrations.migrate_vertical_focus
-```
-
-### Safety:
-
-- The script does NOT remove data from `company_profiles` by default
-- It merges existing values if both tables have data
-- It skips workspaces that don't have a `brick_taxonomy`
-- All changes are committed in a transaction (rolls back on error)
-
-### After migration:
-
-Once you've verified the migration worked correctly, you can optionally clean up by uncommenting the cleanup section at the end of the script to remove `vertical_focus` from `company_profiles`.
 
 ## migrate_decision_hygiene_v1.py
 
@@ -198,7 +182,7 @@ Adds the thesis-first sourcing tables and backfills existing workspaces.
 
 1. Creates `buyer_thesis_packs`
 2. Creates `search_lanes`
-3. Backfills missing thesis packs from `company_profiles` and `brick_taxonomies`
+3. Backfills missing thesis packs from `company_profiles`
 4. Backfills missing `core` and `adjacent` search lanes from the generated thesis pack
 5. Preserves existing thesis/search-lane rows if they already contain data
 

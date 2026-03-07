@@ -3,7 +3,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   workspaceApi,
-  BrickItem,
   Job,
   GeoScope,
   ThesisClaim,
@@ -68,7 +67,6 @@ export function useUpdateContextPack(workspaceId: number) {
       reference_vendor_urls?: string[];
       reference_evidence_urls?: string[];
       geo_scope?: GeoScope;
-      vertical_focus?: string[];
     }) => workspaceApi.updateContextPack(workspaceId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["context-pack", workspaceId] });
@@ -139,15 +137,6 @@ export function useApplyThesisAdjustment(workspaceId: number) {
   });
 }
 
-// Bricks
-export function useBricks(workspaceId: number) {
-  return useQuery({
-    queryKey: ["bricks", workspaceId],
-    queryFn: () => workspaceApi.getBricks(workspaceId),
-    enabled: !!workspaceId,
-  });
-}
-
 // Search Lanes
 export function useSearchLanes(workspaceId: number) {
   return useQuery({
@@ -176,28 +165,6 @@ export function useConfirmSearchLanes(workspaceId: number) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
-      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
-    },
-  });
-}
-
-export function useUpdateBricks(workspaceId: number) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: { bricks?: BrickItem[]; priority_brick_ids?: string[]; vertical_focus?: string[] }) =>
-      workspaceApi.updateBricks(workspaceId, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["bricks", workspaceId] });
-    },
-  });
-}
-
-export function useConfirmBricks(workspaceId: number) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () => workspaceApi.confirmBricks(workspaceId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["bricks", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
     },
   });
@@ -238,7 +205,6 @@ export function useCreateVendor(workspaceId: number) {
       name: string;
       website?: string;
       hq_country?: string;
-      tags_vertical?: string[];
     }) => workspaceApi.createVendor(workspaceId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["vendors", workspaceId] });
@@ -259,7 +225,6 @@ export function useUpdateVendor(workspaceId: number) {
         website?: string;
         hq_country?: string;
         operating_countries?: string[];
-        tags_vertical?: string[];
         tags_custom?: string[];
         status?: string;
       };
@@ -288,23 +253,6 @@ export function useVendorDossier(workspaceId: number, vendorId: number) {
     queryKey: ["vendor-dossier", vendorId],
     queryFn: () => workspaceApi.getVendorDossier(workspaceId, vendorId),
     enabled: !!workspaceId && !!vendorId,
-  });
-}
-
-// Lenses
-export function useSimilarityLens(workspaceId: number, brickIds?: string) {
-  return useQuery({
-    queryKey: ["similarity-lens", workspaceId, brickIds],
-    queryFn: () => workspaceApi.getSimilarityLens(workspaceId, brickIds),
-    enabled: !!workspaceId,
-  });
-}
-
-export function useComplementarityLens(workspaceId: number) {
-  return useQuery({
-    queryKey: ["complementarity-lens", workspaceId],
-    queryFn: () => workspaceApi.getComplementarityLens(workspaceId),
-    enabled: !!workspaceId,
   });
 }
 
@@ -345,18 +293,6 @@ export function useReportCards(
   return useQuery({
     queryKey: ["report-cards", workspaceId, reportId, sizeBucket],
     queryFn: () => workspaceApi.listReportCards(workspaceId, reportId!, sizeBucket),
-    enabled: !!workspaceId && !!reportId,
-  });
-}
-
-export function useReportLens(
-  workspaceId: number,
-  reportId: number | null,
-  mode: "compete" | "complement"
-) {
-  return useQuery({
-    queryKey: ["report-lens", workspaceId, reportId, mode],
-    queryFn: () => workspaceApi.getReportLens(workspaceId, reportId!, mode),
     enabled: !!workspaceId && !!reportId,
   });
 }

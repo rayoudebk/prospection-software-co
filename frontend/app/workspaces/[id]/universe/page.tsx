@@ -471,19 +471,6 @@ export default function UniversePage() {
                 <div className="text-xs text-warning mb-2">Entity type: {vendor.entity_type}</div>
               )}
 
-              {vendor.tags_vertical.length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-2">
-                  {vendor.tags_vertical.slice(0, 3).map((tag) => (
-                    <span
-                      key={tag}
-                      className="px-2 py-0.5 text-xs bg-steel-100 text-steel-600"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              )}
-
               {reasonCodeChips(vendor).length > 0 && (
                 <div className="flex flex-wrap gap-1 mb-2">
                   {reasonCodeChips(vendor).map((code) => (

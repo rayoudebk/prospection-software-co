@@ -8,7 +8,7 @@ from datetime import datetime
 import math
 
 from app.models.base import get_db
-from app.models.workspace import Workspace, CompanyProfile, BrickTaxonomy, BrickMapping
+from app.models.workspace import Workspace, CompanyProfile
 from app.models.thesis import BuyerThesisPack, SearchLane
 from app.models.vendor import Vendor, VendorDossier, VendorStatus
 from app.models.job import Job, JobType, JobState, JobProvider
@@ -37,9 +37,7 @@ from app.services.evidence_policy import (
 from app.services.decision_engine import evaluate_decision
 from app.services.reporting import (
     RELIABLE_FILINGS_COUNTRIES,
-    build_adjacency_map,
     classify_size_bucket,
-    compute_lens_scores,
     estimate_size_from_signals,
     extract_customers_and_integrations,
     normalize_domain,
@@ -94,7 +92,7 @@ class WorkspaceResponse(BaseModel):
     created_at: datetime
     vendor_count: int = 0
     has_context_pack: bool = False
-    has_confirmed_taxonomy: bool = False
+    has_confirmed_search_lanes: bool = False
 
     class Config:
         from_attributes = True
@@ -186,31 +184,6 @@ class ThesisAdjustmentResponse(BaseModel):
     applied_operations: List[Dict[str, Any]] = Field(default_factory=list)
 
 
-class BrickItem(BaseModel):
-    id: str
-    name: str
-    description: Optional[str] = None
-
-
-class BrickTaxonomyUpdate(BaseModel):
-    bricks: Optional[List[BrickItem]] = None
-    priority_brick_ids: Optional[List[str]] = None
-    vertical_focus: Optional[List[str]] = None
-
-
-class BrickTaxonomyResponse(BaseModel):
-    id: int
-    workspace_id: int
-    bricks: List[Dict[str, Any]]
-    priority_brick_ids: List[str]
-    vertical_focus: List[str]
-    version: int
-    confirmed: bool
-
-    class Config:
-        from_attributes = True
-
-
 class SearchLaneItem(BaseModel):
     id: Optional[int] = None
     workspace_id: Optional[int] = None
@@ -239,7 +212,6 @@ class VendorCreate(BaseModel):
     name: str
     website: Optional[str] = None
     hq_country: Optional[str] = None
-    tags_vertical: List[str] = Field(default_factory=list)
 
 
 class VendorUpdate(BaseModel):
@@ -247,7 +219,6 @@ class VendorUpdate(BaseModel):
     website: Optional[str] = None
     hq_country: Optional[str] = None
     operating_countries: Optional[List[str]] = None
-    tags_vertical: Optional[List[str]] = None
     tags_custom: Optional[List[str]] = None
     status: Optional[str] = None
 
@@ -262,7 +233,6 @@ class VendorResponse(BaseModel):
     entity_type: Optional[str] = None
     hq_country: Optional[str]
     operating_countries: List[str]
-    tags_vertical: List[str]
     tags_custom: List[str]
     status: str
     why_relevant: List[Dict[str, Any]]
@@ -329,27 +299,11 @@ class JobResponse(BaseModel):
 
 class GatesResponse(BaseModel):
     context_pack: bool
-    brick_model: bool
+    search_lanes: bool
     universe: bool
     segmentation: bool
     enrichment: bool
     missing_items: Dict[str, List[str]]
-
-
-class LensVendor(BaseModel):
-    id: int
-    name: str
-    website: Optional[str]
-    overlapping_bricks: List[str] = Field(default_factory=list)
-    added_bricks: List[str] = Field(default_factory=list)
-    evidence_count: int = 0
-    customer_overlaps: List[str] = Field(default_factory=list)
-    proof_bullets: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class LensResponse(BaseModel):
-    vendors: List[LensVendor]
-    total_count: int
 
 
 class ReportGenerateRequest(BaseModel):
@@ -412,10 +366,13 @@ class ReportCard(BaseModel):
     size_estimate: Optional[int] = None
     size_range_low: Optional[int] = None
     size_range_high: Optional[int] = None
-    compete_score: float
-    complement_score: float
-    brick_mapping: List[ReportClaim] = Field(default_factory=list)
-    customer_partner_evidence: List[ReportClaim] = Field(default_factory=list)
+    fit_score: float
+    evidence_score: float
+    workflow_profile: List[ReportClaim] = Field(default_factory=list)
+    customer_profile: List[ReportClaim] = Field(default_factory=list)
+    business_model_profile: List[ReportClaim] = Field(default_factory=list)
+    ownership_profile: List[ReportClaim] = Field(default_factory=list)
+    transaction_profile: List[ReportClaim] = Field(default_factory=list)
     filing_metrics: Dict[str, SourcedValue] = Field(default_factory=dict)
     source_pills: List[SourcePill] = Field(default_factory=list)
     coverage_note: Optional[str] = None
@@ -487,23 +444,6 @@ class ReportSnapshotResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class ReportLensItem(BaseModel):
-    vendor_id: int
-    name: str
-    website: Optional[str] = None
-    size_bucket: str
-    score: float
-    lens_breakdown: Dict[str, Any] = Field(default_factory=dict)
-    highlights: List[ReportClaim] = Field(default_factory=list)
-
-
-class ReportLensResponse(BaseModel):
-    mode: str
-    items: List[ReportLensItem]
-    total_count: int
-    counts_by_bucket: Dict[str, int] = Field(default_factory=dict)
 
 
 class VendorDecisionResponse(BaseModel):
@@ -929,19 +869,11 @@ async def _get_company_profile(db: AsyncSession, workspace_id: int) -> Optional[
     return result.scalar_one_or_none()
 
 
-async def _get_brick_taxonomy(db: AsyncSession, workspace_id: int) -> Optional[BrickTaxonomy]:
-    result = await db.execute(
-        select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
-    )
-    return result.scalar_one_or_none()
-
-
 async def _ensure_thesis_pack(
     db: AsyncSession,
     workspace_id: int,
     *,
     profile: Optional[CompanyProfile] = None,
-    taxonomy: Optional[BrickTaxonomy] = None,
 ) -> BuyerThesisPack:
     result = await db.execute(
         select(BuyerThesisPack).where(BuyerThesisPack.workspace_id == workspace_id)
@@ -953,8 +885,7 @@ async def _ensure_thesis_pack(
     profile = profile or await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    taxonomy = taxonomy or await _get_brick_taxonomy(db, workspace_id)
-    bootstrap_payload = bootstrap_thesis_payload(profile, taxonomy)
+    bootstrap_payload = bootstrap_thesis_payload(profile)
     thesis_pack = BuyerThesisPack(
         workspace_id=workspace_id,
         summary=bootstrap_payload.get("summary"),
@@ -974,7 +905,6 @@ async def _ensure_search_lanes(
     workspace_id: int,
     *,
     profile: Optional[CompanyProfile] = None,
-    taxonomy: Optional[BrickTaxonomy] = None,
     thesis_pack: Optional[BuyerThesisPack] = None,
 ) -> List[SearchLane]:
     result = await db.execute(
@@ -989,14 +919,12 @@ async def _ensure_search_lanes(
     profile = profile or await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    taxonomy = taxonomy or await _get_brick_taxonomy(db, workspace_id)
     thesis_pack = thesis_pack or await _ensure_thesis_pack(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
     )
-    lane_payloads = derive_search_lane_payloads(thesis_pack, profile, taxonomy)
+    lane_payloads = derive_search_lane_payloads(thesis_pack, profile)
     by_type = {lane.lane_type: lane for lane in existing}
     for payload in lane_payloads:
         lane_type = payload["lane_type"]
@@ -1122,6 +1050,132 @@ def _dedupe_source_pills(pills: List[SourcePill]) -> List[SourcePill]:
         seen.add(key)
         deduped.append(pill)
     return deduped
+
+
+def _collect_bucket_claims(
+    bucket: Any,
+    *,
+    evidence_by_url: Dict[str, WorkspaceEvidence],
+    fallback_confidence: str = "medium",
+) -> List[ReportClaim]:
+    claims: List[ReportClaim] = []
+    if not isinstance(bucket, list):
+        return claims
+    for entry in bucket:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("text") or "").strip()
+        source_url = entry.get("evidence_url")
+        if not text:
+            continue
+        claims.append(
+            _build_claim(
+                text=text,
+                source_url=source_url,
+                evidence_by_url=evidence_by_url,
+                confidence=fallback_confidence,
+            )
+        )
+    return claims
+
+
+def _collect_workflow_profile(
+    dossier_json: Dict[str, Any],
+    *,
+    evidence_by_url: Dict[str, WorkspaceEvidence],
+    fallback_capabilities: List[str],
+    fallback_evidence_urls: List[str],
+) -> List[ReportClaim]:
+    canonical = _collect_bucket_claims(dossier_json.get("workflow"), evidence_by_url=evidence_by_url)
+    if canonical:
+        return canonical
+    claims: List[ReportClaim] = []
+    modules = modules_with_evidence(
+        dossier_json,
+        fallback_capabilities=fallback_capabilities,
+        fallback_evidence_urls=fallback_evidence_urls,
+    )
+    customers, integrations = extract_customers_and_integrations(dossier_json)
+    for module in modules[:6]:
+        claims.append(
+            _build_claim(
+                text=f"Workflow capability: {module['name']}",
+                source_url=(module["evidence_urls"][0] if module.get("has_evidence") else None),
+                evidence_by_url=evidence_by_url,
+                confidence="high" if module.get("has_evidence") else "low",
+            )
+        )
+    for integration in integrations[:4]:
+        claims.append(
+            _build_claim(
+                text=f"Integration surface: {integration['name']}",
+                source_url=integration.get("source_url"),
+                evidence_by_url=evidence_by_url,
+                confidence="high" if integration.get("has_evidence") else "low",
+            )
+        )
+    return claims
+
+
+def _collect_customer_profile(
+    dossier_json: Dict[str, Any],
+    *,
+    evidence_by_url: Dict[str, WorkspaceEvidence],
+    why_relevant: List[Dict[str, Any]],
+) -> List[ReportClaim]:
+    canonical = _collect_bucket_claims(dossier_json.get("customer"), evidence_by_url=evidence_by_url)
+    if canonical:
+        return canonical
+    claims: List[ReportClaim] = []
+    customers, _integrations = extract_customers_and_integrations(dossier_json)
+    for customer in customers[:6]:
+        claims.append(
+            _build_claim(
+                text=f"Customer proof: {customer['name']}",
+                source_url=customer.get("source_url"),
+                evidence_by_url=evidence_by_url,
+                confidence="high" if customer.get("has_evidence") else "low",
+            )
+        )
+    for reason in why_relevant[:4]:
+        if not isinstance(reason, dict):
+            continue
+        text = str(reason.get("text") or "").strip()
+        if not text:
+            continue
+        claims.append(
+            _build_claim(
+                text=f"Discovery rationale: {text}",
+                source_url=reason.get("citation_url"),
+                evidence_by_url=evidence_by_url,
+                confidence="medium",
+            )
+        )
+    return claims
+
+
+def _collect_business_model_profile(
+    dossier_json: Dict[str, Any],
+    *,
+    evidence_by_url: Dict[str, WorkspaceEvidence],
+) -> List[ReportClaim]:
+    canonical = _collect_bucket_claims(dossier_json.get("business_model"), evidence_by_url=evidence_by_url)
+    if canonical:
+        return canonical
+    hiring = (dossier_json or {}).get("hiring") or {}
+    mix_summary = hiring.get("mix_summary") if isinstance(hiring, dict) else {}
+    notes = str((mix_summary or {}).get("notes") or "").strip()
+    if not notes:
+        return []
+    return [
+        _build_claim(
+            text=notes,
+            source_url=None,
+            evidence_by_url=evidence_by_url,
+            confidence="low",
+            rendering="hypothesis",
+        )
+    ]
 
 
 def _is_directory_host_url(url: Optional[str]) -> bool:
@@ -1316,7 +1370,6 @@ async def _vendor_response_from_row(db: AsyncSession, vendor: Vendor) -> VendorR
         entity_type=str(screening_meta.get("entity_type") or "company") if screening else "company",
         hq_country=vendor.hq_country,
         operating_countries=vendor.operating_countries or [],
-        tags_vertical=vendor.tags_vertical or [],
         tags_custom=vendor.tags_custom or [],
         status=vendor.status.value,
         why_relevant=vendor.why_relevant or [],
@@ -1387,14 +1440,7 @@ async def create_workspace(
         geo_scope={"region": data.region_scope, "include_countries": [], "exclude_countries": []}
     )
     db.add(profile)
-    
-    taxonomy = BrickTaxonomy(
-        workspace_id=workspace.id,
-        bricks=[],
-        priority_brick_ids=[]
-    )
-    db.add(taxonomy)
-    
+
     await db.commit()
     await db.refresh(workspace)
     
@@ -1405,7 +1451,7 @@ async def create_workspace(
         created_at=workspace.created_at,
         vendor_count=0,
         has_context_pack=False,
-        has_confirmed_taxonomy=False
+        has_confirmed_search_lanes=False
     )
 
 
@@ -1443,17 +1489,11 @@ async def list_workspaces(db: AsyncSession = Depends(get_db)):
             select(SearchLane).where(SearchLane.workspace_id == ws.id)
         )
         lanes = lanes_result.scalars().all()
-        has_confirmed_taxonomy = bool(
+        has_confirmed_search_lanes = bool(
             lanes
             and {lane.lane_type for lane in lanes} == {"core", "adjacent"}
             and all((lane.status or "draft") == "confirmed" for lane in lanes)
         )
-        if not has_confirmed_taxonomy:
-            taxonomy_result = await db.execute(
-                select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == ws.id)
-            )
-            taxonomy = taxonomy_result.scalar_one_or_none()
-            has_confirmed_taxonomy = taxonomy is not None and taxonomy.confirmed
         
         responses.append(WorkspaceResponse(
             id=ws.id,
@@ -1462,7 +1502,7 @@ async def list_workspaces(db: AsyncSession = Depends(get_db)):
             created_at=ws.created_at,
             vendor_count=vendor_count,
             has_context_pack=has_context_pack,
-            has_confirmed_taxonomy=has_confirmed_taxonomy
+            has_confirmed_search_lanes=has_confirmed_search_lanes
         ))
     
     return responses
@@ -1500,17 +1540,11 @@ async def get_workspace(workspace_id: int, db: AsyncSession = Depends(get_db)):
         select(SearchLane).where(SearchLane.workspace_id == workspace_id)
     )
     lanes = lanes_result.scalars().all()
-    has_confirmed_taxonomy = bool(
+    has_confirmed_search_lanes = bool(
         lanes
         and {lane.lane_type for lane in lanes} == {"core", "adjacent"}
         and all((lane.status or "draft") == "confirmed" for lane in lanes)
     )
-    if not has_confirmed_taxonomy:
-        taxonomy_result = await db.execute(
-            select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
-        )
-        taxonomy = taxonomy_result.scalar_one_or_none()
-        has_confirmed_taxonomy = taxonomy is not None and taxonomy.confirmed
     
     return WorkspaceResponse(
         id=workspace.id,
@@ -1519,7 +1553,7 @@ async def get_workspace(workspace_id: int, db: AsyncSession = Depends(get_db)):
         created_at=workspace.created_at,
         vendor_count=vendor_count,
         has_context_pack=has_context_pack,
-        has_confirmed_taxonomy=has_confirmed_taxonomy
+        has_confirmed_search_lanes=has_confirmed_search_lanes
     )
 
 
@@ -1746,12 +1780,10 @@ async def get_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_db))
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    taxonomy = await _get_brick_taxonomy(db, workspace_id)
     thesis_pack = await _ensure_thesis_pack(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
     )
     await db.commit()
     await db.refresh(thesis_pack)
@@ -1770,12 +1802,10 @@ async def update_thesis_pack(
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    taxonomy = await _get_brick_taxonomy(db, workspace_id)
     thesis_pack = await _ensure_thesis_pack(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
     )
     existing_pills = normalize_source_pills(thesis_pack.source_pills_json or [])
     if data.summary is not None:
@@ -1811,14 +1841,12 @@ async def refresh_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    taxonomy = await _get_brick_taxonomy(db, workspace_id)
     thesis_pack = await _ensure_thesis_pack(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
     )
-    refreshed = bootstrap_thesis_payload(profile, taxonomy)
+    refreshed = bootstrap_thesis_payload(profile)
     thesis_pack.summary = refreshed.get("summary")
     thesis_pack.claims_json = refreshed.get("claims") or []
     thesis_pack.source_pills_json = refreshed.get("source_pills") or []
@@ -1831,14 +1859,13 @@ async def refresh_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
         thesis_pack=thesis_pack,
     )
     for lane in lanes:
         if (lane.status or "draft") != "confirmed":
             lane_payloads = {
                 payload["lane_type"]: payload
-                for payload in derive_search_lane_payloads(thesis_pack, profile, taxonomy)
+                for payload in derive_search_lane_payloads(thesis_pack, profile)
             }
             payload = lane_payloads.get(lane.lane_type)
             if not payload:
@@ -1871,12 +1898,10 @@ async def apply_thesis_adjustment(
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    taxonomy = await _get_brick_taxonomy(db, workspace_id)
     thesis_pack = await _ensure_thesis_pack(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
     )
     operations = request.operations or infer_adjustment_operations_from_message(request.message or "", thesis_pack)
     if not operations:
@@ -1906,12 +1931,11 @@ async def apply_thesis_adjustment(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
         thesis_pack=thesis_pack,
     )
     lane_payloads = {
         payload["lane_type"]: payload
-        for payload in derive_search_lane_payloads(thesis_pack, profile, taxonomy)
+        for payload in derive_search_lane_payloads(thesis_pack, profile)
     }
     for lane in lanes:
         if (lane.status or "draft") == "confirmed":
@@ -1948,18 +1972,15 @@ async def get_search_lanes(workspace_id: int, db: AsyncSession = Depends(get_db)
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    taxonomy = await _get_brick_taxonomy(db, workspace_id)
     thesis_pack = await _ensure_thesis_pack(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
     )
     lanes = await _ensure_search_lanes(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
         thesis_pack=thesis_pack,
     )
     await db.commit()
@@ -1978,18 +1999,15 @@ async def update_search_lanes(
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    taxonomy = await _get_brick_taxonomy(db, workspace_id)
     thesis_pack = await _ensure_thesis_pack(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
     )
     existing_lanes = await _ensure_search_lanes(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
         thesis_pack=thesis_pack,
     )
     by_type = {lane.lane_type: lane for lane in existing_lanes}
@@ -2026,18 +2044,15 @@ async def confirm_search_lanes(workspace_id: int, db: AsyncSession = Depends(get
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    taxonomy = await _get_brick_taxonomy(db, workspace_id)
     thesis_pack = await _ensure_thesis_pack(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
     )
     lanes = await _ensure_search_lanes(
         db,
         workspace_id,
         profile=profile,
-        taxonomy=taxonomy,
         thesis_pack=thesis_pack,
     )
     confirmed_at = datetime.utcnow()
@@ -2052,78 +2067,6 @@ async def confirm_search_lanes(workspace_id: int, db: AsyncSession = Depends(get
     for payload in refreshed_payloads:
         payload["workspace_id"] = workspace_id
     return _search_lanes_response_from_payloads(workspace_id, refreshed_payloads)
-
-
-# ============================================================================
-# Brick Taxonomy
-# ============================================================================
-
-@router.get("/{workspace_id}/bricks", response_model=BrickTaxonomyResponse)
-async def get_bricks(workspace_id: int, db: AsyncSession = Depends(get_db)):
-    """Get the brick taxonomy for a workspace."""
-    result = await db.execute(
-        select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
-    )
-    taxonomy = result.scalar_one_or_none()
-    if not taxonomy:
-        raise HTTPException(status_code=404, detail="Brick taxonomy not found")
-    
-    return BrickTaxonomyResponse(
-        id=taxonomy.id,
-        workspace_id=taxonomy.workspace_id,
-        bricks=taxonomy.bricks or [],
-        priority_brick_ids=taxonomy.priority_brick_ids or [],
-        vertical_focus=taxonomy.vertical_focus or [],
-        version=taxonomy.version,
-        confirmed=taxonomy.confirmed
-    )
-
-
-@router.patch("/{workspace_id}/bricks", response_model=BrickTaxonomyResponse)
-async def update_bricks(
-    workspace_id: int,
-    data: BrickTaxonomyUpdate,
-    db: AsyncSession = Depends(get_db)
-):
-    """Update brick taxonomy (rename, merge, split, set priorities)."""
-    result = await db.execute(
-        select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
-    )
-    taxonomy = result.scalar_one_or_none()
-    if not taxonomy:
-        raise HTTPException(status_code=404, detail="Brick taxonomy not found")
-    
-    if data.bricks is not None:
-        taxonomy.bricks = [b.model_dump() for b in data.bricks]
-        taxonomy.version += 1
-    if data.priority_brick_ids is not None:
-        taxonomy.priority_brick_ids = data.priority_brick_ids
-    if data.vertical_focus is not None:
-        taxonomy.vertical_focus = data.vertical_focus
-    
-    taxonomy.updated_at = datetime.utcnow()
-    await db.commit()
-    await db.refresh(taxonomy)
-    
-    return await get_bricks(workspace_id, db)
-
-
-@router.post("/{workspace_id}/bricks:confirm", response_model=BrickTaxonomyResponse)
-async def confirm_bricks(workspace_id: int, db: AsyncSession = Depends(get_db)):
-    """Confirm brick taxonomy to unlock discovery."""
-    result = await db.execute(
-        select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
-    )
-    taxonomy = result.scalar_one_or_none()
-    if not taxonomy:
-        raise HTTPException(status_code=404, detail="Brick taxonomy not found")
-    
-    taxonomy.confirmed = True
-    taxonomy.updated_at = datetime.utcnow()
-    await db.commit()
-    await db.refresh(taxonomy)
-    
-    return await get_bricks(workspace_id, db)
 
 
 # ============================================================================
@@ -2747,7 +2690,6 @@ async def create_vendor(
         name=data.name,
         website=data.website,
         hq_country=data.hq_country,
-        tags_vertical=data.tags_vertical,
         status=VendorStatus.candidate,
         is_manual=True
     )
@@ -2784,8 +2726,6 @@ async def update_vendor(
         vendor.hq_country = data.hq_country
     if data.operating_countries is not None:
         vendor.operating_countries = data.operating_countries
-    if data.tags_vertical is not None:
-        vendor.tags_vertical = data.tags_vertical
     if data.tags_custom is not None:
         vendor.tags_custom = data.tags_custom
     if data.status is not None:
@@ -2894,290 +2834,6 @@ async def get_vendor_dossier(
         version=dossier.version,
         created_at=dossier.created_at
     )
-
-
-# ============================================================================
-# Lenses
-# ============================================================================
-
-@router.get("/{workspace_id}/lenses/similarity", response_model=LensResponse)
-async def get_similarity_lens(
-    workspace_id: int,
-    brick_ids: Optional[str] = Query(None, description="Comma-separated brick IDs to filter"),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get evidence-backed compete lens using fixed weighted rules."""
-    profile_result = await db.execute(
-        select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
-    )
-    profile = profile_result.scalar_one_or_none()
-
-    reference_tokens: set[str] = set()
-    if profile:
-        if profile.buyer_company_url:
-            domain = _safe_domain(profile.buyer_company_url)
-            if domain:
-                reference_tokens.add(domain)
-                reference_tokens.add(domain.split(".")[0])
-        for url in (profile.reference_vendor_urls or []):
-            domain = _safe_domain(url)
-            if domain:
-                reference_tokens.add(domain)
-                reference_tokens.add(domain.split(".")[0])
-
-    result = await db.execute(
-        select(Vendor).where(
-            Vendor.workspace_id == workspace_id,
-            Vendor.status.in_([VendorStatus.kept, VendorStatus.enriched])
-        )
-    )
-    vendors = result.scalars().all()
-    
-    taxonomy_result = await db.execute(
-        select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
-    )
-    taxonomy = taxonomy_result.scalar_one_or_none()
-    if not taxonomy:
-        return LensResponse(vendors=[], total_count=0)
-
-    priority_bricks = set(taxonomy.priority_brick_ids or [])
-    if not priority_bricks:
-        priority_bricks = {b.get("id") for b in (taxonomy.bricks or []) if b.get("id")}
-
-    selected_bricks = set(brick_ids.split(",")) if brick_ids else priority_bricks
-    adjacency_map = build_adjacency_map(taxonomy.bricks or [])
-    geo_scope = profile.geo_scope if profile and profile.geo_scope else {}
-    include_countries = {normalize_country(c) for c in geo_scope.get("include_countries", []) if normalize_country(c)}
-    exclude_countries = {normalize_country(c) for c in geo_scope.get("exclude_countries", []) if normalize_country(c)}
-    vertical_focus = set(taxonomy.vertical_focus or [])
-    
-    lens_vendors = []
-    for vendor in vendors:
-        dossier_result = await db.execute(
-            select(VendorDossier)
-            .where(VendorDossier.vendor_id == vendor.id)
-            .order_by(VendorDossier.version.desc())
-            .limit(1)
-        )
-        dossier = dossier_result.scalar_one_or_none()
-        evidence_result = await db.execute(
-            select(WorkspaceEvidence).where(WorkspaceEvidence.vendor_id == vendor.id)
-        )
-        evidence_items = evidence_result.scalars().all()
-        evidence_count = len(evidence_items)
-        evidence_by_url = {e.source_url: e for e in evidence_items if e.source_url}
-
-        dossier_json = dossier.dossier_json if dossier else {}
-        fallback_capabilities = [
-            tag.split(":", 1)[1].strip()
-            for tag in (vendor.tags_custom or [])
-            if isinstance(tag, str) and tag.startswith("capability:")
-        ]
-        fallback_evidence_urls = [
-            evidence.source_url
-            for evidence in evidence_items
-            if evidence.source_url and is_trusted_source_url(evidence.source_url)
-        ]
-        modules = modules_with_evidence(
-            dossier_json,
-            fallback_capabilities=fallback_capabilities,
-            fallback_evidence_urls=fallback_evidence_urls,
-        )
-        customers, integrations = extract_customers_and_integrations(dossier_json)
-
-        normalized_country = normalize_country(vendor.hq_country)
-        if include_countries:
-            geo_match = normalized_country in include_countries
-        else:
-            geo_match = True
-        if normalized_country in exclude_countries:
-            geo_match = False
-        vertical_match = bool(set(vendor.tags_vertical or []).intersection(vertical_focus)) if vertical_focus else True
-
-        lens = compute_lens_scores(
-            vendor_modules=modules,
-            customers=customers,
-            integrations=integrations,
-            priority_bricks=selected_bricks,
-            adjacency_map=adjacency_map,
-            reference_tokens=reference_tokens,
-            geo_vertical_match=geo_match and vertical_match,
-            has_geo_vertical_evidence=bool(evidence_items),
-        )
-
-        overlap_brick_ids = lens.get("compete", {}).get("brick_overlap", {}).get("overlap_bricks", [])
-        overlapping_bricks = [m["name"] for m in modules if m.get("brick_id") in overlap_brick_ids]
-
-        proof_bullets = []
-        for module in modules:
-            if not module.get("has_evidence"):
-                continue
-            first_url = module["evidence_urls"][0]
-            proof_bullets.append(
-                {
-                    "text": f"Compete signal: offers {module.get('name', 'capability')}",
-                    "citation_url": first_url,
-                }
-            )
-            if len(proof_bullets) >= 3:
-                break
-        if not proof_bullets and modules:
-            proof_bullets.append(
-                {
-                    "text": "Capability overlap inferred but not fully source-backed yet",
-                    "citation_url": None,
-                }
-            )
-        
-        lens_vendors.append(LensVendor(
-            id=vendor.id,
-            name=vendor.name,
-            website=vendor.website,
-            overlapping_bricks=overlapping_bricks,
-            added_bricks=[],
-            evidence_count=evidence_count,
-            customer_overlaps=[],
-            proof_bullets=proof_bullets
-        ))
-    
-    lens_vendors.sort(key=lambda v: len(v.overlapping_bricks), reverse=True)
-    
-    return LensResponse(vendors=lens_vendors, total_count=len(lens_vendors))
-
-
-@router.get("/{workspace_id}/lenses/complementarity", response_model=LensResponse)
-async def get_complementarity_lens(
-    workspace_id: int,
-    db: AsyncSession = Depends(get_db)
-):
-    """Get evidence-backed complement lens using fixed weighted rules."""
-    profile_result = await db.execute(
-        select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
-    )
-    profile = profile_result.scalar_one_or_none()
-    
-    taxonomy_result = await db.execute(
-        select(BrickTaxonomy).where(BrickTaxonomy.workspace_id == workspace_id)
-    )
-    taxonomy = taxonomy_result.scalar_one_or_none()
-    if not taxonomy:
-        return LensResponse(vendors=[], total_count=0)
-
-    priority_bricks = set(taxonomy.priority_brick_ids or [])
-    if not priority_bricks:
-        priority_bricks = {b.get("id") for b in (taxonomy.bricks or []) if b.get("id")}
-    adjacency_map = build_adjacency_map(taxonomy.bricks or [])
-
-    reference_tokens: set[str] = set()
-    if profile:
-        for url in [profile.buyer_company_url] + (profile.reference_vendor_urls or []):
-            domain = _safe_domain(url)
-            if domain:
-                reference_tokens.add(domain)
-                reference_tokens.add(domain.split(".")[0])
-
-    geo_scope = profile.geo_scope if profile and profile.geo_scope else {}
-    include_countries = {normalize_country(c) for c in geo_scope.get("include_countries", []) if normalize_country(c)}
-    exclude_countries = {normalize_country(c) for c in geo_scope.get("exclude_countries", []) if normalize_country(c)}
-    vertical_focus = set(taxonomy.vertical_focus or [])
-
-    result = await db.execute(
-        select(Vendor).where(
-            Vendor.workspace_id == workspace_id,
-            Vendor.status.in_([VendorStatus.kept, VendorStatus.enriched])
-        )
-    )
-    vendors = result.scalars().all()
-    
-    lens_vendors = []
-    for vendor in vendors:
-        dossier_result = await db.execute(
-            select(VendorDossier)
-            .where(VendorDossier.vendor_id == vendor.id)
-            .order_by(VendorDossier.version.desc())
-            .limit(1)
-        )
-        dossier = dossier_result.scalar_one_or_none()
-        evidence_result = await db.execute(
-            select(WorkspaceEvidence).where(WorkspaceEvidence.vendor_id == vendor.id)
-        )
-        evidence_items = evidence_result.scalars().all()
-        evidence_count = len(evidence_items)
-
-        dossier_json = dossier.dossier_json if dossier else {}
-        fallback_capabilities = [
-            tag.split(":", 1)[1].strip()
-            for tag in (vendor.tags_custom or [])
-            if isinstance(tag, str) and tag.startswith("capability:")
-        ]
-        fallback_evidence_urls = [
-            evidence.source_url
-            for evidence in evidence_items
-            if evidence.source_url and is_trusted_source_url(evidence.source_url)
-        ]
-        modules = modules_with_evidence(
-            dossier_json,
-            fallback_capabilities=fallback_capabilities,
-            fallback_evidence_urls=fallback_evidence_urls,
-        )
-        customers, integrations = extract_customers_and_integrations(dossier_json)
-
-        normalized_country = normalize_country(vendor.hq_country)
-        if include_countries:
-            geo_match = normalized_country in include_countries
-        else:
-            geo_match = True
-        if normalized_country in exclude_countries:
-            geo_match = False
-        vertical_match = bool(set(vendor.tags_vertical or []).intersection(vertical_focus)) if vertical_focus else True
-
-        lens = compute_lens_scores(
-            vendor_modules=modules,
-            customers=customers,
-            integrations=integrations,
-            priority_bricks=priority_bricks,
-            adjacency_map=adjacency_map,
-            reference_tokens=reference_tokens,
-            geo_vertical_match=geo_match and vertical_match,
-            has_geo_vertical_evidence=bool(evidence_items),
-        )
-
-        added_brick_ids = lens.get("complement", {}).get("adjacent_brick_potential", {}).get("adjacent_bricks", [])
-        added_bricks = [m["name"] for m in modules if m.get("brick_id") in added_brick_ids]
-
-        proof_bullets = []
-        for integration in integrations:
-            if integration.get("has_evidence"):
-                proof_bullets.append(
-                    {
-                        "text": f"Integration adjacency: {integration.get('name', 'system')}",
-                        "citation_url": integration.get("source_url"),
-                    }
-                )
-            if len(proof_bullets) >= 3:
-                break
-        if not proof_bullets and integrations:
-            proof_bullets.append(
-                {
-                    "text": "Integration potential inferred but not fully source-backed yet",
-                    "citation_url": None,
-                }
-            )
-        
-        lens_vendors.append(LensVendor(
-            id=vendor.id,
-            name=vendor.name,
-            website=vendor.website,
-            overlapping_bricks=[],
-            added_bricks=added_bricks,
-            evidence_count=evidence_count,
-            customer_overlaps=[],
-            proof_bullets=proof_bullets
-        ))
-    
-    lens_vendors.sort(key=lambda v: len(v.added_bricks), reverse=True)
-    
-    return LensResponse(vendors=lens_vendors, total_count=len(lens_vendors))
 
 
 # ============================================================================
@@ -3364,60 +3020,29 @@ async def list_report_cards(
             if evidence.source_url and is_trusted_source_url(evidence.source_url)
         ]
 
-        modules = modules_with_evidence(
+        workflow_profile = _collect_workflow_profile(
             dossier_json,
+            evidence_by_url=evidence_by_url,
             fallback_capabilities=fallback_capabilities,
             fallback_evidence_urls=fallback_evidence_urls,
         )
-        customers, integrations = extract_customers_and_integrations(dossier_json)
-
-        brick_claims: List[ReportClaim] = []
-        for module in modules:
-            source_url = module["evidence_urls"][0] if module.get("has_evidence") else None
-            claim = _build_claim(
-                text=f"{module['name']} mapped to a strategy brick",
-                source_url=source_url,
-                evidence_by_url=evidence_by_url,
-                confidence="high" if module.get("has_evidence") else "low",
-            )
-            brick_claims.append(claim)
-
-        customer_claims: List[ReportClaim] = []
-        for customer in customers:
-            customer_claims.append(
-                _build_claim(
-                    text=f"Customer evidence: {customer['name']}",
-                    source_url=customer.get("source_url"),
-                    evidence_by_url=evidence_by_url,
-                    confidence="high" if customer.get("has_evidence") else "low",
-                )
-            )
-        for integration in integrations:
-            customer_claims.append(
-                _build_claim(
-                    text=f"Integration evidence: {integration['name']}",
-                    source_url=integration.get("source_url"),
-                    evidence_by_url=evidence_by_url,
-                    confidence="high" if integration.get("has_evidence") else "low",
-                )
-            )
-
-        # Include discovery-time qualification reasons so report cards show auditable inclusion rationale.
-        for reason in (vendor.why_relevant or [])[:6]:
-            if not isinstance(reason, dict):
-                continue
-            reason_copy = str(reason.get("text") or "").strip()
-            source_url = reason.get("citation_url")
-            if not reason_copy:
-                continue
-            customer_claims.append(
-                _build_claim(
-                    text=f"Discovery rationale: {reason_copy}",
-                    source_url=source_url,
-                    evidence_by_url=evidence_by_url,
-                    confidence="medium",
-                )
-            )
+        customer_profile = _collect_customer_profile(
+            dossier_json,
+            evidence_by_url=evidence_by_url,
+            why_relevant=vendor.why_relevant or [],
+        )
+        business_model_profile = _collect_business_model_profile(
+            dossier_json,
+            evidence_by_url=evidence_by_url,
+        )
+        ownership_profile = _collect_bucket_claims(
+            dossier_json.get("ownership"),
+            evidence_by_url=evidence_by_url,
+        )
+        transaction_profile = _collect_bucket_claims(
+            dossier_json.get("transaction_feasibility"),
+            evidence_by_url=evidence_by_url,
+        )
 
         facts_result = await db.execute(
             select(VendorFact).where(VendorFact.vendor_id == vendor.id)
@@ -3470,8 +3095,27 @@ async def list_report_cards(
                 ),
             )
 
+        for metric_name, metric_payload in (dossier_json.get("kpis") or {}).items():
+            if metric_name in filing_metrics or not isinstance(metric_payload, dict):
+                continue
+            source_url = metric_payload.get("evidence_url")
+            value = str(metric_payload.get("value") or "").strip()
+            if not source_url or not value or not is_trusted_source_url(source_url):
+                continue
+            filing_metrics[metric_name] = SourcedValue(
+                value=value,
+                unit=(str(metric_payload.get("unit") or "").strip() or None),
+                period=(str(metric_payload.get("period") or "").strip() or None),
+                confidence=_pick_fact_confidence(metric_payload.get("confidence")),
+                source=SourcePill(
+                    label=source_label_for_url(source_url),
+                    url=source_url,
+                    captured_at=None,
+                ),
+            )
+
         source_pills: List[SourcePill] = []
-        for claim in brick_claims + customer_claims:
+        for claim in workflow_profile + customer_profile + business_model_profile + ownership_profile + transaction_profile:
             if claim.source:
                 source_pills.append(claim.source)
         for metric in filing_metrics.values():
@@ -3527,16 +3171,19 @@ async def list_report_cards(
             size_estimate=estimate,
             size_range_low=size_range_low,
             size_range_high=size_range_high,
-            compete_score=item.compete_score,
-            complement_score=item.complement_score,
-            brick_mapping=brick_claims,
-            customer_partner_evidence=customer_claims,
+            fit_score=item.compete_score,
+            evidence_score=item.complement_score,
+            workflow_profile=workflow_profile,
+            customer_profile=customer_profile,
+            business_model_profile=business_model_profile,
+            ownership_profile=ownership_profile,
+            transaction_profile=transaction_profile,
             filing_metrics=filing_metrics,
             source_pills=_dedupe_source_pills(source_pills),
             coverage_note=_coverage_note_for_country(vendor.hq_country),
             next_validation_questions=[
                 "Can we verify customer concentration from at least two independent sources?",
-                "What implementation risk exists in the top two capabilities?",
+                "What ownership and control signals still need confirmation?",
                 "Do filing and commercial signals agree on company scale?",
             ],
             decision_classification=(
@@ -3552,85 +3199,6 @@ async def list_report_cards(
         cards.append(card)
 
     return cards
-
-
-@router.get("/{workspace_id}/reports/{report_id}/lenses", response_model=ReportLensResponse)
-async def get_report_lens(
-    workspace_id: int,
-    report_id: int,
-    mode: str = Query(..., pattern="^(compete|complement)$"),
-    db: AsyncSession = Depends(get_db),
-):
-    snapshot_result = await db.execute(
-        select(ReportSnapshot).where(
-            ReportSnapshot.id == report_id,
-            ReportSnapshot.workspace_id == workspace_id,
-        )
-    )
-    snapshot = snapshot_result.scalar_one_or_none()
-    if not snapshot:
-        raise HTTPException(status_code=404, detail="Report snapshot not found")
-
-    items_result = await db.execute(
-        select(ReportSnapshotItem).where(ReportSnapshotItem.report_id == report_id)
-    )
-    items = items_result.scalars().all()
-
-    lens_items: List[ReportLensItem] = []
-    counts_by_bucket: Dict[str, int] = {"sme_in_range": 0, "unknown": 0, "outside_sme_range": 0}
-    for item in items:
-        vendor_result = await db.execute(
-            select(Vendor).where(Vendor.id == item.vendor_id, Vendor.workspace_id == workspace_id)
-        )
-        vendor = vendor_result.scalar_one_or_none()
-        if not vendor:
-            continue
-
-        source_result = await db.execute(
-            select(WorkspaceEvidence)
-            .where(WorkspaceEvidence.vendor_id == vendor.id)
-            .order_by(WorkspaceEvidence.captured_at.desc())
-            .limit(1)
-        )
-        sample_source = _source_from_evidence(source_result.scalar_one_or_none())
-
-        bucket = item.lens_breakdown_json.get("size_bucket", "unknown")
-        counts_by_bucket[bucket] = counts_by_bucket.get(bucket, 0) + 1
-        score = item.compete_score if mode == "compete" else item.complement_score
-        component = item.lens_breakdown_json.get(mode, {})
-        highlights: List[ReportClaim] = []
-        for key, details in component.items():
-            value = details.get("value", 0)
-            evidence_count = details.get("evidence_count", 0)
-            rendering = "fact" if evidence_count and sample_source else "hypothesis"
-            highlights.append(
-                ReportClaim(
-                    text=f"{key.replace('_', ' ')}: {value}",
-                    confidence="high" if evidence_count and sample_source else "low",
-                    rendering=rendering,
-                    source=sample_source if rendering == "fact" else None,
-                )
-            )
-
-        lens_items.append(
-            ReportLensItem(
-                vendor_id=vendor.id,
-                name=vendor.name,
-                website=vendor.website,
-                size_bucket=bucket,
-                score=score,
-                lens_breakdown=component,
-                highlights=highlights,
-            )
-        )
-
-    lens_items.sort(key=lambda row: row.score, reverse=True)
-    return ReportLensResponse(
-        mode=mode,
-        items=lens_items,
-        total_count=len(lens_items),
-        counts_by_bucket=counts_by_bucket,
-    )
 
 
 @router.get("/{workspace_id}/reports/{report_id}/export")
@@ -4786,7 +4354,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
 
     missing_items: Dict[str, List[str]] = {
         "context_pack": [],
-        "brick_model": [],
+        "search_lanes": [],
         "universe": [],
         "segmentation": [],
         "enrichment": []
@@ -4794,7 +4362,6 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     
     # Check thesis/context pack
     profile = await _get_company_profile(db, workspace_id)
-    taxonomy = await _get_brick_taxonomy(db, workspace_id)
     context_pack_ready = False
     if profile:
         context_claim_groups_available = set()
@@ -4805,7 +4372,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         thesis_payload = (
             thesis_pack_to_payload(thesis_pack)
             if thesis_pack
-            else bootstrap_thesis_payload(profile, taxonomy)
+            else bootstrap_thesis_payload(profile)
         )
         if not profile.buyer_company_url:
             missing_items["context_pack"].append("Add your company URL")
@@ -4838,8 +4405,8 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     else:
         missing_items["context_pack"].append("Create company profile")
     
-    # Check search lanes with legacy brick-model fallback
-    brick_model_ready = False
+    # Check search lanes
+    search_lanes_ready = False
     lanes_result = await db.execute(
         select(SearchLane).where(SearchLane.workspace_id == workspace_id)
     )
@@ -4850,63 +4417,21 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         core_lane = next((payload for payload in lane_payloads if payload["lane_type"] == "core"), None)
         adjacent_lane = next((payload for payload in lane_payloads if payload["lane_type"] == "adjacent"), None)
         if lane_types != {"core", "adjacent"}:
-            missing_items["brick_model"].append("Need both core and adjacent search lanes")
+            missing_items["search_lanes"].append("Need both core and adjacent search lanes")
         if not core_lane or not (core_lane.get("capabilities") or []):
-            missing_items["brick_model"].append("Add at least 1 core capability to the search lanes")
+            missing_items["search_lanes"].append("Add at least 1 core capability to the search lanes")
         if not adjacent_lane:
-            missing_items["brick_model"].append("Create the adjacent search lane")
+            missing_items["search_lanes"].append("Create the adjacent search lane")
         if any((payload.get("status") or "draft") != "confirmed" for payload in lane_payloads):
-            missing_items["brick_model"].append("Confirm search lanes")
-        brick_model_ready = bool(
+            missing_items["search_lanes"].append("Confirm search lanes")
+        search_lanes_ready = bool(
             lane_types == {"core", "adjacent"}
             and core_lane
             and (core_lane.get("capabilities") or [])
             and all((payload.get("status") or "draft") == "confirmed" for payload in lane_payloads)
         )
-    elif taxonomy:
-        if not taxonomy.confirmed:
-            missing_items["brick_model"].append("Confirm taxonomy")
-        min_priority = int(gate_cfg.get("brick_model", {}).get("min_priority_bricks", 3))
-        if len(taxonomy.priority_brick_ids or []) < min_priority:
-            missing_items["brick_model"].append("Select at least 3 priority bricks")
-        required_mapped = int(gate_cfg.get("brick_model", {}).get("require_evidence_mapped_bricks", 2))
-        mapped_priority = 0
-        if taxonomy.priority_brick_ids:
-            vendors_result = await db.execute(
-                select(Vendor).where(
-                    Vendor.workspace_id == workspace_id,
-                    Vendor.status.in_([VendorStatus.kept, VendorStatus.enriched]),
-                )
-            )
-            vendors = vendors_result.scalars().all()
-            seen_bricks: set[str] = set()
-            for vendor in vendors:
-                dossier_result = await db.execute(
-                    select(VendorDossier)
-                    .where(VendorDossier.vendor_id == vendor.id)
-                    .order_by(VendorDossier.version.desc())
-                    .limit(1)
-                )
-                dossier = dossier_result.scalar_one_or_none()
-                modules = (dossier.dossier_json or {}).get("modules", []) if dossier else []
-                for module in modules:
-                    brick_id = str(module.get("brick_id") or "").strip()
-                    if brick_id and brick_id in set(taxonomy.priority_brick_ids or []):
-                        urls = [url for url in module.get("evidence_urls", []) if is_trusted_source_url(url)]
-                        if urls:
-                            seen_bricks.add(brick_id)
-            mapped_priority = len(seen_bricks)
-        if mapped_priority < required_mapped:
-            missing_items["brick_model"].append(
-                f"Need evidence-backed priority brick mappings ({mapped_priority}/{required_mapped})"
-            )
-        brick_model_ready = (
-            taxonomy.confirmed
-            and len(taxonomy.priority_brick_ids or []) >= min_priority
-            and mapped_priority >= required_mapped
-        )
     else:
-        missing_items["brick_model"].append("Generate search lanes from the thesis pack")
+        missing_items["search_lanes"].append("Generate search lanes from the thesis pack")
     
     # Check universe with evidence-pattern decisions
     screenings_result = await db.execute(
@@ -4999,7 +4524,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     
     return GatesResponse(
         context_pack=context_pack_ready,
-        brick_model=brick_model_ready,
+        search_lanes=search_lanes_ready,
         universe=universe_ready,
         segmentation=segmentation_ready,
         enrichment=enrichment_ready,

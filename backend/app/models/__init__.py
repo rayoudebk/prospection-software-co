@@ -6,7 +6,7 @@ from app.models.evidence import EvidenceItem
 from app.models.feedback import FeedbackEvent
 
 # New workspace-based models
-from app.models.workspace import Workspace, CompanyProfile, BrickTaxonomy, BrickMapping, DEFAULT_BRICKS
+from app.models.workspace import Workspace, CompanyProfile
 from app.models.thesis import BuyerThesisPack, SearchLane
 from app.models.vendor import Vendor, VendorDossier, VendorStatus
 from app.models.job import Job, JobType, JobState, JobProvider
@@ -31,7 +31,7 @@ __all__ = [
     # Legacy models (kept for backwards compat)
     "Base", "Strategy", "Target", "ResearchJob", "EvidenceItem", "FeedbackEvent",
     # New workspace models
-    "Workspace", "CompanyProfile", "BrickTaxonomy", "BrickMapping", "DEFAULT_BRICKS",
+    "Workspace", "CompanyProfile",
     "BuyerThesisPack", "SearchLane",
     "Vendor", "VendorDossier", "VendorStatus",
     "Job", "JobType", "JobState", "JobProvider",

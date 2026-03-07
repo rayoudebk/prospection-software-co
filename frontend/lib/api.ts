@@ -30,7 +30,7 @@ export interface Workspace {
   created_at: string;
   vendor_count: number;
   has_context_pack: boolean;
-  has_confirmed_taxonomy: boolean;
+  has_confirmed_search_lanes: boolean;
 }
 
 export interface GeoScope {
@@ -74,22 +74,6 @@ export interface CitationSummaryV1 {
   version: "v1" | string;
   sentences: CitationSentence[];
   source_pills: CitationSourcePill[];
-}
-
-export interface BrickItem {
-  id: string;
-  name: string;
-  description?: string | null;
-}
-
-export interface BrickTaxonomy {
-  id: number;
-  workspace_id: number;
-  bricks: BrickItem[];
-  priority_brick_ids: string[];
-  vertical_focus: string[];
-  version: number;
-  confirmed: boolean;
 }
 
 export interface ThesisClaim {
@@ -169,7 +153,6 @@ export interface Vendor {
   entity_type?: "company" | "solution" | "service_line" | string | null;
   hq_country: string | null;
   operating_countries: string[];
-  tags_vertical: string[];
   tags_custom: string[];
   status: "candidate" | "kept" | "removed" | "enriched";
   why_relevant: WhyRelevant[];
@@ -249,10 +232,39 @@ export interface VendorDossier {
   id: number;
   vendor_id: number;
   dossier_json: {
+    workflow?: Array<{
+      text: string;
+      evidence_url?: string | null;
+    }>;
+    customer?: Array<{
+      text: string;
+      evidence_url?: string | null;
+    }>;
+    business_model?: Array<{
+      text: string;
+      evidence_url?: string | null;
+    }>;
+    ownership?: Array<{
+      text: string;
+      evidence_url?: string | null;
+    }>;
+    transaction_feasibility?: Array<{
+      text: string;
+      evidence_url?: string | null;
+    }>;
+    kpis?: Record<
+      string,
+      | {
+          value: string;
+          unit?: string | null;
+          period?: string | null;
+          confidence?: string | null;
+          evidence_url?: string | null;
+        }
+      | null
+    >;
     modules?: Array<{
       name: string;
-      brick_id: string;
-      brick_name?: string;
       description?: string;
       evidence_urls: string[];
     }>;
@@ -302,27 +314,11 @@ export interface Job {
 
 export interface Gates {
   context_pack: boolean;
-  brick_model: boolean;
+  search_lanes: boolean;
   universe: boolean;
   segmentation: boolean;
   enrichment: boolean;
   missing_items: Record<string, string[]>;
-}
-
-export interface LensVendor {
-  id: number;
-  name: string;
-  website: string | null;
-  overlapping_bricks: string[];
-  added_bricks: string[];
-  evidence_count: number;
-  customer_overlaps: string[];
-  proof_bullets: Array<{ text: string; citation_url: string | null }>;
-}
-
-export interface LensResponse {
-  vendors: LensVendor[];
-  total_count: number;
 }
 
 export interface SourcePill {
@@ -368,10 +364,13 @@ export interface ReportCard {
   size_estimate: number | null;
   size_range_low?: number | null;
   size_range_high?: number | null;
-  compete_score: number;
-  complement_score: number;
-  brick_mapping: ReportClaim[];
-  customer_partner_evidence: ReportClaim[];
+  fit_score: number;
+  evidence_score: number;
+  workflow_profile: ReportClaim[];
+  customer_profile: ReportClaim[];
+  business_model_profile: ReportClaim[];
+  ownership_profile: ReportClaim[];
+  transaction_profile: ReportClaim[];
   filing_metrics: Record<string, SourcedValue>;
   source_pills?: SourcePill[];
   coverage_note: string | null;
@@ -380,23 +379,6 @@ export interface ReportCard {
   reason_highlights?: string[];
   evidence_quality_summary?: Record<string, unknown>;
   known_unknowns?: string[];
-}
-
-export interface ReportLensItem {
-  vendor_id: number;
-  name: string;
-  website: string | null;
-  size_bucket: string;
-  score: number;
-  lens_breakdown: Record<string, unknown>;
-  highlights: ReportClaim[];
-}
-
-export interface ReportLens {
-  mode: "compete" | "complement" | string;
-  items: ReportLensItem[];
-  total_count: number;
-  counts_by_bucket: Record<string, number>;
 }
 
 export interface ReasonCatalogEntry {
@@ -626,24 +608,6 @@ export const workspaceApi = {
       method: "POST",
     }),
 
-  // Bricks
-  getBricks: (id: number) =>
-    fetchJSON<BrickTaxonomy>(`/workspaces/${id}/bricks`),
-
-  updateBricks: (
-    id: number,
-    data: { bricks?: BrickItem[]; priority_brick_ids?: string[]; vertical_focus?: string[] }
-  ) =>
-    fetchJSON<BrickTaxonomy>(`/workspaces/${id}/bricks`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    }),
-
-  confirmBricks: (id: number) =>
-    fetchJSON<BrickTaxonomy>(`/workspaces/${id}/bricks:confirm`, {
-      method: "POST",
-    }),
-
   // Discovery
   runDiscovery: (id: number) =>
     fetchJSON<Job>(`/workspaces/${id}/discovery:run`, {
@@ -671,7 +635,6 @@ export const workspaceApi = {
       name: string;
       website?: string;
       hq_country?: string;
-      tags_vertical?: string[];
     }
   ) =>
     fetchJSON<Vendor>(`/workspaces/${id}/vendors`, {
@@ -687,7 +650,6 @@ export const workspaceApi = {
       website?: string;
       hq_country?: string;
       operating_countries?: string[];
-      tags_vertical?: string[];
       tags_custom?: string[];
       status?: string;
     }
@@ -711,15 +673,6 @@ export const workspaceApi = {
     fetchJSON<VendorDossier | null>(
       `/workspaces/${workspaceId}/vendors/${vendorId}/dossier`
     ),
-
-  // Lenses
-  getSimilarityLens: (id: number, brickIds?: string) =>
-    fetchJSON<LensResponse>(
-      `/workspaces/${id}/lenses/similarity${brickIds ? `?brick_ids=${brickIds}` : ""}`
-    ),
-
-  getComplementarityLens: (id: number) =>
-    fetchJSON<LensResponse>(`/workspaces/${id}/lenses/complementarity`),
 
   // Static Reports
   generateReport: (
@@ -746,15 +699,6 @@ export const workspaceApi = {
       `/workspaces/${workspaceId}/reports/${reportId}/cards${
         sizeBucket ? `?size_bucket=${sizeBucket}` : ""
       }`
-    ),
-
-  getReportLens: (
-    workspaceId: number,
-    reportId: number,
-    mode: "compete" | "complement"
-  ) =>
-    fetchJSON<ReportLens>(
-      `/workspaces/${workspaceId}/reports/${reportId}/lenses?mode=${mode}`
     ),
 
   exportReport: (workspaceId: number, reportId: number, format: "default" | "rich_json" = "default") =>

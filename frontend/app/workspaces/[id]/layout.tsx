@@ -38,7 +38,7 @@ const navItems = [
     description: "Build and curate the candidate longlist",
     icon: Globe,
     step: 3,
-    gateKey: "brick_model",
+    gateKey: "search_lanes",
   },
   {
     href: "report",
@@ -67,9 +67,9 @@ export default function WorkspaceLayout({
   // Calculate current step and completion
   const currentStepIndex = navItems.findIndex((item) => item.href === currentPath);
   const completedSteps = gates
-    ? [
+      ? [
         gates.context_pack,
-        gates.brick_model,
+        gates.search_lanes,
         gates.universe,
         gates.universe,
       ]

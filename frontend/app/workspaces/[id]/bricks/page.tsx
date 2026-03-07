@@ -187,19 +187,19 @@ export default function SearchLanesPage() {
         <div
           className={clsx(
             "p-4 border",
-            gates.brick_model ? "bg-success/10 border-success" : "bg-warning/10 border-warning"
+            gates.search_lanes ? "bg-success/10 border-success" : "bg-warning/10 border-warning"
           )}
         >
           <div className="flex items-center gap-2">
-            {gates.brick_model ? (
+            {gates.search_lanes ? (
               <CheckCircle className="w-5 h-5 text-success" />
             ) : (
               <AlertCircle className="w-5 h-5 text-warning" />
             )}
-            <span className={gates.brick_model ? "text-success font-medium" : "text-warning font-medium"}>
-              {gates.brick_model
+            <span className={gates.search_lanes ? "text-success font-medium" : "text-warning font-medium"}>
+              {gates.search_lanes
                 ? "Search lanes confirmed — you can proceed to Universe"
-                : gates.missing_items.brick_model?.join(", ") || "Confirm search lanes to continue"}
+                : gates.missing_items.search_lanes?.join(", ") || "Confirm search lanes to continue"}
             </span>
           </div>
         </div>

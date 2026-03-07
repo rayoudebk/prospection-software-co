@@ -8,7 +8,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.models.thesis import BuyerThesisPack, SearchLane
-from app.models.workspace import BrickTaxonomy, CompanyProfile
+from app.models.workspace import CompanyProfile
 from app.services.reporting import normalize_domain
 from app.services.retrieval.url_normalization import normalize_url
 
@@ -393,7 +393,6 @@ def _derive_source_pills_from_profile(profile: CompanyProfile) -> list[dict[str,
 
 def bootstrap_thesis_payload(
     profile: CompanyProfile,
-    taxonomy: Optional[BrickTaxonomy] = None,
 ) -> dict[str, Any]:
     source_pills = _derive_source_pills_from_profile(profile)
     pill_id_by_url = _site_source_pill_ids_by_url(profile, source_pills)
@@ -542,36 +541,6 @@ def bootstrap_thesis_payload(
             source_pill_ids=[],
         )
 
-    if taxonomy:
-        priority_ids = set(taxonomy.priority_brick_ids or [])
-        prioritized = [
-            brick for brick in (taxonomy.bricks or [])
-            if isinstance(brick, dict) and str(brick.get("id") or "").strip() in priority_ids
-        ]
-        if not prioritized:
-            prioritized = [brick for brick in (taxonomy.bricks or []) if isinstance(brick, dict)][:3]
-        for brick in prioritized[:6]:
-            name = str(brick.get("name") or "").strip()
-            if not name:
-                continue
-            _claim_from_value(
-                claims,
-                section="core_capability",
-                value=name,
-                rendering="hypothesis",
-                confidence=0.45,
-                source_pill_ids=[],
-            )
-        for vertical in _normalize_string_list(taxonomy.vertical_focus or [], max_items=4, max_len=60):
-            _claim_from_value(
-                claims,
-                section="include_constraint",
-                value=f"Prioritize vendors serving {vertical}",
-                rendering="hypothesis",
-                confidence=0.48,
-                source_pill_ids=[],
-            )
-
     normalized_claims = normalize_thesis_claims(
         claims,
         available_pill_ids={pill["id"] for pill in source_pills},
@@ -608,7 +577,6 @@ def bootstrap_thesis_payload(
 def derive_search_lane_payloads(
     thesis_pack: BuyerThesisPack | dict[str, Any],
     profile: CompanyProfile,
-    taxonomy: Optional[BrickTaxonomy] = None,
 ) -> list[dict[str, Any]]:
     if isinstance(thesis_pack, BuyerThesisPack):
         claims = thesis_pack.claims_json or []
@@ -628,23 +596,6 @@ def derive_search_lane_payloads(
         value = str(claim.get("value") or "").strip()
         if value and value not in section_values[section]:
             section_values[section].append(value)
-
-    if taxonomy:
-        priority_ids = set(taxonomy.priority_brick_ids or [])
-        fallback_bricks = [
-            str(brick.get("name") or "").strip()
-            for brick in (taxonomy.bricks or [])
-            if isinstance(brick, dict)
-            and (
-                (priority_ids and str(brick.get("id") or "").strip() in priority_ids)
-                or not priority_ids
-            )
-            and str(brick.get("name") or "").strip()
-        ]
-        for value in fallback_bricks[:6]:
-            section_values.setdefault("core_capability", [])
-            if value not in section_values["core_capability"]:
-                section_values["core_capability"].append(value)
 
     include_terms = section_values.get("include_constraint", [])
     exclude_terms = section_values.get("exclude_constraint", [])

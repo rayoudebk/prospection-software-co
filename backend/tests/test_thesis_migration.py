@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from app.models.workspace import BrickTaxonomy, CompanyProfile, Workspace
+from app.models.workspace import CompanyProfile, Workspace
 from app.models.thesis import BuyerThesisPack, SearchLane
 from migrations.migrate_thesis_sourcing_v1 import _ensure_thesis_tables, backfill_thesis_sourcing
 
@@ -10,7 +10,6 @@ def test_thesis_sourcing_migration_creates_tables_and_backfills_workspace():
     engine = create_engine("sqlite:///:memory:")
     Workspace.__table__.create(bind=engine)
     CompanyProfile.__table__.create(bind=engine)
-    BrickTaxonomy.__table__.create(bind=engine)
 
     with engine.begin() as conn:
         _ensure_thesis_tables(conn)
@@ -56,15 +55,6 @@ def test_thesis_sourcing_migration_creates_tables_and_backfills_workspace():
                 },
                 product_pages_found=4,
                 geo_scope={"region": "US", "include_countries": ["US"], "exclude_countries": []},
-            )
-        )
-        session.add(
-            BrickTaxonomy(
-                workspace_id=workspace.id,
-                bricks=[{"id": "brick-1", "name": "Reporting workflow"}],
-                priority_brick_ids=["brick-1"],
-                vertical_focus=["private_equity"],
-                confirmed=False,
             )
         )
         session.commit()

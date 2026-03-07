@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   useReportCards,
-  useReportLens,
   useReports,
   useWorkspaceJobs,
   useWorkspaceJobWithPolling,
@@ -18,6 +17,7 @@ import {
   ExternalLink,
   Filter,
   AlertCircle,
+  BarChart3,
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
 import { JobProgressPanel } from "@/components/JobProgressPanel";
@@ -61,6 +61,31 @@ function SourcePill({ claim }: { claim: ReportClaim }) {
   );
 }
 
+function ProfileSection({
+  title,
+  claims,
+  emptyText,
+}: {
+  title: string;
+  claims: ReportClaim[];
+  emptyText: string;
+}) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">{title}</div>
+      <div className="space-y-2">
+        {claims.slice(0, 5).map((claim, idx) => (
+          <div key={`${title}-${idx}`} className="flex items-start justify-between gap-2 text-sm">
+            <span className="text-steel-700">{claim.text}</span>
+            <SourcePill claim={claim} />
+          </div>
+        ))}
+        {claims.length === 0 && <div className="text-sm text-steel-500">{emptyText}</div>}
+      </div>
+    </div>
+  );
+}
+
 function CardSection({ card }: { card: ReportCard }) {
   return (
     <div className="bg-steel-50 border border-steel-200 p-5 space-y-4">
@@ -90,6 +115,17 @@ function CardSection({ card }: { card: ReportCard }) {
         <span className={clsx("badge", reportClassificationClass(card.decision_classification))}>
           {REPORT_CLASSIFICATION_LABELS[card.decision_classification || "insufficient_evidence"] || "Insufficient evidence"}
         </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 border border-steel-200 bg-white p-3">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-steel-500 mb-1">Fit Score</div>
+          <div className="text-xl font-semibold text-oxford">{Math.round(card.fit_score)}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-steel-500 mb-1">Evidence Score</div>
+          <div className="text-xl font-semibold text-oxford">{Math.round(card.evidence_score)}</div>
+        </div>
       </div>
 
       {card.reason_highlights && card.reason_highlights.length > 0 && (
@@ -138,35 +174,31 @@ function CardSection({ card }: { card: ReportCard }) {
         </div>
       )}
 
-      <div>
-        <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Capability Match</div>
-        <div className="space-y-2">
-          {card.brick_mapping.slice(0, 5).map((claim, idx) => (
-            <div key={idx} className="flex items-start justify-between gap-2 text-sm">
-              <span className="text-steel-700">{claim.text}</span>
-              <SourcePill claim={claim} />
-            </div>
-          ))}
-          {card.brick_mapping.length === 0 && (
-            <div className="text-sm text-steel-500">No capability evidence available in this snapshot.</div>
-          )}
-        </div>
-      </div>
-
-      <div>
-        <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Customer / Partner Evidence</div>
-        <div className="space-y-2">
-          {card.customer_partner_evidence.slice(0, 5).map((claim, idx) => (
-            <div key={idx} className="flex items-start justify-between gap-2 text-sm">
-              <span className="text-steel-700">{claim.text}</span>
-              <SourcePill claim={claim} />
-            </div>
-          ))}
-          {card.customer_partner_evidence.length === 0 && (
-            <div className="text-sm text-steel-500">No customer/partner evidence available in this snapshot.</div>
-          )}
-        </div>
-      </div>
+      <ProfileSection
+        title="Workflow / Capability"
+        claims={card.workflow_profile}
+        emptyText="No workflow evidence available in this snapshot."
+      />
+      <ProfileSection
+        title="Buyer / Customer"
+        claims={card.customer_profile}
+        emptyText="No buyer-side evidence available in this snapshot."
+      />
+      <ProfileSection
+        title="Business Model"
+        claims={card.business_model_profile}
+        emptyText="No business-model evidence available in this snapshot."
+      />
+      <ProfileSection
+        title="Ownership / Control"
+        claims={card.ownership_profile}
+        emptyText="No ownership evidence available in this snapshot."
+      />
+      <ProfileSection
+        title="Transaction Feasibility"
+        claims={card.transaction_profile}
+        emptyText="No actionability evidence available in this snapshot."
+      />
 
       <div>
         <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Filing Metrics</div>
@@ -236,7 +268,6 @@ export default function ReportPage() {
 
   const [reportName, setReportName] = useState("");
   const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
-  const [mode, setMode] = useState<"compete" | "complement">("compete");
   const [sizeFilter, setSizeFilter] = useState<"all" | "sme_in_range" | "unknown" | "outside_sme_range">("all");
   const [exporting, setExporting] = useState(false);
 
@@ -265,17 +296,12 @@ export default function ReportPage() {
     selectedReportId,
     bucketParam
   );
-  const { data: lens, isLoading: lensLoading } = useReportLens(workspaceId, selectedReportId, mode);
   const latestCompletedReportJob = reportJobs?.find((job) => job.state === "completed") ?? null;
 
   const sortedCards = useMemo(() => {
     if (!cards) return [];
-    return [...cards].sort((a, b) => {
-      const aScore = mode === "compete" ? a.compete_score : a.complement_score;
-      const bScore = mode === "compete" ? b.compete_score : b.complement_score;
-      return bScore - aScore;
-    });
-  }, [cards, mode]);
+    return [...cards].sort((a, b) => b.fit_score - a.fit_score || b.evidence_score - a.evidence_score);
+  }, [cards]);
 
   const handleExport = async () => {
     if (!selectedReportId) return;
@@ -302,7 +328,7 @@ export default function ReportPage() {
         icon={FileSpreadsheet}
         step={4}
         title="Cards"
-        subtitle="Generate exportable candidate cards and adjacency summaries with source pills, validation questions, and snapshot-level evidence context."
+        subtitle="Generate exportable candidate cards with the canonical company buckets, KPI evidence, validation questions, and snapshot-level source traceability."
       />
 
       {!reportRunner.isRunning && <JobRunSummary job={latestCompletedReportJob} />}
@@ -396,27 +422,10 @@ export default function ReportPage() {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex gap-1 bg-steel-50 border border-steel-200 p-1">
-          <button
-            onClick={() => setMode("compete")}
-            className={clsx(
-              "px-3 py-1.5 text-sm font-medium",
-              mode === "compete" ? "bg-oxford text-white" : "text-steel-600 hover:bg-steel-100"
-            )}
-          >
-            Compete
-          </button>
-          <button
-            onClick={() => setMode("complement")}
-            className={clsx(
-              "px-3 py-1.5 text-sm font-medium",
-              mode === "complement" ? "bg-success text-white" : "text-steel-600 hover:bg-steel-100"
-            )}
-          >
-            Complement
-          </button>
+        <div className="flex items-center gap-2 text-sm text-steel-600">
+          <BarChart3 className="w-4 h-4" />
+          Cards are ranked by fit score, then evidence score.
         </div>
-
         <div className="flex items-center gap-2">
           <Filter className="w-4 h-4 text-steel-500" />
           <select
@@ -432,7 +441,7 @@ export default function ReportPage() {
         </div>
       </div>
 
-      {reportsLoading || cardsLoading || lensLoading ? (
+      {reportsLoading || cardsLoading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-oxford" />
         </div>
@@ -442,18 +451,6 @@ export default function ReportPage() {
         </div>
       ) : (
         <>
-          {lens && (
-            <div className="bg-steel-50 border border-steel-200 p-4 text-sm text-steel-700">
-              <div className="font-medium text-oxford mb-2">Adjacency Summary ({mode})</div>
-              <div className="flex flex-wrap gap-4">
-                <span>Total companies: {lens.total_count}</span>
-                <span>SME in range: {lens.counts_by_bucket?.sme_in_range ?? 0}</span>
-                <span>Unknown size: {lens.counts_by_bucket?.unknown ?? 0}</span>
-                <span>Outside range: {lens.counts_by_bucket?.outside_sme_range ?? 0}</span>
-              </div>
-            </div>
-          )}
-
           {sortedCards.length === 0 ? (
             <div className="text-center py-12 bg-steel-50 border border-steel-200">
               <AlertCircle className="w-10 h-10 text-steel-400 mx-auto mb-3" />

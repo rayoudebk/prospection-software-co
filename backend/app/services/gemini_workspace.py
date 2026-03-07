@@ -295,25 +295,16 @@ Malformed payload:
             print(f"Gemini API error in discovery: {e}")
             raise
     
-    def run_enrich_modules(self, vendor_url: str, taxonomy_bricks: List[Dict[str, str]]) -> Dict[str, Any]:
+    def run_enrich_modules(self, vendor_url: str) -> Dict[str, Any]:
         """
-        Enrich vendor with module/capability mapping to bricks.
-        
-        Returns strict JSON with modules mapped to bricks.
+        Enrich vendor with evidence-backed workflow capabilities.
         """
-        brick_names = [b.get("name", "") for b in taxonomy_bricks]
-        brick_list = "\n".join([f"- {b.get('id', '')}: {b.get('name', '')}" for b in taxonomy_bricks])
-        
         prompt = f"""Research the company at {vendor_url} and identify their software products/modules.
-
-## BRICK TAXONOMY
-Map each product/module to one of these bricks:
-{brick_list}
 
 ## TASK
 1. Search for {vendor_url} products, solutions, platform, modules
 2. Identify their distinct software capabilities
-3. Map each to a brick from the taxonomy
+3. Keep the capability names generic and factual
 4. Include evidence URLs for each claim
 
 ## OUTPUT FORMAT
@@ -323,8 +314,6 @@ Return ONLY valid JSON:
   "modules": [
     {{
       "name": "Product/Module Name",
-      "brick_id": "brick-uuid-here",
-      "brick_name": "PMS",
       "description": "What this module does",
       "evidence_urls": ["https://vendor-url.com/products/module"]
     }}
@@ -489,35 +478,80 @@ Return ONLY the JSON object."""
         self,
         vendor_url: str,
         vendor_name: str,
-        taxonomy_bricks: List[Dict[str, str]]
     ) -> Dict[str, Any]:
         """
         Full enrichment in a single call.
         
         Returns complete dossier JSON.
         """
-        brick_list = "\n".join([f"- {b.get('id', '')}: {b.get('name', '')}" for b in taxonomy_bricks])
-        
         prompt = f"""Research the company "{vendor_name}" at {vendor_url} thoroughly.
 
-## BRICK TAXONOMY
-{brick_list}
-
 ## TASKS
-1. **Modules**: Find their products/modules and map to bricks
-2. **Customers**: Find named customers from case studies, logos, press
-3. **Hiring**: Find job postings and team composition signals
-4. **Integrations**: Find technology integrations and partnerships
+1. **Workflow**: Find the workflows, capabilities, modules, and integrations the company owns
+2. **Customer**: Find who buys it, the end-markets served, and named customer proof
+3. **Business Model**: Find signals for SaaS vs services, deployment model, pricing model, and implementation burden
+4. **Ownership**: Find public signals about founder ownership, investors, sponsor backing, parent company, or control
+5. **Transaction Feasibility**: Find public signals that affect actionability as an acquisition target
+6. **KPIs**: Find public KPI facts for revenue, net income, employee count, debt, retained earnings, and book value
+7. **Supporting Evidence Arrays**: Preserve modules, customers, hiring, and integrations as explicit evidence collections
 
 ## OUTPUT FORMAT
 Return ONLY valid JSON:
 ```json
 {{
+  "workflow": [
+    {{
+      "text": "Portfolio accounting and reporting workflows for private banks",
+      "evidence_url": "https://..."
+    }}
+  ],
+  "customer": [
+    {{
+      "text": "Serves private banks and asset managers with named proof from Customer X",
+      "evidence_url": "https://..."
+    }}
+  ],
+  "business_model": [
+    {{
+      "text": "Recurring SaaS platform with implementation-heavy onboarding",
+      "evidence_url": "https://..."
+    }}
+  ],
+  "ownership": [
+    {{
+      "text": "Founder-led business with no public sponsor ownership signal found",
+      "evidence_url": "https://..."
+    }}
+  ],
+  "transaction_feasibility": [
+    {{
+      "text": "Likely bilateral founder-owned target with no recent financing signal",
+      "evidence_url": "https://..."
+    }}
+  ],
+  "kpis": {{
+    "revenue": {{
+      "value": "12.4",
+      "unit": "EURm",
+      "period": "2024",
+      "confidence": "high",
+      "evidence_url": "https://..."
+    }},
+    "net_income": null,
+    "employee_count": {{
+      "value": "65",
+      "unit": "employees",
+      "period": "2024",
+      "confidence": "medium",
+      "evidence_url": "https://..."
+    }},
+    "debt": null,
+    "retained_earnings": null,
+    "book_value": null
+  }},
   "modules": [
     {{
       "name": "Module Name",
-      "brick_id": "uuid",
-      "brick_name": "PMS",
       "description": "What it does",
       "evidence_urls": ["https://..."]
     }}
@@ -554,7 +588,7 @@ Return ONLY valid JSON:
 }}
 ```
 
-CRITICAL: Return ONLY the JSON object, no other text. Every claim needs evidence_url."""
+CRITICAL: Return ONLY the JSON object, no other text. Every non-null claim needs evidence_url. If a KPI is not public, set it to null."""
 
         try:
             google_search_tool = types.Tool(google_search=types.GoogleSearch())
@@ -574,6 +608,12 @@ CRITICAL: Return ONLY the JSON object, no other text. Every claim needs evidence
             
             if start_idx == -1 or end_idx == 0:
                 return {
+                    "workflow": [],
+                    "customer": [],
+                    "business_model": [],
+                    "ownership": [],
+                    "transaction_feasibility": [],
+                    "kpis": {},
                     "modules": [],
                     "customers": [],
                     "hiring": {"postings": [], "mix_summary": {}},
@@ -583,6 +623,18 @@ CRITICAL: Return ONLY the JSON object, no other text. Every claim needs evidence
             result = json.loads(response_text[start_idx:end_idx])
             
             # Ensure all keys exist
+            if "workflow" not in result:
+                result["workflow"] = []
+            if "customer" not in result:
+                result["customer"] = []
+            if "business_model" not in result:
+                result["business_model"] = []
+            if "ownership" not in result:
+                result["ownership"] = []
+            if "transaction_feasibility" not in result:
+                result["transaction_feasibility"] = []
+            if "kpis" not in result:
+                result["kpis"] = {}
             if "modules" not in result:
                 result["modules"] = []
             if "customers" not in result:
@@ -596,6 +648,12 @@ CRITICAL: Return ONLY the JSON object, no other text. Every claim needs evidence
             
         except json.JSONDecodeError:
             return {
+                "workflow": [],
+                "customer": [],
+                "business_model": [],
+                "ownership": [],
+                "transaction_feasibility": [],
+                "kpis": {},
                 "modules": [],
                 "customers": [],
                 "hiring": {"postings": [], "mix_summary": {}},

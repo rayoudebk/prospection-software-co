@@ -197,4 +197,4 @@ def test_search_lanes_contract_supports_patch_and_confirm(tmp_path: Path):
     assert gates_response.status_code == 200
     gates_payload = gates_response.json()
     assert gates_payload["context_pack"] is True
-    assert gates_payload["brick_model"] is True
+    assert gates_payload["search_lanes"] is True
