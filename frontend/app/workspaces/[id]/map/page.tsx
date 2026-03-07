@@ -43,7 +43,7 @@ function VendorDossierPanel({
         onClick={() => setExpanded(true)}
         className="w-full text-left text-sm text-oxford hover:underline font-medium"
       >
-        View dossier
+        View company dossier
       </button>
     );
   }
@@ -59,7 +59,7 @@ function VendorDossierPanel({
   if (!dossier) {
     return (
       <div className="py-4 text-sm text-steel-500 text-center">
-        No dossier yet. Enrich this vendor to generate.
+        No dossier yet. Enrich this company to generate one.
       </div>
     );
   }
@@ -74,19 +74,19 @@ function VendorDossierPanel({
         Collapse
       </button>
 
-      {/* Modules */}
+      {/* Capability modules */}
       {dossier.dossier_json.modules && dossier.dossier_json.modules.length > 0 && (
         <div>
           <h4 className="text-sm font-medium text-oxford mb-2 flex items-center gap-1">
             <Grid3X3 className="w-4 h-4" />
-            Modules ({dossier.dossier_json.modules.length})
+            Capability Modules ({dossier.dossier_json.modules.length})
           </h4>
           <div className="space-y-2">
             {dossier.dossier_json.modules.map((module, i) => (
               <div key={i} className="text-sm p-2 bg-steel-50 border border-steel-200">
                 <div className="font-medium text-oxford">{module.name}</div>
                 {module.brick_name && (
-                  <div className="text-xs text-info">→ {module.brick_name}</div>
+                  <div className="text-xs text-info">Matches capability: {module.brick_name}</div>
                 )}
                 {module.description && (
                   <div className="text-xs text-steel-500 mt-1">{module.description}</div>
@@ -260,7 +260,7 @@ export default function MapPage() {
         icon={Grid3X3}
         step={4}
         title="Map & Enrich"
-        subtitle="Filter your kept vendors by geography and vertical, then enrich them to build detailed dossiers with modules, customers, integrations, and hiring signals — all backed by evidence."
+        subtitle="Filter your kept companies by geography and vertical, then enrich them to build detailed dossiers with capability modules, customers, integrations, and hiring signals."
       />
 
       {/* Status Banner */}
@@ -281,8 +281,8 @@ export default function MapPage() {
             )}
             <span className={gates.enrichment ? "text-success font-medium" : "text-warning font-medium"}>
               {gates.enrichment
-                ? `${enrichedCount} vendors enriched — you can view Lenses`
-                : gates.missing_items.enrichment?.join(", ") || "Enrich at least 5 vendors to unlock Lenses"}
+                ? `${enrichedCount} companies enriched — you can view Lenses`
+                : gates.missing_items.enrichment?.join(", ") || "Enrich at least 5 companies to unlock Lenses"}
             </span>
           </div>
         </div>
@@ -291,9 +291,9 @@ export default function MapPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-oxford">Market Map</h2>
+          <h2 className="text-xl font-semibold text-oxford">Company Dossiers</h2>
           <p className="text-steel-500">
-            {keptVendors.length} kept vendors • {enrichedCount} enriched
+            {keptVendors.length} kept companies • {enrichedCount} enriched
           </p>
         </div>
         <div className="flex gap-3">
@@ -316,7 +316,7 @@ export default function MapPage() {
             ) : (
               <>
                 <Zap className="w-4 h-4" />
-                Enrich Selected ({selectedVendorIds.size})
+                Enrich Selected Companies ({selectedVendorIds.size})
               </>
             )}
           </button>
@@ -357,12 +357,12 @@ export default function MapPage() {
         </div>
       </div>
 
-      {/* Vendor Table */}
+      {/* Company table */}
       {filteredVendors.length === 0 ? (
         <div className="text-center py-16 bg-steel-50 border border-steel-200">
           <Grid3X3 className="w-12 h-12 text-steel-300 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-oxford mb-2">No vendors to display</h3>
-          <p className="text-steel-500">Keep vendors in Universe to see them here</p>
+          <h3 className="text-lg font-medium text-oxford mb-2">No companies to display</h3>
+          <p className="text-steel-500">Keep companies in Universe to see them here</p>
         </div>
       ) : (
         <div className="space-y-4">

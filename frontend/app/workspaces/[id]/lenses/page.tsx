@@ -30,7 +30,7 @@ function VendorLensCard({
 }) {
   const [showProof, setShowProof] = useState(false);
 
-  const bricks = mode === "similarity" ? vendor.overlapping_bricks : vendor.added_bricks;
+  const capabilities = mode === "similarity" ? vendor.overlapping_bricks : vendor.added_bricks;
 
   return (
     <div className="bg-steel-50 border border-steel-200 p-5">
@@ -52,24 +52,24 @@ function VendorLensCard({
         <div className="text-sm text-steel-500">{vendor.evidence_count} citations</div>
       </div>
 
-      {/* Bricks */}
-      {bricks.length > 0 && (
+      {/* Capability overlap */}
+      {capabilities.length > 0 && (
         <div className="mb-4">
           <div className="text-xs text-steel-500 mb-2 flex items-center gap-1">
             {mode === "similarity" ? (
               <>
                 <Layers className="w-3 h-3" />
-                Overlapping Bricks
+                Overlapping Capabilities
               </>
             ) : (
               <>
                 <Plus className="w-3 h-3" />
-                Adds Bricks
+                Adds Capabilities
               </>
             )}
           </div>
           <div className="flex flex-wrap gap-1">
-            {bricks.map((brick, i) => (
+            {capabilities.map((capability, i) => (
               <span
                 key={i}
                 className={clsx(
@@ -79,7 +79,7 @@ function VendorLensCard({
                     : "bg-success/10 text-success"
                 )}
               >
-                {brick}
+                {capability}
               </span>
             ))}
           </div>
@@ -173,7 +173,7 @@ export default function LensesPage() {
         <AlertCircle className="w-12 h-12 text-warning mx-auto mb-4" />
         <h3 className="text-lg font-medium text-oxford mb-2">Lenses Locked</h3>
         <p className="text-steel-500">
-          Enrich at least 5 vendors in Map & Enrich to unlock Lenses
+          Enrich at least 5 companies in Map & Enrich to unlock Lenses
         </p>
       </div>
     );
@@ -185,7 +185,7 @@ export default function LensesPage() {
         icon={Eye}
         step={5}
         title="Lenses"
-        subtitle="View your enriched vendors through two strategic lenses: Similarity (bolt-on acquisitions in areas you already operate) and Complementarity (expansion into new capabilities). All insights are evidence-backed."
+        subtitle="View your enriched companies through two strategic lenses: Similarity highlights close adjacency around your current capabilities. Complementarity highlights capability expansion paths."
       />
 
       {/* Tab Toggle */}
@@ -225,16 +225,16 @@ export default function LensesPage() {
       >
         <p className={activeTab === "similarity" ? "text-info font-medium" : "text-success font-medium"}>
           {activeTab === "similarity"
-            ? "Vendors with overlapping capabilities on your priority bricks. Good for bolt-on acquisitions in areas you already operate."
-            : "Vendors adding capabilities you don't have. Good for expanding into new areas."}
+            ? "Companies with overlapping capabilities on your priority lane. Useful for close adjacency and bolt-on sourcing."
+            : "Companies adding capabilities you do not currently cover. Useful for expansion sourcing."}
         </p>
       </div>
 
-      {/* Brick Filter (Similarity only) */}
+      {/* Capability filter (similarity only) */}
       {activeTab === "similarity" && priorityBricks && priorityBricks.length > 0 && (
         <div>
           <label className="label">
-            Filter by Priority Bricks
+            Filter by Priority Capabilities
           </label>
           <div className="flex flex-wrap gap-2">
             <button
@@ -246,7 +246,7 @@ export default function LensesPage() {
                   : "bg-steel-50 border-steel-300 text-steel-600 hover:border-oxford"
               )}
             >
-              All Priority Bricks
+              All Priority Capabilities
             </button>
             {priorityBricks.map((brick) => (
               <button
@@ -274,8 +274,8 @@ export default function LensesPage() {
       ) : data && data.vendors.length > 0 ? (
         <div>
           <p className="text-sm text-steel-500 mb-4">
-            {data.total_count} vendors
-            {activeTab === "similarity" ? " with overlapping bricks" : " adding new capabilities"}
+            {data.total_count} companies
+            {activeTab === "similarity" ? " with overlapping capabilities" : " adding new capabilities"}
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {data.vendors.map((vendor) => (
@@ -293,8 +293,8 @@ export default function LensesPage() {
           <h3 className="text-lg font-medium text-oxford mb-2">No Results</h3>
           <p className="text-steel-500">
             {activeTab === "similarity"
-              ? "No vendors found with overlapping bricks. Try different filters."
-              : "No vendors found that add new capabilities."}
+              ? "No companies found with overlapping capabilities. Try different filters."
+              : "No companies found that add new capabilities."}
           </p>
         </div>
       )}

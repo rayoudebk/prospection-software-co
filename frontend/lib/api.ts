@@ -491,10 +491,12 @@ export interface EvaluationReplayResult {
 
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   const fullUrl = `${API_BASE}${url}`;
+  const method = options?.method?.toUpperCase() || "GET";
   
   try {
     const res = await fetch(fullUrl, {
       ...options,
+      cache: method === "GET" ? "no-store" : options?.cache,
       headers: {
         "Content-Type": "application/json",
         ...options?.headers,
@@ -863,4 +865,9 @@ export const workspaceApi = {
 
   getJob: (workspaceId: number, jobId: number) =>
     fetchJSON<Job>(`/workspaces/${workspaceId}/jobs/${jobId}`),
+
+  cancelJob: (workspaceId: number, jobId: number) =>
+    fetchJSON<Job>(`/workspaces/${workspaceId}/jobs/${jobId}:cancel`, {
+      method: "POST",
+    }),
 };

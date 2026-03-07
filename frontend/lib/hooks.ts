@@ -524,10 +524,12 @@ export function useWorkspaceJob(workspaceId: number, jobId: number | null) {
 export function useWorkspaceJobWithPolling(
   workspaceId: number,
   runMutation: () => Promise<Job>,
-  onComplete?: () => void
+  onComplete?: () => void,
+  cancelMutation?: (jobId: number) => Promise<Job>
 ) {
   const [jobId, setJobId] = useState<number | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const queryClient = useQueryClient();
 
   const jobQuery = useWorkspaceJob(workspaceId, jobId);
@@ -557,9 +559,32 @@ export function useWorkspaceJobWithPolling(
     }
   };
 
+  const stop = async () => {
+    if (!jobId || !cancelMutation) return;
+    setIsStopping(true);
+    try {
+      await cancelMutation(jobId);
+      await jobQuery.refetch();
+    } finally {
+      setIsStopping(false);
+      setIsRunning(false);
+      queryClient.invalidateQueries({ queryKey: ["workspace-jobs", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["workspace-job", jobId] });
+    }
+  };
+
   return {
     run,
+    stop,
     isRunning,
+    isStopping,
+    canStop:
+      !!cancelMutation &&
+      !!jobId &&
+      (jobQuery.data?.state === "queued" ||
+        jobQuery.data?.state === "running" ||
+        jobQuery.data?.state === "polling" ||
+        isRunning),
     job: jobQuery.data,
     jobError: jobQuery.data?.error_message,
     progress: jobQuery.data?.progress ?? 0,

@@ -1692,7 +1692,10 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
     
     # Trigger async task (Celery)
     from app.workers.workspace_tasks import generate_context_pack_v2
-    generate_context_pack_v2.delay(job.id)
+    task_result = generate_context_pack_v2.delay(job.id)
+    job.interaction_id = str(task_result.id)
+    await db.commit()
+    await db.refresh(job)
     
     return JobResponse(
         id=job.id,
@@ -2128,7 +2131,10 @@ async def run_discovery(workspace_id: int, db: AsyncSession = Depends(get_db)):
     
     # Trigger async task
     from app.workers.workspace_tasks import run_discovery_universe
-    run_discovery_universe.delay(job.id)
+    task_result = run_discovery_universe.delay(job.id)
+    job.interaction_id = str(task_result.id)
+    await db.commit()
+    await db.refresh(job)
     
     return JobResponse(
         id=job.id,
@@ -2816,7 +2822,9 @@ async def enrich_vendors_batch(
     # Trigger async tasks
     from app.workers.workspace_tasks import run_enrich_vendor
     for job in jobs:
-        run_enrich_vendor.delay(job.id)
+        task_result = run_enrich_vendor.delay(job.id)
+        job.interaction_id = str(task_result.id)
+    await db.commit()
     
     return [
         JobResponse(
@@ -3186,7 +3194,7 @@ async def generate_report_snapshot(
 
     from app.workers.workspace_tasks import generate_static_report
 
-    generate_static_report.delay(
+    task_result = generate_static_report.delay(
         job.id,
         {
             "name": data.name,
@@ -3194,6 +3202,9 @@ async def generate_report_snapshot(
             "include_outside_sme": data.include_outside_sme,
         },
     )
+    job.interaction_id = str(task_result.id)
+    await db.commit()
+    await db.refresh(job)
     return _to_job_response(job)
 
 
@@ -4778,13 +4789,13 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         else:
             context_claim_groups_available.add("identity_scope")
         if not (thesis_payload.get("summary") or thesis_payload.get("claims")):
-            missing_items["context_pack"].append("Generate or refresh thesis pack")
+            missing_items["context_pack"].append("Generate or refresh company thesis")
         else:
             context_claim_groups_available.add("product_depth")
         if profile.reference_vendor_urls:
             context_claim_groups_available.add("vertical_workflow")
         if not thesis_payload.get("source_pills"):
-            missing_items["context_pack"].append("Need auditable sources on the thesis pack")
+            missing_items["context_pack"].append("Add auditable source links to the company thesis")
 
         required_groups = gate_cfg.get("context_pack", {}).get("required_claim_groups", ["identity_scope", "product_depth"])
         min_required = min(
@@ -4915,7 +4926,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     )
     if len(decision_qualified) < min_decision_qualified:
         missing_items["universe"].append(
-            f"Need decision-qualified vendors ({len(decision_qualified)}/{min_decision_qualified})"
+            f"Need decision-qualified companies ({len(decision_qualified)}/{min_decision_qualified})"
         )
     if insufficient_ratio > max_insufficient_ratio:
         missing_items["universe"].append(
@@ -4923,12 +4934,12 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         )
     # Legacy fallback messaging (one release cycle)
     if kept_vendors_count < 5:
-        missing_items["universe"].append(f"Keep at least 5 vendors ({kept_vendors_count} kept)")
+        missing_items["universe"].append(f"Keep at least 5 companies ({kept_vendors_count} kept)")
     
     # Check segmentation (has reviewed and focused)
     segmentation_ready = universe_ready and len(decision_qualified) >= 10
     if not segmentation_ready and universe_ready:
-        missing_items["segmentation"].append("Review and keep at least 10 vendors")
+        missing_items["segmentation"].append("Review and keep at least 10 companies")
     
     # Check enrichment
     enrichment_cfg = gate_cfg.get("enrichment", {})
@@ -4960,7 +4971,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     enrichment_ready = enriched_count >= min_enriched and enriched_with_groups >= min_enriched
     if not enrichment_ready:
         missing_items["enrichment"].append(
-            f"Enrich at least {min_enriched} vendors with required evidence groups ({enriched_with_groups}/{min_enriched})"
+            f"Enrich at least {min_enriched} companies with required evidence groups ({enriched_with_groups}/{min_enriched})"
         )
     
     return GatesResponse(
@@ -5046,3 +5057,39 @@ async def get_job(
         started_at=job.started_at,
         finished_at=job.finished_at
     )
+
+
+@router.post("/{workspace_id}/jobs/{job_id}:cancel", response_model=JobResponse)
+async def cancel_job(
+    workspace_id: int,
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a queued or running workspace job."""
+    result = await db.execute(
+        select(Job).where(Job.id == job_id, Job.workspace_id == workspace_id)
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.state not in {JobState.queued, JobState.running, JobState.polling}:
+        raise HTTPException(status_code=400, detail="Job is not cancelable")
+
+    if job.interaction_id:
+        try:
+            from app.workers.celery_app import celery_app
+
+            celery_app.control.revoke(job.interaction_id, terminate=True, signal="SIGTERM")
+        except Exception:
+            # Best-effort revoke. We still mark the job stopped in the app model.
+            pass
+
+    job.state = JobState.failed
+    job.error_message = "Stopped by user"
+    job.progress_message = "Stopped"
+    job.finished_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(job)
+
+    return _to_job_response(job)

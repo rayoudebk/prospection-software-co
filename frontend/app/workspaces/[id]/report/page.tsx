@@ -19,6 +19,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
+import { JobProgressPanel } from "@/components/JobProgressPanel";
 import clsx from "clsx";
 
 const REPORT_CLASSIFICATION_LABELS: Record<string, string> = {
@@ -136,7 +137,7 @@ function CardSection({ card }: { card: ReportCard }) {
       )}
 
       <div>
-        <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Brick Mapping</div>
+        <div className="text-xs uppercase tracking-wide text-steel-500 mb-2">Capability Match</div>
         <div className="space-y-2">
           {card.brick_mapping.slice(0, 5).map((claim, idx) => (
             <div key={idx} className="flex items-start justify-between gap-2 text-sm">
@@ -145,7 +146,7 @@ function CardSection({ card }: { card: ReportCard }) {
             </div>
           ))}
           {card.brick_mapping.length === 0 && (
-            <div className="text-sm text-steel-500">No brick evidence available in this snapshot.</div>
+            <div className="text-sm text-steel-500">No capability evidence available in this snapshot.</div>
           )}
         </div>
       </div>
@@ -245,7 +246,8 @@ export default function ReportPage() {
     () => {
       refetchReports();
       setReportName("");
-    }
+    },
+    (jobId) => workspaceApi.cancelJob(workspaceId, jobId)
   );
 
   useEffect(() => {
@@ -323,19 +325,19 @@ export default function ReportPage() {
             ) : (
               <>
                 <RefreshCw className="w-4 h-4" />
-                Generate Cards
+                Generate Card Snapshot
               </>
             )}
           </button>
 
           <div className="min-w-[240px]">
-            <label className="label">Snapshot</label>
+            <label className="label">Card Snapshot</label>
             <select
               value={selectedReportId ?? ""}
               onChange={(e) => setSelectedReportId(e.target.value ? Number(e.target.value) : null)}
               className="input"
             >
-              <option value="">Select snapshot</option>
+              <option value="">Select card snapshot</option>
               {reports?.map((report) => (
                 <option key={report.id} value={report.id}>
                   {report.name}
@@ -354,10 +356,30 @@ export default function ReportPage() {
           </button>
         </div>
 
-        {reportRunner.isRunning && reportRunner.progressMessage && (
-          <div className="text-sm text-steel-600 border border-steel-200 bg-white px-3 py-2">
-            {reportRunner.progressMessage}
-          </div>
+        {reportRunner.isRunning && (
+          <JobProgressPanel
+            job={
+              reportRunner.job ?? {
+                id: 0,
+                workspace_id: workspaceId,
+                vendor_id: null,
+                job_type: "generate_report_snapshot",
+                state: "queued",
+                provider: "crawler",
+                progress: reportRunner.progress,
+                progress_message: reportRunner.progressMessage ?? null,
+                result_json: null,
+                error_message: null,
+                created_at: new Date().toISOString(),
+                started_at: null,
+                finished_at: null,
+              }
+            }
+            progress={reportRunner.progress}
+            progressMessage={reportRunner.progressMessage}
+            isStopping={reportRunner.isStopping}
+            onStop={reportRunner.canStop ? reportRunner.stop : undefined}
+          />
         )}
 
         {reportRunner.jobError && (
@@ -410,7 +432,7 @@ export default function ReportPage() {
         </div>
       ) : !selectedReportId ? (
         <div className="text-center py-12 bg-steel-50 border border-steel-200 text-steel-600">
-          Generate or select a snapshot to view candidate cards.
+          Generate or select a card snapshot to view candidate cards.
         </div>
       ) : (
         <>

@@ -205,7 +205,7 @@ export default function WorkspacesPage() {
                     )}>
                       {workspace.vendor_count}
                     </span>
-                    <span className="text-steel-500">vendors</span>
+                    <span className="text-steel-500">companies</span>
                   </div>
                 </div>
 

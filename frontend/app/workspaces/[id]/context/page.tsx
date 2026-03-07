@@ -30,6 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
+import { JobProgressPanel } from "@/components/JobProgressPanel";
 import ReactMarkdown from "react-markdown";
 import clsx from "clsx";
 
@@ -122,7 +123,8 @@ export default function ThesisPackPage() {
     () => workspaceApi.refreshContextPack(workspaceId),
     () => {
       refreshThesisPack.mutate();
-    }
+    },
+    (jobId) => workspaceApi.cancelJob(workspaceId, jobId)
   );
 
   const sourcePillById = useMemo(
@@ -140,6 +142,14 @@ export default function ThesisPackPage() {
     }
     return groups;
   }, [thesisPack]);
+
+  const crawlButtonLabel = profile?.context_pack_generated_at
+    ? "Recrawl And Update Draft"
+    : "Generate Draft Thesis";
+  const jobStateLabel =
+    jobRunner.job?.state === "queued"
+      ? "Queued for crawl worker..."
+      : `Working... ${Math.round(jobRunner.progress * 100)}%`;
 
   const saveProfileInputs = async () => {
     await updateProfile.mutateAsync({
@@ -206,8 +216,8 @@ export default function ThesisPackPage() {
       <StepHeader
         icon={FileText}
         step={1}
-        title="Thesis Pack"
-        subtitle="Capture the buyer website and reference inputs, then review the structured thesis the system inferred from those sources before you move into sourcing lanes."
+        title="Company Thesis"
+        subtitle="Start with your company website. Add comparable companies or proof pages if you have them. Then generate a draft thesis, review it, and correct it before moving into Search Lanes."
       />
 
       {gates && (
@@ -225,8 +235,8 @@ export default function ThesisPackPage() {
             )}
             <span className={gates.context_pack ? "text-success font-medium" : "text-warning font-medium"}>
               {gates.context_pack
-                ? "Thesis pack ready — you can proceed to Search Lanes"
-                : gates.missing_items.context_pack?.join(", ") || "Complete the thesis pack to continue"}
+                ? "Company thesis ready — you can proceed to Search Lanes"
+                : gates.missing_items.context_pack?.join(", ") || "Complete the company thesis to continue"}
             </span>
           </div>
         </div>
@@ -237,10 +247,54 @@ export default function ThesisPackPage() {
           <div>
             <h2 className="text-lg font-semibold text-oxford flex items-center gap-2 mb-4">
               <Building2 className="w-5 h-5" />
-              Buyer Inputs
+              Your Company Inputs
             </h2>
+            <p className="text-sm text-steel-600 mb-4">
+              This means your own company, not a target. The system uses these inputs to form its first draft of your sourcing thesis.
+            </p>
 
-            <label className="label">Buyer company URL</label>
+            <div className="space-y-3 border border-steel-200 bg-white p-4 mb-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-oxford">1. Your company website</div>
+                  <p className="text-xs text-steel-500 mt-1">
+                    Required. This is the main source used to understand what your company does.
+                  </p>
+                </div>
+                <span className="px-2 py-0.5 text-xs border border-warning/30 bg-warning/10 text-warning">
+                  Required
+                </span>
+              </div>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-oxford">2. Comparable companies</div>
+                  <p className="text-xs text-steel-500 mt-1">
+                    Optional. Useful when your positioning is broad or your site alone is not specific enough.
+                  </p>
+                </div>
+                <span className="px-2 py-0.5 text-xs border border-steel-200 bg-steel-50 text-steel-600">
+                  Optional
+                </span>
+              </div>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-oxford">3. Proof links</div>
+                  <p className="text-xs text-steel-500 mt-1">
+                    Optional, but high value. These make the draft more auditable and improve confidence.
+                  </p>
+                </div>
+                <span className="px-2 py-0.5 text-xs border border-success/30 bg-success/10 text-success">
+                  High Value
+                </span>
+              </div>
+            </div>
+
+            <label className="label flex items-center gap-2">
+              Your company website
+              <span className="px-2 py-0.5 text-[11px] border border-warning/30 bg-warning/10 text-warning">
+                Required
+              </span>
+            </label>
             <input
               type="url"
               value={buyerUrl}
@@ -249,12 +303,20 @@ export default function ThesisPackPage() {
               className="input"
             />
             <p className="text-xs text-steel-500 mt-1">
-              The system uses this site as the primary source for the thesis pack.
+              Use your own company site. This is the primary source for the draft thesis.
             </p>
           </div>
 
           <div>
-            <label className="label">Reference companies</label>
+            <label className="label flex items-center gap-2">
+              Comparable companies
+              <span className="px-2 py-0.5 text-[11px] border border-steel-200 bg-steel-50 text-steel-600">
+                Optional
+              </span>
+            </label>
+            <p className="text-xs text-steel-500 mb-2">
+              Add 2-5 close comparables if they help define your category, product shape, or adjacency.
+            </p>
             <div className="space-y-2 mb-2">
               {referenceUrls.map((url, index) => (
                 <div key={`${url}-${index}`} className="flex items-center gap-2 px-3 py-2 bg-white border border-steel-200">
@@ -288,9 +350,14 @@ export default function ThesisPackPage() {
           </div>
 
           <div>
-            <label className="label">Evidence links</label>
+            <label className="label flex items-center gap-2">
+              Proof links
+              <span className="px-2 py-0.5 text-[11px] border border-success/30 bg-success/10 text-success">
+                Optional, high value
+              </span>
+            </label>
             <p className="text-xs text-steel-500 mb-2">
-              Add direct proof pages such as case studies, partner pages, or customer evidence.
+              Add direct proof pages such as customer stories, partner pages, product pages, or market evidence.
             </p>
             <div className="space-y-2 mb-2">
               {evidenceUrls.map((url, index) => (
@@ -330,7 +397,7 @@ export default function ThesisPackPage() {
               disabled={updateProfile.isPending}
               className="btn-secondary disabled:opacity-50"
             >
-              {updateProfile.isPending ? "Saving..." : "Save Inputs"}
+              {updateProfile.isPending ? "Saving..." : "Save Source List"}
             </button>
             <button
               onClick={async () => {
@@ -343,12 +410,12 @@ export default function ThesisPackPage() {
               {jobRunner.isRunning ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  Crawling... {Math.round(jobRunner.progress * 100)}%
+                  {jobStateLabel}
                 </>
               ) : (
                 <>
                   <RefreshCw className="w-4 h-4" />
-                  Crawl And Refresh
+                  {crawlButtonLabel}
                 </>
               )}
             </button>
@@ -358,14 +425,35 @@ export default function ThesisPackPage() {
               className="btn-secondary flex items-center gap-2 disabled:opacity-50"
             >
               {refreshThesisPack.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              Refresh Thesis
+              Regenerate Draft Only
             </button>
           </div>
 
-          {jobRunner.progressMessage && jobRunner.isRunning && (
-            <div className="text-sm text-steel-600 border border-steel-200 bg-white px-3 py-2">
-              {jobRunner.progressMessage}
-            </div>
+          {jobRunner.isRunning && (
+            <JobProgressPanel
+              job={jobRunner.job ?? {
+                id: 0,
+                workspace_id: workspaceId,
+                vendor_id: null,
+                job_type: "context_pack",
+                state: "queued",
+                provider: "crawler",
+                progress: jobRunner.progress,
+                progress_message: jobRunner.progressMessage ?? null,
+                result_json: null,
+                error_message: null,
+                created_at: new Date().toISOString(),
+                started_at: null,
+                finished_at: null,
+              }}
+              progress={jobRunner.progress}
+              progressMessage={
+                jobRunner.progressMessage ||
+                "If this stays queued, the worker is not consuming the crawl queue yet."
+              }
+              isStopping={jobRunner.isStopping}
+              onStop={jobRunner.canStop ? jobRunner.stop : undefined}
+            />
           )}
 
           {(jobRunner.jobError || applyThesisAdjustment.error) && (
@@ -379,11 +467,11 @@ export default function ThesisPackPage() {
           <div className="bg-oxford text-white border border-oxford-dark p-6 space-y-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h2 className="text-lg font-semibold">System Understanding</h2>
+                <h2 className="text-lg font-semibold">Draft Thesis</h2>
                 <p className="text-sm text-steel-300">
                   {thesisPack?.generated_at
                     ? `Generated ${new Date(thesisPack.generated_at).toLocaleString()}`
-                    : "Refresh the thesis pack after crawling the buyer website."}
+                    : "Generate a draft from the saved company sources."}
                 </p>
               </div>
               {profile?.product_pages_found ? (
@@ -396,7 +484,7 @@ export default function ThesisPackPage() {
             <div className="border border-oxford-light bg-oxford-dark/40 p-4">
               <div className="text-xs uppercase tracking-wide text-steel-400 mb-2">Summary</div>
               <p className="text-sm leading-relaxed text-steel-100">
-                {thesisPack?.summary || "No thesis summary yet. Crawl the buyer website to generate one."}
+                {thesisPack?.summary || "No draft thesis yet. Generate it from your saved company sources."}
               </p>
             </div>
 
@@ -514,7 +602,7 @@ export default function ThesisPackPage() {
                 <div className="text-center py-10 text-steel-300 border border-oxford-light bg-oxford-dark/40">
                   <Globe className="w-10 h-10 mx-auto mb-3 text-steel-500" />
                   <p>No thesis claims yet.</p>
-                  <p className="text-sm text-steel-400 mt-1">Crawl the buyer website and refresh the thesis pack.</p>
+                  <p className="text-sm text-steel-400 mt-1">Generate the draft from your company sources first.</p>
                 </div>
               )}
             </div>
@@ -522,7 +610,7 @@ export default function ThesisPackPage() {
             <div className="border border-oxford-light bg-oxford-dark/40 p-4">
               <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-steel-400 mb-3">
                 <Bot className="w-4 h-4" />
-                Adjustment Box
+                Correct Or Refine This Draft
               </div>
               <textarea
                 value={adjustmentMessage}
@@ -532,7 +620,7 @@ export default function ThesisPackPage() {
               />
               <div className="flex items-center justify-between gap-3 mt-3">
                 <p className="text-xs text-steel-400">
-                  Use short instructions. Accepted changes are written back as structured thesis operations.
+                  Use short corrections. Accepted changes are written back as structured thesis updates.
                 </p>
                 <button
                   onClick={handleAdjustmentSubmit}
@@ -560,7 +648,7 @@ export default function ThesisPackPage() {
           </div>
 
           <details className="bg-steel-50 border border-steel-200 p-6">
-            <summary className="cursor-pointer text-sm font-medium text-oxford">Raw Context Pack Preview</summary>
+            <summary className="cursor-pointer text-sm font-medium text-oxford">Raw Crawl Output</summary>
             {profile?.context_pack_markdown ? (
               <div className="prose mt-4 max-h-[560px] overflow-y-auto pr-2">
                 <ReactMarkdown>{profile.context_pack_markdown}</ReactMarkdown>

@@ -18,8 +18,8 @@ import clsx from "clsx";
 const navItems = [
   {
     href: "context",
-    label: "Thesis Pack",
-    description: "Review and correct the system's understanding of the buyer thesis",
+    label: "Company Thesis",
+    description: "Define how the system understands your company before sourcing",
     icon: FileText,
     step: 1,
     gateKey: null,

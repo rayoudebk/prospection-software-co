@@ -24,6 +24,7 @@ import {
   Building2,
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
+import { JobProgressPanel } from "@/components/JobProgressPanel";
 import clsx from "clsx";
 
 const CLASSIFICATION_LABELS: Record<string, string> = {
@@ -116,7 +117,8 @@ export default function UniversePage() {
   const jobRunner = useWorkspaceJobWithPolling(
     workspaceId,
     () => workspaceApi.runDiscovery(workspaceId),
-    () => refetch()
+    () => refetch(),
+    (jobId) => workspaceApi.cancelJob(workspaceId, jobId)
   );
 
   const handleKeep = async (vendor: Vendor) => {
@@ -198,7 +200,7 @@ export default function UniversePage() {
             <span className={gates.universe ? "text-success font-medium" : "text-warning font-medium"}>
               {gates.universe
                 ? `${keptCount} companies kept — you can proceed to Cards`
-                : gates.missing_items.universe?.join(", ") || "Keep at least 5 vendors to continue"}
+                : gates.missing_items.universe?.join(", ") || "Keep at least 5 companies to continue"}
             </span>
           </div>
         </div>
@@ -218,7 +220,7 @@ export default function UniversePage() {
             className="btn-secondary flex items-center gap-2"
           >
             <Plus className="w-4 h-4" />
-            Add Vendor
+            Add Company
           </button>
           <button
             onClick={jobRunner.run}
@@ -240,11 +242,37 @@ export default function UniversePage() {
         </div>
       </div>
 
-      {/* Add Vendor Modal */}
+      {jobRunner.isRunning && (
+        <JobProgressPanel
+          job={
+            jobRunner.job ?? {
+              id: 0,
+              workspace_id: workspaceId,
+              vendor_id: null,
+              job_type: "discovery_universe",
+              state: "queued",
+              provider: "gemini_flash",
+              progress: jobRunner.progress,
+              progress_message: jobRunner.progressMessage ?? null,
+              result_json: null,
+              error_message: null,
+              created_at: new Date().toISOString(),
+              started_at: null,
+              finished_at: null,
+            }
+          }
+          progress={jobRunner.progress}
+          progressMessage={jobRunner.progressMessage}
+          isStopping={jobRunner.isStopping}
+          onStop={jobRunner.canStop ? jobRunner.stop : undefined}
+        />
+      )}
+
+      {/* Add Company Modal */}
       {showAddModal && (
         <div className="fixed inset-0 bg-oxford/80 flex items-center justify-center z-50">
           <div className="bg-steel-50 p-6 w-full max-w-md shadow-xl border border-steel-200">
-            <h3 className="text-lg font-semibold text-oxford mb-4">Add Vendor Manually</h3>
+            <h3 className="text-lg font-semibold text-oxford mb-4">Add Company Manually</h3>
             <div className="space-y-4">
               <div>
                 <label className="label">
@@ -294,7 +322,7 @@ export default function UniversePage() {
                 disabled={!newVendor.name || createVendor.isPending}
                 className="flex-1 btn-primary disabled:opacity-50"
               >
-                Add Vendor
+                Add Company
               </button>
             </div>
           </div>
@@ -369,9 +397,9 @@ export default function UniversePage() {
       {filteredVendors && filteredVendors.length === 0 ? (
         <div className="text-center py-16 bg-steel-50 border border-steel-200">
           <Globe className="w-12 h-12 text-steel-300 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-oxford mb-2">No vendors found</h3>
+          <h3 className="text-lg font-medium text-oxford mb-2">No companies found</h3>
           <p className="text-steel-500 mb-4">
-            Run discovery to find potential acquisition targets
+            Run discovery to source candidate companies
           </p>
         </div>
       ) : (
