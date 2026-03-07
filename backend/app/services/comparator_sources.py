@@ -16,6 +16,7 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 )
 MAX_FILTERED_MENTIONS = 250
+WEALTH_MOSAIC_MAX_FILTERED_MENTIONS = 600
 AGGREGATOR_DOMAINS = {
     "thewealthmosaic.com",
     "thewealthmosaic.co.uk",
@@ -485,10 +486,16 @@ def _mention_quality_score(mention: Dict[str, Any], base_host: Optional[str]) ->
     company_name = _clean_text(str(mention.get("company_name") or ""))
     company_url = str(mention.get("company_url") or "")
     listing_snippets = mention.get("listing_text_snippets") or []
-    host = (urlparse(company_url).netloc or "").lower()
+    parsed = urlparse(company_url)
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
     if host.startswith("www."):
         host = host[4:]
     if base_host and host and host != base_host:
+        score += 2
+    # Wealth Mosaic vendor links are first-hop internal profile URLs; treat them as
+    # high-value seeds so they are not filtered out before identity resolution.
+    if base_host and host == base_host and ("/vendors/" in path or "/vendor/" in path):
         score += 2
     if any(keyword in company_name.lower() for keyword in ("software", "platform", "technology", "systems")):
         score += 1
@@ -631,11 +638,16 @@ def ingest_source(
         key=lambda mention: _mention_quality_score(mention, base_host),
         reverse=True,
     )
+    max_filtered_mentions = (
+        WEALTH_MOSAIC_MAX_FILTERED_MENTIONS
+        if source_name == "wealth_mosaic"
+        else MAX_FILTERED_MENTIONS
+    )
     filtered = [
         mention
         for mention in scored
         if _mention_quality_score(mention, base_host) >= 2
-    ][:MAX_FILTERED_MENTIONS]
+    ][:max_filtered_mentions]
 
     return {
         "source_name": source_name,

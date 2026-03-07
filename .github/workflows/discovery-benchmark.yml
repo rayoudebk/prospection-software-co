@@ -57,6 +57,14 @@ jobs:
             --thresholds backend/benchmarks/thresholds.json \
             --out backend/benchmarks/${{ matrix.profile }}_compare_report.json
 
+      - name: Quality Audit Gate
+        run: |
+          python backend/scripts/discovery_quality_audit.py \
+            --corpus backend/benchmarks/corpus/sample_replay.json \
+            --thresholds backend/benchmarks/thresholds.json \
+            --out backend/benchmarks/${{ matrix.profile }}_quality_audit_report.json \
+            --fail-on-violation
+
       - name: Upload Benchmark Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -65,3 +73,4 @@ jobs:
             backend/benchmarks/baseline_metrics.json
             backend/benchmarks/${{ matrix.profile }}_candidate_metrics.json
             backend/benchmarks/${{ matrix.profile }}_compare_report.json
+            backend/benchmarks/${{ matrix.profile }}_quality_audit_report.json

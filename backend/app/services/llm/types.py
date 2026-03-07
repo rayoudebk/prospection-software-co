@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 
 class LLMStage(str, Enum):
     discovery_retrieval = "discovery_retrieval"
+    discovery_query_planning = "discovery_query_planning"
+    discovery_candidate_synthesis = "discovery_candidate_synthesis"
     evidence_adjudication = "evidence_adjudication"
     structured_normalization = "structured_normalization"
     context_summary = "context_summary"

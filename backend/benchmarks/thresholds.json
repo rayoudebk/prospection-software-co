@@ -1,4 +1,15 @@
 {
   "max_quality_drop_pct": 5.0,
-  "max_p95_runtime_regression_pct": 10.0
+  "max_p95_runtime_regression_pct": 10.0,
+  "max_variance_stddev_regression_pct": 20.0,
+  "max_variance_stddev_regression_pct_by_metric": {
+    "first_party_hint_urls_used_count": 10.0,
+    "first_party_hint_pages_crawled_total": 10.0,
+    "first_party_crawl_pages_total": 15.0,
+    "stage_llm_discovery_fanout.llm_ms": 15.0
+  },
+  "audit_max_fp_low_ticket_without_pricing_evidence": 0,
+  "audit_max_fn_missing_vertical_with_institutional_text": 8,
+  "audit_max_fp_registry_or_directory_overweight": 5,
+  "audit_max_fn_customer_proof_but_thin_grouping": 8
 }

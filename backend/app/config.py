@@ -18,9 +18,11 @@ class Settings(BaseSettings):
 
     # Optional external retrieval connectors
     tavily_api_key: str = ""
+    exa_api_key: str = ""
     serpapi_api_key: str = ""
     firecrawl_api_key: str = ""
     jina_api_key: str = ""
+    brave_api_key: str = ""
 
     # Optional registry API keys
     companies_house_api_key: str = ""
@@ -45,6 +47,14 @@ class Settings(BaseSettings):
     discovery_global_timeout_seconds: int = 1800
     quality_min_claims_created: int = 3
     quality_min_ranking_eligible_count: int = 1
+    size_fit_window_ratio: float = 0.30
+    size_fit_boost_points: float = 8.0
+    size_large_company_threshold: int = 200
+    size_large_company_penalty_points: float = 10.0
+    audit_max_fp_low_ticket_without_pricing_evidence: int = 0
+    audit_max_fn_missing_vertical_with_institutional_text: int = 8
+    audit_max_fp_registry_or_directory_overweight: int = 5
+    audit_max_fn_customer_proof_but_thin_grouping: int = 8
     discovery_pre_score_universe_cap: int = 300
     discovery_scoring_entities_cap: int = 90
 
@@ -64,11 +74,26 @@ class Settings(BaseSettings):
     first_party_crawl_light_max_pages: int = 3
     first_party_crawl_deep_max_pages: int = 6
     first_party_min_priority_for_crawl: float = 55.0
+    first_party_adaptive_hint_timeout_seconds: int = 6
+    first_party_adaptive_hint_max_urls_per_domain: int = 40
+    first_party_adaptive_hint_domain_budget: int = 25
+
+    # Optional rendered-browser fallback (Chrome DevTools MCP style connector)
+    chrome_mcp_enabled: bool = False
+    chrome_mcp_endpoint: str = ""
+    chrome_mcp_timeout_seconds: int = 25
+    chrome_mcp_max_pages_per_domain: int = 2
+    chrome_mcp_min_text_chars: int = 700
 
     # External retrieval limits / cache TTLs
     retrieval_search_cache_ttl_seconds: int = 43200
     retrieval_url_cache_ttl_seconds: int = 43200
     external_search_candidates_cap: int = 25
+    discovery_retrieval_provider_order: str = "exa,brave,tavily,serpapi"
+    discovery_retrieval_per_query_cap: int = 8
+    discovery_retrieval_total_cap: int = 60
+    discovery_retrieval_per_domain_cap: int = 3
+    discovery_retrieval_similar_seed_cap: int = 4
 
     # App
     debug: bool = True
@@ -90,6 +115,8 @@ class Settings(BaseSettings):
     def stage_model_routes(self, stage_name: str) -> List[Tuple[str, str]]:
         mapping = {
             "discovery_retrieval": self.llm_stage_discovery_models,
+            "discovery_query_planning": self.llm_stage_discovery_models,
+            "discovery_candidate_synthesis": self.llm_stage_discovery_models,
             "evidence_adjudication": self.llm_stage_adjudication_models,
             "structured_normalization": self.llm_stage_structured_models,
             "context_summary": self.llm_stage_summary_models,

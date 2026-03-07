@@ -23,6 +23,63 @@ def _p95(values: List[float]) -> float:
     return float(quantiles(values, n=100)[94])
 
 
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def _variance_hotspots(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    metrics = {
+        "first_party_hint_urls_used_count": lambda row: row.get("first_party_hint_urls_used_count"),
+        "first_party_hint_pages_crawled_total": lambda row: row.get("first_party_hint_pages_crawled_total"),
+        "first_party_crawl_pages_total": lambda row: row.get("first_party_crawl_pages_total"),
+        "stage_llm_discovery_fanout.llm_ms": lambda row: (
+            (row.get("stage_time_ms") or {}).get("stage_llm_discovery_fanout")
+            if isinstance(row.get("stage_time_ms"), dict)
+            else None
+        ),
+        "ranking_eligible_count": lambda row: row.get("ranking_eligible_count"),
+    }
+    hotspots: List[Dict[str, Any]] = []
+    for metric, extractor in metrics.items():
+        values = [
+            parsed
+            for parsed in (
+                _safe_float(extractor(row))
+                for row in rows
+                if isinstance(row, dict)
+            )
+            if parsed is not None
+        ]
+        if not values:
+            continue
+        avg = sum(values) / len(values)
+        variance = sum((value - avg) ** 2 for value in values) / max(1, len(values))
+        hotspots.append(
+            {
+                "metric": metric,
+                "min": min(values),
+                "max": max(values),
+                "avg": round(avg, 4),
+                "stddev": round(variance ** 0.5, 4),
+                "run_count": len(values),
+            }
+        )
+    hotspots.sort(key=lambda row: float(row.get("stddev") or 0.0), reverse=True)
+    return hotspots
+
+
 def build_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     runtimes = [
         float((row.get("stage_time_ms") or {}).get("pipeline_total_ms") or 0.0)
@@ -33,6 +90,27 @@ def build_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     degraded = len([row for row in rows if str(row.get("run_quality_tier")) == "degraded"])
     ranking_counts = [int(row.get("ranking_eligible_count") or 0) for row in rows]
     citation_counts = [int(row.get("citation_sentence_count") or 0) for row in rows]
+    quality_audits = [
+        row.get("quality_audit_v1")
+        for row in rows
+        if isinstance(row.get("quality_audit_v1"), dict)
+    ]
+    quality_audit_pass_runs = len(
+        [
+            audit
+            for audit in quality_audits
+            if bool(audit.get("pass"))
+        ]
+    )
+    quality_audit_pattern_totals: Dict[str, int] = {}
+    for audit in quality_audits:
+        for pattern in (audit.get("patterns") or []):
+            if not isinstance(pattern, dict):
+                continue
+            key = str(pattern.get("pattern_key") or "").strip()
+            if not key:
+                continue
+            quality_audit_pattern_totals[key] = quality_audit_pattern_totals.get(key, 0) + int(pattern.get("count") or 0)
     return {
         "runs": len(rows),
         "runtime_ms": {
@@ -49,6 +127,13 @@ def build_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "avg_ranking_eligible_count": (sum(ranking_counts) / len(ranking_counts)) if ranking_counts else 0.0,
             "avg_citation_sentence_count": (sum(citation_counts) / len(citation_counts)) if citation_counts else 0.0,
         },
+        "quality_audit": {
+            "audited_runs": len(quality_audits),
+            "pass_runs": quality_audit_pass_runs,
+            "pass_rate": (quality_audit_pass_runs / len(quality_audits)) if quality_audits else 0.0,
+            "pattern_totals": quality_audit_pattern_totals,
+        },
+        "variance_hotspots_v1": _variance_hotspots(rows),
     }
 
 

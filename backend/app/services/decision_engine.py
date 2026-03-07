@@ -202,6 +202,26 @@ def evaluate_decision(
     else:
         classification = "borderline_watchlist"
 
+    tier4_only = False
+    if effective_policy.get("tier4_cannot_justify_good_target"):
+        tier4_types = {"directory_comparator", "external_search_snippet"}
+        tier4_count = sum(
+            int(value)
+            for key, value in source_type_counts.items()
+            if key in tier4_types
+        )
+        non_tier4_count = sum(
+            int(value)
+            for key, value in source_type_counts.items()
+            if key not in tier4_types
+        )
+        tier4_only = tier4_count > 0 and non_tier4_count == 0
+        if tier4_only and classification == "good_target":
+            classification = "insufficient_evidence"
+            evidence_sufficiency = "insufficient"
+            caution_codes = sorted(set(caution_codes + ["CAU-05"]))
+            positive_codes = []
+
     gate_requirements = effective_policy.get("gate_requirements", {}).get("universe", {})
     allowed = set(gate_requirements.get("allowed_classes", ["good_target", "borderline_watchlist"]))
     gating_passed = classification in allowed and evidence_sufficiency in {"sufficient", "contradictory"}

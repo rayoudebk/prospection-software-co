@@ -13,5 +13,23 @@
   "ranking": {
     "avg_ranking_eligible_count": 8.0,
     "avg_citation_sentence_count": 31.0
-  }
+  },
+  "variance_hotspots_v1": [
+    {
+      "metric": "stage_llm_discovery_fanout.llm_ms",
+      "min": 121000.0,
+      "max": 121000.0,
+      "avg": 121000.0,
+      "stddev": 0.0,
+      "run_count": 1
+    },
+    {
+      "metric": "ranking_eligible_count",
+      "min": 8.0,
+      "max": 8.0,
+      "avg": 8.0,
+      "stddev": 0.0,
+      "run_count": 1
+    }
+  ]
 }

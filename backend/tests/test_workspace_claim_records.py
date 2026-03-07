@@ -48,6 +48,28 @@ def test_build_claim_records_marks_numeric_conflicts():
     assert any(record.get("claim_status") == "contradicted" for record in records)
 
 
+def test_build_claim_records_preserves_rendered_browser_provenance():
+    records = _build_claim_records(
+        workspace_id=1,
+        vendor_id=2,
+        screening_id=3,
+        candidate={"website": "https://acme.com"},
+        trusted_reasons=[
+            {
+                "dimension": "customer",
+                "text": "Acme Bank client story published on customer page.",
+                "citation_url": "https://acme.com/client-stories/acme-bank",
+                "source_kind": "rendered_browser",
+            }
+        ],
+        matched_mentions=[],
+        source_evidence_ids={},
+    )
+    assert records
+    assert records[0]["source_type"] == "rendered_browser"
+    assert records[0]["source_tier"] == "tier1_vendor"
+
+
 def test_select_top_claim_prefers_higher_tier_with_source_metadata():
     top_claim = _select_top_claim(
         [

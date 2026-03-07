@@ -57,6 +57,13 @@ DIRECTORY_HOST_TOKENS = (
 def infer_source_tier(source_url: Optional[str], source_type: Optional[str], candidate_domain: Optional[str]) -> str:
     url = str(source_url or "").strip().lower()
     stype = str(source_type or "").strip().lower()
+    if stype == "external_search_snippet":
+        return "tier4_discovery"
+    if stype == "rendered_browser":
+        host = normalize_domain(source_url) or ""
+        if candidate_domain and (host == candidate_domain or host.endswith(f".{candidate_domain}")):
+            return "tier1_vendor"
+        return "tier3_third_party"
     if any(token in url for token in REGISTRY_HOST_TOKENS) or stype == "official_registry_filing":
         return "tier0_registry"
     if any(token in url for token in DIRECTORY_HOST_TOKENS) or stype == "directory_comparator":
@@ -70,6 +77,8 @@ def infer_source_tier(source_url: Optional[str], source_type: Optional[str], can
 
 
 def infer_source_kind(source_url: Optional[str], source_type: Optional[str], candidate_domain: Optional[str]) -> str:
+    if str(source_type or "").strip().lower() == "rendered_browser":
+        return "rendered_browser"
     tier = infer_source_tier(source_url, source_type, candidate_domain)
     if tier == "tier0_registry":
         return "registry"
