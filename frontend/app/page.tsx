@@ -67,7 +67,7 @@ export default function WorkspacesPage() {
             <div>
               <h1 className="text-2xl font-bold tracking-tight">M&A Market Maps</h1>
               <p className="text-steel-300 mt-1">
-                Create workspaces to research acquisition targets
+                Create workspaces to source and assess acquisition targets
               </p>
             </div>
             <button
@@ -96,7 +96,7 @@ export default function WorkspacesPage() {
                     type="text"
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
-                    placeholder="e.g., Wealth Management Targets Q1"
+                    placeholder="e.g., Software sourcing sprint"
                     className="input"
                     autoFocus
                   />
@@ -187,7 +187,7 @@ export default function WorkspacesPage() {
                       <AlertCircle className="w-4 h-4 text-steel-300" />
                     )}
                     <span className={workspace.has_context_pack ? "text-success" : "text-steel-400"}>
-                      Context
+                      Thesis
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
@@ -197,7 +197,7 @@ export default function WorkspacesPage() {
                       <AlertCircle className="w-4 h-4 text-steel-300" />
                     )}
                     <span className={workspace.has_confirmed_taxonomy ? "text-success" : "text-steel-400"}>
-                      Bricks
+                      Lanes
                     </span>
                   </div>
                   <div className="flex items-center gap-1">

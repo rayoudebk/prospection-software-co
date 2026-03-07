@@ -7,10 +7,12 @@ from app.models.feedback import FeedbackEvent
 
 # New workspace-based models
 from app.models.workspace import Workspace, CompanyProfile, BrickTaxonomy, BrickMapping, DEFAULT_BRICKS
+from app.models.thesis import BuyerThesisPack, SearchLane
 from app.models.vendor import Vendor, VendorDossier, VendorStatus
 from app.models.job import Job, JobType, JobState, JobProvider
 from app.models.workspace_evidence import WorkspaceEvidence
 from app.models.report import ReportSnapshot, ReportSnapshotItem, VendorFact
+from app.models.workspace_feedback import WorkspaceFeedbackEvent
 from app.models.intelligence import (
     ComparatorSourceRun,
     CandidateEntity,
@@ -21,16 +23,24 @@ from app.models.intelligence import (
     VendorScreening,
     VendorClaim,
 )
+from app.models.claims_graph import ClaimGraphNode, ClaimGraphEdge, ClaimGraphEdgeEvidence
+from app.models.evaluation import EvaluationRun, EvaluationSampleResult
+from app.models.external_search import ExternalSearchRun, ExternalSearchResult
 
 __all__ = [
     # Legacy models (kept for backwards compat)
     "Base", "Strategy", "Target", "ResearchJob", "EvidenceItem", "FeedbackEvent",
     # New workspace models
     "Workspace", "CompanyProfile", "BrickTaxonomy", "BrickMapping", "DEFAULT_BRICKS",
+    "BuyerThesisPack", "SearchLane",
     "Vendor", "VendorDossier", "VendorStatus",
     "Job", "JobType", "JobState", "JobProvider",
     "WorkspaceEvidence",
     "ReportSnapshot", "ReportSnapshotItem", "VendorFact",
+    "WorkspaceFeedbackEvent",
     "ComparatorSourceRun", "CandidateEntity", "CandidateEntityAlias", "CandidateOriginEdge", "RegistryQueryLog",
     "VendorMention", "VendorScreening", "VendorClaim",
+    "ClaimGraphNode", "ClaimGraphEdge", "ClaimGraphEdgeEvidence",
+    "EvaluationRun", "EvaluationSampleResult",
+    "ExternalSearchRun", "ExternalSearchResult",
 ]

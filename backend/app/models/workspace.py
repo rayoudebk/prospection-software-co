@@ -21,11 +21,14 @@ class Workspace(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     region_scope = Column(String(50), default="EU+UK")
+    decision_policy_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
     company_profile = relationship("CompanyProfile", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
     brick_taxonomy = relationship("BrickTaxonomy", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
+    thesis_pack = relationship("BuyerThesisPack", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
+    search_lanes = relationship("SearchLane", back_populates="workspace", cascade="all, delete-orphan")
     vendors = relationship("Vendor", back_populates="workspace", cascade="all, delete-orphan")
     evidence_items = relationship("WorkspaceEvidence", back_populates="workspace", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="workspace", cascade="all, delete-orphan")
@@ -59,6 +62,11 @@ class Workspace(Base):
         "CandidateEntity",
         cascade="all, delete-orphan",
     )
+    feedback_events = relationship(
+        "WorkspaceFeedbackEvent",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
 
 
 class CompanyProfile(Base):
@@ -74,6 +82,7 @@ class CompanyProfile(Base):
     
     # Reference vendors (2-3 examples)
     reference_vendor_urls = Column(JSON, default=list)  # ["https://vendor1.com", ...]
+    reference_evidence_urls = Column(JSON, default=list)  # ["https://vendor.com/blog/case-study", ...]
     reference_summaries = Column(JSON, default=dict)  # {"url": "summary", ...}
     
     # Geographic scope

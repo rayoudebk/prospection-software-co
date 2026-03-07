@@ -24,7 +24,23 @@ class WorkspaceEvidence(Base):
     
     # Metadata
     captured_at = Column(DateTime, default=datetime.utcnow)
-    
+    retrieved_at = Column(DateTime, default=datetime.utcnow)
+    freshness_ttl_days = Column(Integer, nullable=True)
+    valid_through = Column(DateTime, nullable=True)
+    source_tier = Column(
+        String(32),
+        nullable=False,
+        default="tier3_third_party",
+        index=True,
+    )  # tier0_registry|tier1_vendor|tier2_partner_customer|tier3_third_party|tier4_discovery
+    source_kind = Column(
+        String(32),
+        nullable=False,
+        default="third_party",
+        index=True,
+    )  # registry|first_party|customer_partner|third_party|directory
+    asserted_by = Column(String(120), nullable=True)
+
     # Which brick(s) this evidence supports
     brick_ids = Column(String(500), nullable=True)  # Comma-separated brick IDs
 

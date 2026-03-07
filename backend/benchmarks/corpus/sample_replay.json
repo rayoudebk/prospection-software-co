@@ -1,0 +1,56 @@
+[
+  {
+    "workspace_id": 1,
+    "screening_run_id": "20260210T143724",
+    "run_quality_tier": "degraded",
+    "quality_gate_passed": false,
+    "degraded_reasons": ["llm_discovery_failed"],
+    "stage_time_ms": {
+      "stage_seed_ingest": 9200,
+      "stage_llm_discovery_fanout": 121000,
+      "stage_registry_identity_expand": 48000,
+      "stage_first_party_enrichment_parallel": 312000,
+      "stage_scoring_claims_persist": 312000,
+      "pipeline_total_ms": 494200
+    },
+    "ranking_eligible_count": 8,
+    "citation_sentence_count": 31,
+    "quality_audit_v1": {
+      "run_id": "20260210T143724",
+      "pass": true,
+      "patterns": [
+        {
+          "pattern_key": "fp_low_ticket_without_pricing_evidence",
+          "count": 0,
+          "sample_screening_ids": [],
+          "sample_candidate_names": []
+        },
+        {
+          "pattern_key": "fn_missing_vertical_with_institutional_workflow_text",
+          "count": 0,
+          "sample_screening_ids": [],
+          "sample_candidate_names": []
+        },
+        {
+          "pattern_key": "fp_registry_or_directory_overweight",
+          "count": 0,
+          "sample_screening_ids": [],
+          "sample_candidate_names": []
+        },
+        {
+          "pattern_key": "fn_customer_proof_present_but_thin_grouping",
+          "count": 0,
+          "sample_screening_ids": [],
+          "sample_candidate_names": []
+        }
+      ],
+      "thresholds": {
+        "fp_low_ticket_without_pricing_evidence": 0,
+        "fn_missing_vertical_with_institutional_workflow_text": 8,
+        "fp_registry_or_directory_overweight": 5,
+        "fn_customer_proof_present_but_thin_grouping": 8
+      },
+      "top_impacted_candidates": []
+    }
+  }
+]

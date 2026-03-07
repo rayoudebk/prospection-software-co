@@ -16,6 +16,8 @@ DISCOVERY_COUNTRIES = [
     "NL",
     "LU",
     "DE",
+    "CH",
+    "MC",
     "ES",
     "PT",
 ]
@@ -34,6 +36,10 @@ COUNTRY_NORMALIZATION = {
     "netherlands": "NL",
     "luxembourg": "LU",
     "germany": "DE",
+    "switzerland": "CH",
+    "swiss": "CH",
+    "monaco": "MC",
+    "monegasque": "MC",
     "spain": "ES",
     "portugal": "PT",
 }
