@@ -1678,6 +1678,29 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
     workspace = result.scalar_one_or_none()
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+
+    active_jobs_result = await db.execute(
+        select(Job).where(
+            Job.workspace_id == workspace_id,
+            Job.job_type == JobType.context_pack,
+            Job.state.in_([JobState.queued, JobState.running, JobState.polling]),
+        )
+    )
+    active_jobs = active_jobs_result.scalars().all()
+    for active_job in active_jobs:
+        active_job.state = JobState.failed
+        active_job.error_message = "Superseded by newer company thesis run"
+        active_job.progress_message = "Superseded by newer company thesis run"
+        active_job.finished_at = datetime.utcnow()
+        if active_job.interaction_id:
+            try:
+                from app.workers.celery_app import celery_app
+
+                celery_app.control.revoke(active_job.interaction_id, terminate=False)
+            except Exception:
+                pass
+    if active_jobs:
+        await db.commit()
     
     # Create job
     job = Job(

@@ -6132,6 +6132,103 @@ def _is_ranking_eligible_candidate(
     return has_tier1
 
 
+class ContextPackJobInterrupted(RuntimeError):
+    """Raised when a context-pack job is cancelled or superseded mid-run."""
+
+
+def _fail_superseded_context_pack_jobs(db, workspace_id: int, current_job_id: int) -> int:
+    superseded_jobs = (
+        db.query(Job)
+        .filter(
+            Job.workspace_id == workspace_id,
+            Job.job_type == JobType.context_pack,
+            Job.id < current_job_id,
+            Job.state.in_([JobState.queued, JobState.running, JobState.polling]),
+        )
+        .all()
+    )
+
+    for stale_job in superseded_jobs:
+        stale_job.state = JobState.failed
+        stale_job.error_message = "Superseded by newer company thesis run"
+        stale_job.progress_message = "Superseded by newer company thesis run"
+        stale_job.finished_at = datetime.utcnow()
+
+    if superseded_jobs:
+        db.commit()
+
+    return len(superseded_jobs)
+
+
+def _ensure_context_pack_job_active(db, job: Job) -> None:
+    db.refresh(job)
+    if job.state == JobState.failed and job.finished_at:
+        raise ContextPackJobInterrupted(job.error_message or "Context-pack job stopped")
+    if job.state == JobState.completed and job.finished_at:
+        raise ContextPackJobInterrupted("Context-pack job already completed")
+
+
+def _append_job_live_event(job: Job, message: str) -> None:
+    payload = job.result_json if isinstance(job.result_json, dict) else {}
+    live_events = payload.get("live_events") if isinstance(payload.get("live_events"), list) else []
+    event_message = str(message or "").strip()
+    if not event_message:
+        return
+    if live_events and isinstance(live_events[-1], dict) and live_events[-1].get("message") == event_message:
+        return
+    live_events.append(
+        {
+            "message": event_message[:280],
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    )
+    payload["live_events"] = live_events[-10:]
+    job.result_json = payload
+
+
+def _estimate_context_pack_site_progress(message: str) -> Optional[float]:
+    normalized = str(message or "").strip().lower()
+    if not normalized:
+        return None
+
+    preview_match = re.search(r"previewed\s+(\d+)/(\d+)\s+pages", normalized)
+    if preview_match:
+        seen = int(preview_match.group(1))
+        total = max(1, int(preview_match.group(2)))
+        return min(0.58, 0.18 + (0.40 * (seen / total)))
+
+    triage_match = re.search(r"triaging pages with llm\s+\((\d+)/(\d+)\)", normalized)
+    if triage_match:
+        batch = int(triage_match.group(1))
+        total = max(1, int(triage_match.group(2)))
+        return min(0.78, 0.60 + (0.18 * (batch / total)))
+
+    if "checking robots.txt" in normalized:
+        return 0.04
+    if "parsing sitemaps" in normalized:
+        return 0.08
+    if "extracting navigation links" in normalized:
+        return 0.12
+    if "expanding from hub pages" in normalized:
+        return 0.16
+    if "fetching previews and scoring" in normalized or normalized.startswith("preview batch"):
+        return 0.2
+    if "triaging pages with llm" in normalized or "llm classification error" in normalized:
+        return 0.62
+    if normalized.startswith("selected page for extraction:"):
+        return 0.8
+    if "deep content extraction" in normalized or normalized.startswith("extraction batch"):
+        return 0.84
+    if re.search(r"extracted\s+\d+/\d+\s+pages", normalized):
+        return 0.9
+    if "generating context pack" in normalized:
+        return 0.96
+    if "context pack complete" in normalized:
+        return 1.0
+
+    return None
+
+
 @celery_app.task(name="app.workers.workspace_tasks.generate_context_pack_v2")
 def generate_context_pack_v2(job_id: int):
     """Generate context pack by crawling buyer and reference URLs."""
@@ -6158,6 +6255,9 @@ def generate_context_pack_v2(job_id: int):
             job.finished_at = datetime.utcnow()
             db.commit()
             return {"error": "Workspace not found"}
+
+        _fail_superseded_context_pack_jobs(db, workspace.id, job.id)
+        _ensure_context_pack_job_active(db, job)
         
         profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == workspace.id).first()
         if not profile:
@@ -6196,27 +6296,37 @@ def generate_context_pack_v2(job_id: int):
             product_pages_total = 0
             reference_summaries = {}
             all_context_packs = []  # Store full context packs for JSON export
-            
-            def update_progress(message: str):
+
+            def update_progress(message: str, site_start: float, site_end: float):
                 """Update job progress message."""
+                _ensure_context_pack_job_active(db, job)
+                site_progress = _estimate_context_pack_site_progress(message)
+                if site_progress is not None:
+                    next_progress = site_start + ((site_end - site_start) * site_progress)
+                    job.progress = max(float(job.progress or 0.0), round(next_progress, 4))
                 job.progress_message = message
+                _append_job_live_event(job, message)
                 db.commit()
             
             for i, url in enumerate(all_urls):
                 try:
+                    _ensure_context_pack_job_active(db, job)
                     from urllib.parse import urlparse
                     parsed = urlparse(url)
                     domain = parsed.netloc or url
+                    site_start = 0.2 + (0.5 * i / len(all_urls))
+                    site_end = 0.2 + (0.5 * (i + 1) / len(all_urls))
                     
                     # Create unified crawler with progress callback for this URL
                     # Use default argument to capture domain in closure
                     crawler = UnifiedCrawler(
                         max_pages=30,
-                        progress_callback=lambda msg, d=domain: update_progress(f"[{d}] {msg}")
+                        progress_callback=lambda msg, d=domain, start=site_start, end=site_end: update_progress(f"[{d}] {msg}", start, end)
                     )
                     
-                    job.progress = 0.2 + (0.5 * i / len(all_urls))
+                    job.progress = site_start
                     job.progress_message = f"Starting crawl of {domain}..."
+                    _append_job_live_event(job, f"[{domain}] Starting crawl")
                     db.commit()
                     
                     context_pack = loop.run_until_complete(crawler.crawl_for_context(url))
@@ -6236,12 +6346,16 @@ def generate_context_pack_v2(job_id: int):
                     if url != profile.buyer_company_url:
                         reference_summaries[url] = context_pack.summary
                     
-                    job.progress = 0.2 + (0.5 * (i + 1) / len(all_urls))
+                    job.progress = site_end
                     job.progress_message = f"Completed {domain} ({len(context_pack.pages)} pages)"
+                    _append_job_live_event(job, f"[{domain}] Completed crawl with {len(context_pack.pages)} pages")
                     db.commit()
+                except ContextPackJobInterrupted:
+                    raise
                 except Exception as e:
                     print(f"Error crawling {url}: {e}")
                     job.progress_message = f"Error crawling {url}: {str(e)[:100]}"
+                    _append_job_live_event(job, f"[{urlparse(url).netloc or url}] Crawl error: {str(e)[:100]}")
                     db.commit()
                     continue
             
@@ -6352,11 +6466,23 @@ def generate_context_pack_v2(job_id: int):
             job.state = JobState.completed
             job.progress = 1.0
             job.progress_message = "Complete"
-            job.result_json = {
+            result_payload = job.result_json if isinstance(job.result_json, dict) else {}
+            result_payload.update({
                 "urls_crawled": len(all_urls),
+                "sites_crawled": len(all_context_packs),
+                "pages_crawled": sum(len(context_pack.pages) for _, context_pack in all_context_packs),
                 "product_pages_found": product_pages_total,
-                "markdown_length": len(raw_markdown)
-            }
+                "markdown_length": len(raw_markdown),
+                "duration_seconds": max(
+                    0,
+                    int(
+                        (
+                            (datetime.utcnow() - (job.started_at or job.created_at or datetime.utcnow())).total_seconds()
+                        )
+                    ),
+                ),
+            })
+            job.result_json = result_payload
             job.finished_at = datetime.utcnow()
             db.commit()
             
@@ -6368,7 +6494,16 @@ def generate_context_pack_v2(job_id: int):
             # #endregion
             
             return {"success": True, "product_pages": product_pages_total}
-            
+        except ContextPackJobInterrupted as e:
+            db.rollback()
+            interrupted_job = db.query(Job).filter(Job.id == job_id).first()
+            if interrupted_job and interrupted_job.state != JobState.failed:
+                interrupted_job.state = JobState.failed
+                interrupted_job.error_message = str(e)
+                interrupted_job.progress_message = str(e)
+                interrupted_job.finished_at = datetime.utcnow()
+                db.commit()
+            return {"error": str(e)}
         except Exception as e:
             try:
                 db.rollback()

@@ -10,6 +10,7 @@ import {
   useThesisPack,
   useUpdateContextPack,
   useUpdateThesisPack,
+  useWorkspaceJobs,
   useWorkspaceJobWithPolling,
 } from "@/lib/hooks";
 import { workspaceApi, ThesisClaim } from "@/lib/api";
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
 import { JobProgressPanel } from "@/components/JobProgressPanel";
+import { JobRunSummary } from "@/components/JobRunSummary";
 import ReactMarkdown from "react-markdown";
 import clsx from "clsx";
 
@@ -94,6 +96,7 @@ export default function ThesisPackPage() {
   const { data: profile, isLoading } = useContextPack(workspaceId);
   const { data: thesisPack } = useThesisPack(workspaceId);
   const { data: gates } = useGates(workspaceId);
+  const { data: contextJobs } = useWorkspaceJobs(workspaceId, "context_pack");
   const updateProfile = useUpdateContextPack(workspaceId);
   const updateThesisPack = useUpdateThesisPack(workspaceId);
   const refreshThesisPack = useRefreshThesisPack(workspaceId);
@@ -142,6 +145,10 @@ export default function ThesisPackPage() {
     }
     return groups;
   }, [thesisPack]);
+  const latestCompletedContextJob = useMemo(
+    () => contextJobs?.find((job) => job.state === "completed") ?? null,
+    [contextJobs]
+  );
 
   const crawlButtonLabel = profile?.context_pack_generated_at
     ? "Recrawl And Update Draft"
@@ -455,6 +462,8 @@ export default function ThesisPackPage() {
               onStop={jobRunner.canStop ? jobRunner.stop : undefined}
             />
           )}
+
+          {!jobRunner.isRunning && <JobRunSummary job={latestCompletedContextJob} />}
 
           {(jobRunner.jobError || applyThesisAdjustment.error) && (
             <div className="text-sm text-danger border border-danger/40 bg-danger/10 px-3 py-2">

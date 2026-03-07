@@ -8,6 +8,7 @@ import {
   useCreateVendor,
   useTopCandidates,
   useGates,
+  useWorkspaceJobs,
   useWorkspaceJobWithPolling,
 } from "@/lib/hooks";
 import { workspaceApi, Vendor } from "@/lib/api";
@@ -25,6 +26,7 @@ import {
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
 import { JobProgressPanel } from "@/components/JobProgressPanel";
+import { JobRunSummary } from "@/components/JobRunSummary";
 import clsx from "clsx";
 
 const CLASSIFICATION_LABELS: Record<string, string> = {
@@ -105,6 +107,7 @@ export default function UniversePage() {
     error: topCandidatesError,
   } = useTopCandidates(workspaceId, 25, allowDegradedRun);
   const { data: gates } = useGates(workspaceId);
+  const { data: discoveryJobs } = useWorkspaceJobs(workspaceId, "discovery_universe");
   const updateVendor = useUpdateVendor(workspaceId);
   const createVendor = useCreateVendor(workspaceId);
 
@@ -163,6 +166,7 @@ export default function UniversePage() {
     nonSolutionVendors.filter((v) => (v.decision_classification || "insufficient_evidence") === "not_good_target").length || 0;
   const insufficientCount =
     nonSolutionVendors.filter((v) => (v.decision_classification || "insufficient_evidence") === "insufficient_evidence").length || 0;
+  const latestCompletedDiscoveryJob = discoveryJobs?.find((job) => job.state === "completed") ?? null;
 
   if (isLoading) {
     return (
@@ -205,6 +209,8 @@ export default function UniversePage() {
           </div>
         </div>
       )}
+
+      {!jobRunner.isRunning && <JobRunSummary job={latestCompletedDiscoveryJob} />}
 
       {/* Header */}
       <div className="flex items-center justify-between">

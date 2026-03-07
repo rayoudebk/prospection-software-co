@@ -79,8 +79,12 @@ class PreviewFetcher:
         self._log(f"Fetching previews for {len(urls_list)} URLs...")
         
         # Process in batches
+        total_batches = max(1, (len(urls_list) + BATCH_SIZE - 1) // BATCH_SIZE)
         for i in range(0, len(urls_list), BATCH_SIZE):
             batch = urls_list[i:i + BATCH_SIZE]
+            batch_index = (i // BATCH_SIZE) + 1
+            if batch:
+                self._log(f"Preview batch {batch_index}/{total_batches}: {batch[0]}")
             
             tasks = [self._fetch_preview(url) for url in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)

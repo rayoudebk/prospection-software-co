@@ -6,6 +6,7 @@ import {
   useReportCards,
   useReportLens,
   useReports,
+  useWorkspaceJobs,
   useWorkspaceJobWithPolling,
 } from "@/lib/hooks";
 import { workspaceApi, ReportCard, ReportClaim } from "@/lib/api";
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
 import { JobProgressPanel } from "@/components/JobProgressPanel";
+import { JobRunSummary } from "@/components/JobRunSummary";
 import clsx from "clsx";
 
 const REPORT_CLASSIFICATION_LABELS: Record<string, string> = {
@@ -239,6 +241,7 @@ export default function ReportPage() {
   const [exporting, setExporting] = useState(false);
 
   const { data: reports, isLoading: reportsLoading, refetch: refetchReports } = useReports(workspaceId);
+  const { data: reportJobs } = useWorkspaceJobs(workspaceId, "generate_report_snapshot");
 
   const reportRunner = useWorkspaceJobWithPolling(
     workspaceId,
@@ -263,6 +266,7 @@ export default function ReportPage() {
     bucketParam
   );
   const { data: lens, isLoading: lensLoading } = useReportLens(workspaceId, selectedReportId, mode);
+  const latestCompletedReportJob = reportJobs?.find((job) => job.state === "completed") ?? null;
 
   const sortedCards = useMemo(() => {
     if (!cards) return [];
@@ -300,6 +304,8 @@ export default function ReportPage() {
         title="Cards"
         subtitle="Generate exportable candidate cards and adjacency summaries with source pills, validation questions, and snapshot-level evidence context."
       />
+
+      {!reportRunner.isRunning && <JobRunSummary job={latestCompletedReportJob} />}
 
       <div className="bg-steel-50 border border-steel-200 p-4 space-y-4">
         <div className="flex flex-wrap items-end gap-3">

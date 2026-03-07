@@ -282,6 +282,8 @@ class UnifiedCrawler:
                     )
                 )
             self._log(f"Selected {len(selected_previews)} pages for deep extraction")
+            for preview in selected_previews[: min(5, len(selected_previews))]:
+                self._log(f"Selected page for extraction: {preview.url}")
             
             # Phase 4: Deep Extraction
             self._log("Phase 4: Deep content extraction...")

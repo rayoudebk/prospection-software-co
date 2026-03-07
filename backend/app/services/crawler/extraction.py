@@ -76,8 +76,12 @@ class ContentExtractor:
         self._log(f"Extracting content from {len(previews)} pages...")
         
         # Process in batches
+        total_batches = max(1, (len(previews) + BATCH_SIZE - 1) // BATCH_SIZE)
         for i in range(0, len(previews), BATCH_SIZE):
             batch = previews[i:i + BATCH_SIZE]
+            batch_index = (i // BATCH_SIZE) + 1
+            if batch:
+                self._log(f"Extraction batch {batch_index}/{total_batches}: {batch[0].url}")
             
             tasks = [self._extract_page(preview) for preview in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)

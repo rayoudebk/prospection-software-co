@@ -38,10 +38,11 @@ class LLMTriage:
             Selected previews respecting category quotas
         """
         self._log("Triaging pages with LLM...")
-        
+
         # Get LLM classifications
-        triage_results = self._llm_classify_pages(previews[:100])  # Limit to top 100
-        
+        limited_previews = previews[:100]
+        triage_results = self._llm_classify_pages(limited_previews)
+
         if not triage_results:
             # Fallback to heuristic if LLM fails
             self._log("LLM triage failed, using heuristic...")
@@ -62,6 +63,27 @@ class LLMTriage:
         previews: List[PagePreview]
     ) -> List[LLMTriageResult]:
         """Use LLM to classify pages based on previews."""
+        if not previews:
+            return []
+
+        batch_size = 20
+        total_batches = max(1, (len(previews) + batch_size - 1) // batch_size)
+        combined_results: List[LLMTriageResult] = []
+
+        for batch_index in range(total_batches):
+            start = batch_index * batch_size
+            end = start + batch_size
+            batch = previews[start:end]
+            self._log(f"Triaging pages with LLM ({batch_index + 1}/{total_batches})...")
+            combined_results.extend(self._llm_classify_pages_batch(batch))
+
+        return combined_results
+
+    def _llm_classify_pages_batch(
+        self,
+        previews: List[PagePreview]
+    ) -> List[LLMTriageResult]:
+        """Use LLM to classify one preview batch."""
         # Format previews for prompt
         preview_lines = []
         for i, p in enumerate(previews):
@@ -151,7 +173,7 @@ Include ALL {len(previews)} pages in your response."""
                     continue
             
             return results
-        
+
         except Exception as e:
             self._log(f"LLM classification error: {e}")
             return []
