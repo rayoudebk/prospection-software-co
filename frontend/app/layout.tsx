@@ -19,7 +19,7 @@ export default function RootLayout({
         className="bg-steel-200 text-steel-900 antialiased font-sans" 
         style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}
       >
-        <DebugStyles />
+        {process.env.NODE_ENV === "development" ? <DebugStyles /> : null}
         <Providers>{children}</Providers>
       </body>
     </html>

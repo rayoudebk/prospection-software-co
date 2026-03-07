@@ -1,5 +1,23 @@
-// Use Next.js rewrite proxy in browser, direct URL in Node.js
-const API_BASE = typeof window !== 'undefined' ? '/api' : 'http://localhost:8000';
+const LOCAL_API_URL = "http://localhost:8000";
+
+function resolveApiBase() {
+  const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL || process.env.API_URL;
+  if (configuredApiUrl) {
+    return configuredApiUrl.replace(/\/$/, "");
+  }
+
+  if (typeof window !== "undefined") {
+    return "/api";
+  }
+
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}/api`;
+  }
+
+  return LOCAL_API_URL;
+}
+
+const API_BASE = resolveApiBase();
 
 // ============================================================================
 // Workspace Types
@@ -472,11 +490,7 @@ export interface EvaluationReplayResult {
 // ============================================================================
 
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
-  // #region agent log
-  const startTime = Date.now();
   const fullUrl = `${API_BASE}${url}`;
-  fetch('http://127.0.0.1:7243/ingest/b9aef1f8-fb7e-4cf9-8f8f-eaa32841ddf0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:157',message:'API request starting',data:{url:fullUrl,method:options?.method||'GET'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-  // #endregion
   
   try {
     const res = await fetch(fullUrl, {
@@ -487,16 +501,8 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
       },
     });
     
-    // #region agent log
-    const duration = Date.now() - startTime;
-    fetch('http://127.0.0.1:7243/ingest/b9aef1f8-fb7e-4cf9-8f8f-eaa32841ddf0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:170',message:'API response received',data:{url:fullUrl,status:res.status,statusText:res.statusText,ok:res.ok,duration},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
-    
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: res.statusText }));
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/b9aef1f8-fb7e-4cf9-8f8f-eaa32841ddf0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:175',message:'API error response',data:{url:fullUrl,status:res.status,errorDetail:error.detail||error,errorText:res.statusText},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
       const message =
         typeof error?.detail === "string"
           ? error.detail
@@ -508,11 +514,6 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
     }
     return res.json();
   } catch (err) {
-    // #region agent log
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    const errorName = err instanceof Error ? err.name : 'Unknown';
-    fetch('http://127.0.0.1:7243/ingest/b9aef1f8-fb7e-4cf9-8f8f-eaa32841ddf0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:182',message:'API fetch exception',data:{url:fullUrl,errorName,errorMessage:errorMsg,isNetworkError:errorName==='TypeError'||errorMsg.includes('fetch')||errorMsg.includes('network')},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
     throw err;
   }
 }

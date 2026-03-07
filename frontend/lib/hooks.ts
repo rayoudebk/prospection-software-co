@@ -19,20 +19,7 @@ import { useEffect, useState } from "react";
 export function useWorkspaces() {
   return useQuery({
     queryKey: ["workspaces"],
-    queryFn: async () => {
-      // #region agent log
-      try {
-        fetch('http://127.0.0.1:7243/ingest/b9aef1f8-fb7e-4cf9-8f8f-eaa32841ddf0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'hooks.ts:24',message:'useWorkspaces queryFn called',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-        const result = await workspaceApi.list();
-        fetch('http://127.0.0.1:7243/ingest/b9aef1f8-fb7e-4cf9-8f8f-eaa32841ddf0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'hooks.ts:27',message:'useWorkspaces success',data:{resultCount:result?.length||0},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-        return result;
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        fetch('http://127.0.0.1:7243/ingest/b9aef1f8-fb7e-4cf9-8f8f-eaa32841ddf0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'hooks.ts:31',message:'useWorkspaces error caught',data:{errorMessage:errorMsg,errorName:err instanceof Error ? err.name : 'Unknown'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-        throw err;
-      }
-      // #endregion
-    },
+    queryFn: () => workspaceApi.list(),
   });
 }
 

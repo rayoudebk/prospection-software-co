@@ -44,19 +44,7 @@ export default function WorkspacesPage() {
     );
   }
 
-  if (error) {
-    // #region agent log
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    fetch('http://127.0.0.1:7243/ingest/b9aef1f8-fb7e-4cf9-8f8f-eaa32841ddf0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'page.tsx:47',message:'Workspaces error displayed',data:{errorMessage:errorMsg,errorName:error instanceof Error ? error.name : 'Unknown'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-steel-200">
-        <div className="text-danger font-medium">
-          Error loading workspaces: {error instanceof Error ? error.message : String(error)}
-        </div>
-      </div>
-    );
-  }
+  const errorMessage = error ? (error instanceof Error ? error.message : String(error)) : null;
 
   return (
     <div className="min-h-screen bg-steel-200">
@@ -82,6 +70,13 @@ export default function WorkspacesPage() {
       </div>
 
       <div className="max-w-6xl mx-auto px-6 py-8">
+        {errorMessage ? (
+          <div className="mb-6 border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Preview is live, but the backend API is not reachable from this deployment yet. You can inspect the UI shell here; data-loading actions will fail until a public backend URL is configured.
+            <div className="mt-1 text-amber-800/80">API error: {errorMessage}</div>
+          </div>
+        ) : null}
+
         {/* Create Modal */}
         {showCreate && (
           <div className="fixed inset-0 bg-oxford/80 flex items-center justify-center z-50">
@@ -138,20 +133,23 @@ export default function WorkspacesPage() {
         )}
 
         {/* Workspaces Grid */}
-        {workspaces && workspaces.length === 0 ? (
+        {(!workspaces || workspaces.length === 0) ? (
           <div className="text-center py-16 bg-steel-50 border border-steel-200">
             <MapPin className="w-12 h-12 text-steel-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-oxford mb-2">
-              No workspaces yet
+              {errorMessage ? "Workspace data unavailable" : "No workspaces yet"}
             </h3>
             <p className="text-steel-500 mb-4">
-              Create your first workspace to start researching M&A targets
+              {errorMessage
+                ? "This preview has no backend connection. Once the API is deployed, workspace data will appear here."
+                : "Create your first workspace to start researching M&A targets"}
             </p>
             <button
               onClick={() => setShowCreate(true)}
-              className="btn-primary"
+              className="btn-primary disabled:opacity-50"
+              disabled={Boolean(errorMessage)}
             >
-              Create Workspace
+              {errorMessage ? "Backend Required" : "Create Workspace"}
             </button>
           </div>
         ) : (
