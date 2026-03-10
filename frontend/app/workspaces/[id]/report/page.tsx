@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import {
   useReportCards,
   useReports,
+  useGates,
   useWorkspaceJobs,
   useWorkspaceJobWithPolling,
 } from "@/lib/hooks";
@@ -17,6 +18,7 @@ import {
   ExternalLink,
   Filter,
   AlertCircle,
+  CheckCircle,
   BarChart3,
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
@@ -265,6 +267,7 @@ function CardSection({ card }: { card: ReportCard }) {
 export default function ReportPage() {
   const params = useParams();
   const workspaceId = Number(params.id);
+  const { data: gates } = useGates(workspaceId);
 
   const [reportName, setReportName] = useState("");
   const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
@@ -326,10 +329,32 @@ export default function ReportPage() {
     <div className="space-y-6">
       <StepHeader
         icon={FileSpreadsheet}
-        step={4}
+        step={5}
         title="Cards"
         subtitle="Generate exportable candidate cards with the canonical company buckets, KPI evidence, validation questions, and snapshot-level source traceability."
       />
+
+      {gates && (
+        <div
+          className={clsx(
+            "p-4 border",
+            gates.enrichment ? "bg-success/10 border-success" : "bg-warning/10 border-warning"
+          )}
+        >
+          <div className="flex items-center gap-2">
+            {gates.enrichment ? (
+              <CheckCircle className="w-5 h-5 text-success" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-warning" />
+            )}
+            <span className={gates.enrichment ? "text-success font-medium" : "text-warning font-medium"}>
+              {gates.enrichment
+                ? "Enrichment is complete — you can generate Cards"
+                : gates.missing_items.enrichment?.join(", ") || "Complete Validation and enrichment before generating Cards"}
+            </span>
+          </div>
+        </div>
+      )}
 
       {!reportRunner.isRunning && <JobRunSummary job={latestCompletedReportJob} />}
 

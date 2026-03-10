@@ -7,6 +7,7 @@ import {
   FileText,
   Layers,
   Globe,
+  ClipboardCheck,
   FileSpreadsheet,
   ArrowLeft,
   Loader2,
@@ -41,12 +42,20 @@ const navItems = [
     gateKey: "search_lanes",
   },
   {
+    href: "validation",
+    label: "Validation",
+    description: "Manually review the most promising companies before deep cards",
+    icon: ClipboardCheck,
+    step: 4,
+    gateKey: "universe",
+  },
+  {
     href: "report",
     label: "Cards",
     description: "Export candidate cards and adjacency summaries with source pills",
     icon: FileSpreadsheet,
-    step: 4,
-    gateKey: "universe",
+    step: 5,
+    gateKey: "enrichment",
   },
 ];
 
@@ -71,7 +80,8 @@ export default function WorkspaceLayout({
         gates.context_pack,
         gates.search_lanes,
         gates.universe,
-        gates.universe,
+        gates.segmentation,
+        gates.enrichment,
       ]
     : [];
 

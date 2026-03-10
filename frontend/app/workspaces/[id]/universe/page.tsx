@@ -201,9 +201,9 @@ export default function UniversePage() {
             ) : (
               <AlertCircle className="w-5 h-5 text-warning" />
             )}
-            <span className={gates.universe ? "text-success font-medium" : "text-warning font-medium"}>
+              <span className={gates.universe ? "text-success font-medium" : "text-warning font-medium"}>
               {gates.universe
-                ? `${keptCount} companies kept — you can proceed to Cards`
+                ? `${keptCount} companies kept — you can proceed to Validation`
                 : gates.missing_items.universe?.join(", ") || "Keep at least 5 companies to continue"}
             </span>
           </div>
