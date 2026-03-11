@@ -106,6 +106,7 @@ class GeoScope(BaseModel):
 
 class CompanyProfileUpdate(BaseModel):
     buyer_company_url: Optional[str] = None
+    buyer_context_summary: Optional[str] = None
     reference_company_urls: Optional[List[str]] = None
     reference_evidence_urls: Optional[List[str]] = None
     geo_scope: Optional[GeoScope] = None
@@ -1688,6 +1689,8 @@ async def update_context_pack(
     
     if data.buyer_company_url is not None:
         profile.buyer_company_url = data.buyer_company_url
+    if data.buyer_context_summary is not None:
+        profile.buyer_context_summary = str(data.buyer_context_summary or "").strip()[:8000] or None
     if data.reference_company_urls is not None:
         profile.reference_company_urls = _clean_url_list(data.reference_company_urls, max_items=10)
     if data.reference_evidence_urls is not None:
@@ -1723,8 +1726,8 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
     active_jobs = active_jobs_result.scalars().all()
     for active_job in active_jobs:
         active_job.state = JobState.failed
-        active_job.error_message = "Superseded by newer company thesis run"
-        active_job.progress_message = "Superseded by newer company thesis run"
+        active_job.error_message = "Superseded by newer sourcing brief run"
+        active_job.progress_message = "Superseded by newer sourcing brief run"
         active_job.finished_at = datetime.utcnow()
         if active_job.interaction_id:
             try:
@@ -4379,18 +4382,20 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
             if thesis_pack
             else bootstrap_thesis_payload(profile)
         )
-        if not profile.buyer_company_url:
-            missing_items["context_pack"].append("Add your company URL")
+        has_brief_input = bool(str(profile.buyer_context_summary or "").strip())
+        has_company_or_brief = bool(profile.buyer_company_url or has_brief_input)
+        if not has_company_or_brief:
+            missing_items["context_pack"].append("Add a company URL or paste an investment thesis")
         else:
             context_claim_groups_available.add("identity_scope")
         if not (thesis_payload.get("summary") or thesis_payload.get("claims")):
-            missing_items["context_pack"].append("Generate or refresh company thesis")
+            missing_items["context_pack"].append("Generate or refresh the sourcing brief")
         else:
             context_claim_groups_available.add("product_depth")
         if profile.reference_company_urls:
             context_claim_groups_available.add("vertical_workflow")
-        if not thesis_payload.get("source_pills"):
-            missing_items["context_pack"].append("Add auditable source links to the company thesis")
+        if not thesis_payload.get("source_pills") and (profile.reference_company_urls or profile.reference_evidence_urls):
+            missing_items["context_pack"].append("Review supporting evidence links for the sourcing brief")
 
         required_groups = gate_cfg.get("context_pack", {}).get("required_claim_groups", ["identity_scope", "product_depth"])
         min_required = min(
@@ -4403,7 +4408,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
                 f"Evidence pattern coverage too low ({covered}/{len(required_groups)})"
             )
         context_pack_ready = bool(
-            profile.buyer_company_url
+            has_company_or_brief
             and (thesis_payload.get("summary") or thesis_payload.get("claims"))
             and covered >= min_required
         )

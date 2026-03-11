@@ -180,7 +180,7 @@ export default function SearchLanesPage() {
         icon={Layers}
         step={2}
         title="Search Lanes"
-        subtitle="Confirm the two sourcing lanes that will drive discovery. Core captures direct-fit companies. Adjacent captures neighboring workflows, extensions, and capability edges worth sourcing separately."
+        subtitle="Review the suggested sourcing lanes derived from the brief. Core captures direct-fit companies. Adjacent captures neighboring workflows, extensions, and capability edges worth sourcing separately."
       />
 
       {gates && (
@@ -209,7 +209,7 @@ export default function SearchLanesPage() {
         <div className="bg-oxford text-white border border-oxford-dark p-5">
           <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-steel-400 mb-2">
             <Sparkles className="w-4 h-4" />
-            Derived From Company Thesis
+            Derived From Sourcing Brief
           </div>
           <p className="text-sm text-steel-100 leading-relaxed">{thesisPack.summary}</p>
         </div>

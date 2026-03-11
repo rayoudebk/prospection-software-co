@@ -60,6 +60,8 @@ def _build_profile() -> CompanyProfile:
         },
         product_pages_found=5,
     )
+
+
 def test_bootstrap_thesis_payload_generates_claims_and_source_pills():
     payload = bootstrap_thesis_payload(_build_profile())
 
@@ -109,3 +111,37 @@ def test_apply_thesis_adjustment_operations_updates_claims_and_questions():
     assert any(claim["value"] == "Voting rights workflow" for claim in adjusted["claims"])
     assert "What company-size window matters most?" in adjusted["open_questions"]
     assert adjusted["applied_operations"]
+
+
+def test_bootstrap_thesis_payload_supports_investment_thesis_only():
+    profile = CompanyProfile(
+        workspace_id=2,
+        buyer_company_url=None,
+        buyer_context_summary=(
+            "I want to invest in companies in Europe that provide software to healthcare actors "
+            "(hospitals, doctors, etc) as licences with no SaaS, under $10M in revenue, and with 30-50 employees."
+        ),
+        reference_company_urls=[],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={},
+        context_pack_json={},
+        product_pages_found=0,
+    )
+
+    payload = bootstrap_thesis_payload(profile)
+    claims_by_section = {}
+    for claim in payload["claims"]:
+        claims_by_section.setdefault(claim["section"], []).append(claim["value"])
+
+    assert "Software for healthcare actors" in claims_by_section["core_capability"]
+    assert "License-based software" in claims_by_section["business_model"]
+    assert "Exclude SaaS-first software companies" in claims_by_section["exclude_constraint"]
+    assert "Prefer companies under $10M revenue" in claims_by_section["include_constraint"]
+    assert "Employee estimate: 30-50 employees" in claims_by_section["size_signal"]
+    assert "Primary sourcing region: Europe" in claims_by_section["geography"]
+
+    lanes = derive_search_lane_payloads(payload, profile)
+    core_lane = next(lane for lane in lanes if lane["lane_type"] == "core")
+    assert "Software for healthcare actors" in core_lane["capabilities"]
+    assert core_lane["title"].startswith("Core: ")

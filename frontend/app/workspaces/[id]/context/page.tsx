@@ -103,6 +103,8 @@ export default function ThesisPackPage() {
   const applyThesisAdjustment = useApplyThesisAdjustment(workspaceId);
 
   const [buyerUrl, setBuyerUrl] = useState("");
+  const [entryMode, setEntryMode] = useState<"company" | "thesis">("company");
+  const [briefText, setBriefText] = useState("");
   const [referenceUrls, setReferenceUrls] = useState<string[]>([]);
   const [newReferenceUrl, setNewReferenceUrl] = useState("");
   const [referenceUrlError, setReferenceUrlError] = useState<string | null>(null);
@@ -112,14 +114,21 @@ export default function ThesisPackPage() {
   const [editingClaimId, setEditingClaimId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
   const [adjustmentMessage, setAdjustmentMessage] = useState("");
+  const [draftSummary, setDraftSummary] = useState("");
 
   useEffect(() => {
     if (profile) {
       setBuyerUrl(profile.buyer_company_url || "");
+      setEntryMode(profile.buyer_company_url ? "company" : profile.buyer_context_summary ? "thesis" : "company");
+      setBriefText(profile.buyer_company_url ? "" : profile.buyer_context_summary || "");
       setReferenceUrls(profile.reference_company_urls || []);
       setEvidenceUrls(profile.reference_evidence_urls || []);
     }
   }, [profile]);
+
+  useEffect(() => {
+    setDraftSummary(thesisPack?.summary || "");
+  }, [thesisPack?.summary]);
 
   const jobRunner = useWorkspaceJobWithPolling(
     workspaceId,
@@ -151,16 +160,24 @@ export default function ThesisPackPage() {
   );
 
   const crawlButtonLabel = profile?.context_pack_generated_at
-    ? "Recrawl And Update Draft"
-    : "Generate Draft Thesis";
+    ? "Recrawl And Update Brief"
+    : "Generate Draft From Website";
+  const thesisButtonLabel = thesisPack?.generated_at
+    ? "Regenerate Draft From Brief"
+    : "Generate Draft From Brief";
   const jobStateLabel =
     jobRunner.job?.state === "queued"
       ? "Queued for crawl worker..."
       : `Working... ${Math.round(jobRunner.progress * 100)}%`;
 
   const saveProfileInputs = async () => {
+    const shouldClearThesisBrief =
+      entryMode === "company" &&
+      !profile?.buyer_company_url &&
+      Boolean(briefText.trim());
     await updateProfile.mutateAsync({
-      buyer_company_url: buyerUrl,
+      buyer_company_url: entryMode === "company" ? buyerUrl : "",
+      buyer_context_summary: entryMode === "thesis" ? briefText : shouldClearThesisBrief ? "" : undefined,
       reference_company_urls: referenceUrls,
       reference_evidence_urls: evidenceUrls,
     });
@@ -192,7 +209,7 @@ export default function ThesisPackPage() {
   const handleAddEvidence = () => {
     const normalized = normalizeUrlInput(newEvidenceUrl);
     if (!normalized) {
-      setEvidenceUrlError("Enter a valid proof-page URL.");
+      setEvidenceUrlError("Enter a valid supporting-evidence URL.");
       return;
     }
     if (evidenceUrls.some((url) => url.toLowerCase() === normalized.toLowerCase())) {
@@ -210,6 +227,10 @@ export default function ThesisPackPage() {
     setAdjustmentMessage("");
   };
 
+  const handleSaveSummary = async () => {
+    await updateThesisPack.mutateAsync({ summary: draftSummary.trim() || null });
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -223,8 +244,8 @@ export default function ThesisPackPage() {
       <StepHeader
         icon={FileText}
         step={1}
-        title="Company Thesis"
-        subtitle="Start with your company website. Add comparable companies or proof pages if you have them. Then generate a draft thesis, review it, and correct it before moving into Search Lanes."
+        title="Sourcing Brief"
+        subtitle="Start from a company website or an investment thesis. Add comparable companies and supporting evidence if you have them. Then generate a structured draft, review it, and correct it before moving into Search Lanes."
       />
 
       {gates && (
@@ -242,8 +263,8 @@ export default function ThesisPackPage() {
             )}
             <span className={gates.context_pack ? "text-success font-medium" : "text-warning font-medium"}>
               {gates.context_pack
-                ? "Company thesis ready — you can proceed to Search Lanes"
-                : gates.missing_items.context_pack?.join(", ") || "Complete the company thesis to continue"}
+                ? "Sourcing brief ready — review the suggested Search Lanes"
+                : gates.missing_items.context_pack?.join(", ") || "Complete the sourcing brief to continue"}
             </span>
           </div>
         </div>
@@ -254,18 +275,55 @@ export default function ThesisPackPage() {
           <div>
             <h2 className="text-lg font-semibold text-oxford flex items-center gap-2 mb-4">
               <Building2 className="w-5 h-5" />
-              Your Company Inputs
+              Sourcing Brief Inputs
             </h2>
             <p className="text-sm text-steel-600 mb-4">
-              This means your own company, not a target. The system uses these inputs to form its first draft of your sourcing thesis.
+              Choose the entry point that matches your mandate. You can start from a buyer website or from a plain-English investment thesis, then add comparables and evidence to make the draft more precise.
             </p>
+
+            <div className="grid grid-cols-1 gap-3 mb-5">
+              <button
+                type="button"
+                onClick={() => setEntryMode("company")}
+                className={clsx(
+                  "text-left border p-4 transition",
+                  entryMode === "company"
+                    ? "border-oxford bg-oxford text-white"
+                    : "border-steel-200 bg-white text-oxford"
+                )}
+              >
+                <div className="text-sm font-semibold">Start from a company website</div>
+                <div className={clsx("text-xs mt-1", entryMode === "company" ? "text-steel-200" : "text-steel-500")}>
+                  Best when you already know the buyer or sourcing platform and want the system to infer product scope from first-party pages.
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setEntryMode("thesis")}
+                className={clsx(
+                  "text-left border p-4 transition",
+                  entryMode === "thesis"
+                    ? "border-oxford bg-oxford text-white"
+                    : "border-steel-200 bg-white text-oxford"
+                )}
+              >
+                <div className="text-sm font-semibold">Start from an investment thesis</div>
+                <div className={clsx("text-xs mt-1", entryMode === "thesis" ? "text-steel-200" : "text-steel-500")}>
+                  Use this when there is no sourcing company yet and the mandate is defined by sector, customer type, business model, size, or geography.
+                </div>
+              </button>
+            </div>
 
             <div className="space-y-3 border border-steel-200 bg-white p-4 mb-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-medium text-oxford">1. Your company website</div>
+                  <div className="text-sm font-medium text-oxford">
+                    1. {entryMode === "company" ? "Your company website" : "Investment thesis or sourcing brief"}
+                  </div>
                   <p className="text-xs text-steel-500 mt-1">
-                    Required. This is the main source used to understand what your company does.
+                    {entryMode === "company"
+                      ? "Required in company-led mode. This is the main source used to understand what your platform actually does."
+                      : "Required in thesis-led mode. Describe the market, customer, business model, size, and geography you want to source."}
                   </p>
                 </div>
                 <span className="px-2 py-0.5 text-xs border border-warning/30 bg-warning/10 text-warning">
@@ -276,7 +334,7 @@ export default function ThesisPackPage() {
                 <div>
                   <div className="text-sm font-medium text-oxford">2. Comparable companies</div>
                   <p className="text-xs text-steel-500 mt-1">
-                    Optional. Useful when your positioning is broad or your site alone is not specific enough.
+                    Optional. Useful when the mandate is broad or the first input is not specific enough on category, product shape, or adjacency.
                   </p>
                 </div>
                 <span className="px-2 py-0.5 text-xs border border-steel-200 bg-steel-50 text-steel-600">
@@ -285,9 +343,9 @@ export default function ThesisPackPage() {
               </div>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-medium text-oxford">3. Proof links</div>
+                  <div className="text-sm font-medium text-oxford">3. Supporting evidence</div>
                   <p className="text-xs text-steel-500 mt-1">
-                    Optional, but high value. These make the draft more auditable and improve confidence.
+                    Optional, but high value. Add direct evidence pages, market reports, or other source material that should shape the sourcing brief.
                   </p>
                 </div>
                 <span className="px-2 py-0.5 text-xs border border-success/30 bg-success/10 text-success">
@@ -296,22 +354,44 @@ export default function ThesisPackPage() {
               </div>
             </div>
 
-            <label className="label flex items-center gap-2">
-              Your company website
-              <span className="px-2 py-0.5 text-[11px] border border-warning/30 bg-warning/10 text-warning">
-                Required
-              </span>
-            </label>
-            <input
-              type="url"
-              value={buyerUrl}
-              onChange={(event) => setBuyerUrl(event.target.value)}
-              placeholder="https://your-company.com"
-              className="input"
-            />
-            <p className="text-xs text-steel-500 mt-1">
-              Use your own company site. This is the primary source for the draft thesis.
-            </p>
+            {entryMode === "company" ? (
+              <>
+                <label className="label flex items-center gap-2">
+                  Your company website
+                  <span className="px-2 py-0.5 text-[11px] border border-warning/30 bg-warning/10 text-warning">
+                    Required
+                  </span>
+                </label>
+                <input
+                  type="url"
+                  value={buyerUrl}
+                  onChange={(event) => setBuyerUrl(event.target.value)}
+                  placeholder="https://your-company.com"
+                  className="input"
+                />
+                <p className="text-xs text-steel-500 mt-1">
+                  Use your own company site. The crawler uses this to infer capabilities, ICP, and evidence-backed constraints.
+                </p>
+              </>
+            ) : (
+              <>
+                <label className="label flex items-center gap-2">
+                  Investment thesis or sourcing brief
+                  <span className="px-2 py-0.5 text-[11px] border border-warning/30 bg-warning/10 text-warning">
+                    Required
+                  </span>
+                </label>
+                <textarea
+                  value={briefText}
+                  onChange={(event) => setBriefText(event.target.value)}
+                  placeholder="Example: I want to invest in companies in Europe that provide software to healthcare actors such as hospitals and doctors, sold primarily as licensed software rather than SaaS, with less than $10M in revenue and 30-50 employees."
+                  className="w-full min-h-[164px] border border-steel-300 px-3 py-2 text-sm bg-white"
+                />
+                <p className="text-xs text-steel-500 mt-1">
+                  Write the mandate in plain English. Include customer type, business model, geography, size, and exclusions if they matter.
+                </p>
+              </>
+            )}
           </div>
 
           <div>
@@ -358,13 +438,13 @@ export default function ThesisPackPage() {
 
           <div>
             <label className="label flex items-center gap-2">
-              Proof links
+              Supporting evidence
               <span className="px-2 py-0.5 text-[11px] border border-success/30 bg-success/10 text-success">
                 Optional, high value
               </span>
             </label>
             <p className="text-xs text-steel-500 mb-2">
-              Add direct proof pages such as customer stories, partner pages, product pages, or market evidence.
+              Add direct evidence such as customer stories, product pages, partner pages, industry directories, or market research reports.
             </p>
             <div className="space-y-2 mb-2">
               {evidenceUrls.map((url, index) => (
@@ -388,7 +468,7 @@ export default function ThesisPackPage() {
                   setNewEvidenceUrl(event.target.value);
                   setEvidenceUrlError(null);
                 }}
-                placeholder="https://company.com/customer-proof"
+                placeholder="https://company.com/customer-story or https://bcg.com/report"
                 className="input text-sm"
               />
               <button onClick={handleAddEvidence} className="btn-secondary px-3">
@@ -404,17 +484,26 @@ export default function ThesisPackPage() {
               disabled={updateProfile.isPending}
               className="btn-secondary disabled:opacity-50"
             >
-              {updateProfile.isPending ? "Saving..." : "Save Source List"}
+              {updateProfile.isPending ? "Saving..." : "Save Brief Inputs"}
             </button>
             <button
               onClick={async () => {
                 await saveProfileInputs();
-                jobRunner.run();
+                if (entryMode === "company") {
+                  jobRunner.run();
+                  return;
+                }
+                await refreshThesisPack.mutateAsync();
               }}
-              disabled={jobRunner.isRunning || updateProfile.isPending || !buyerUrl}
+              disabled={
+                updateProfile.isPending ||
+                (entryMode === "company"
+                  ? jobRunner.isRunning || !buyerUrl
+                  : refreshThesisPack.isPending || !briefText.trim())
+              }
               className="btn-primary flex items-center gap-2 disabled:opacity-50"
             >
-              {jobRunner.isRunning ? (
+              {entryMode === "company" && jobRunner.isRunning ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
                   {jobStateLabel}
@@ -422,21 +511,23 @@ export default function ThesisPackPage() {
               ) : (
                 <>
                   <RefreshCw className="w-4 h-4" />
-                  {crawlButtonLabel}
+                  {entryMode === "company" ? crawlButtonLabel : thesisButtonLabel}
                 </>
               )}
             </button>
-            <button
-              onClick={() => refreshThesisPack.mutate()}
-              disabled={refreshThesisPack.isPending || !profile?.buyer_company_url}
-              className="btn-secondary flex items-center gap-2 disabled:opacity-50"
-            >
-              {refreshThesisPack.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              Regenerate Draft Only
-            </button>
+            {entryMode === "company" ? (
+              <button
+                onClick={() => refreshThesisPack.mutate()}
+                disabled={refreshThesisPack.isPending || (!profile?.buyer_company_url && !thesisPack?.summary)}
+                className="btn-secondary flex items-center gap-2 disabled:opacity-50"
+              >
+                {refreshThesisPack.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                Regenerate Structured Draft
+              </button>
+            ) : null}
           </div>
 
-          {jobRunner.isRunning && (
+          {entryMode === "company" && jobRunner.isRunning && (
             <JobProgressPanel
               job={jobRunner.job ?? {
                 id: 0,
@@ -463,7 +554,7 @@ export default function ThesisPackPage() {
             />
           )}
 
-          {!jobRunner.isRunning && <JobRunSummary job={latestCompletedContextJob} />}
+          {entryMode === "company" && !jobRunner.isRunning && <JobRunSummary job={latestCompletedContextJob} />}
 
           {(jobRunner.jobError || applyThesisAdjustment.error) && (
             <div className="text-sm text-danger border border-danger/40 bg-danger/10 px-3 py-2">
@@ -491,9 +582,24 @@ export default function ThesisPackPage() {
             </div>
 
             <div className="border border-oxford-light bg-oxford-dark/40 p-4">
-              <div className="text-xs uppercase tracking-wide text-steel-400 mb-2">Summary</div>
-              <p className="text-sm leading-relaxed text-steel-100">
-                {thesisPack?.summary || "No draft thesis yet. Generate it from your saved company sources."}
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div className="text-xs uppercase tracking-wide text-steel-400">Structured Summary</div>
+                <button
+                  onClick={handleSaveSummary}
+                  disabled={updateThesisPack.isPending}
+                  className="btn-secondary text-xs disabled:opacity-50"
+                >
+                  Save Summary
+                </button>
+              </div>
+              <textarea
+                value={draftSummary}
+                onChange={(event) => setDraftSummary(event.target.value)}
+                placeholder="Generate a draft from your sourcing inputs, then tighten the summary here if the framing is off."
+                className="w-full min-h-[148px] border border-oxford-light bg-oxford px-3 py-2 text-sm text-steel-100"
+              />
+              <p className="text-xs text-steel-400 mt-2">
+                Edit this if the system interpreted the sourcing brief incorrectly before you confirm Search Lanes.
               </p>
             </div>
 
@@ -611,7 +717,7 @@ export default function ThesisPackPage() {
                 <div className="text-center py-10 text-steel-300 border border-oxford-light bg-oxford-dark/40">
                   <Globe className="w-10 h-10 mx-auto mb-3 text-steel-500" />
                   <p>No thesis claims yet.</p>
-                  <p className="text-sm text-steel-400 mt-1">Generate the draft from your company sources first.</p>
+                  <p className="text-sm text-steel-400 mt-1">Generate the draft from your sourcing inputs first.</p>
                 </div>
               )}
             </div>
@@ -624,7 +730,7 @@ export default function ThesisPackPage() {
               <textarea
                 value={adjustmentMessage}
                 onChange={(event) => setAdjustmentMessage(event.target.value)}
-                placeholder={"Examples:\nadd core: portfolio analytics\nadd adjacent: voting rights workflow\nremove Named customer proof: Example Corp\nbusiness model: multi-year SaaS contracts"}
+                placeholder={"Examples:\nadd core: healthcare provider software\nadd adjacent: patient engagement workflow\nremove Named customer proof: Example Corp\nbusiness model: license-based software\nexclude: SaaS-first vendors"}
                 className="w-full min-h-[132px] border border-oxford-light bg-oxford text-white px-3 py-2 text-sm"
               />
               <div className="flex items-center justify-between gap-3 mt-3">

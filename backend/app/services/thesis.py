@@ -51,6 +51,14 @@ CUSTOMER_KEYWORDS = (
     "operations team",
     "finance team",
     "compliance team",
+    "healthcare",
+    "healthcare provider",
+    "hospital",
+    "doctor",
+    "physician",
+    "clinic",
+    "pharmacy",
+    "medical practice",
 )
 
 BUSINESS_MODEL_PATTERNS = (
@@ -58,6 +66,7 @@ BUSINESS_MODEL_PATTERNS = (
     ("subscription", "Subscription-based software"),
     ("recurring", "Recurring revenue model"),
     ("license", "License-based software"),
+    ("licence", "License-based software"),
     ("implementation", "Implementation and onboarding services"),
     ("managed service", "Managed services offering"),
     ("professional services", "Professional services revenue"),
@@ -73,6 +82,14 @@ DEPLOYMENT_PATTERNS = (
     ("on-prem", "On-premise deployment option"),
     ("hosted", "Hosted deployment option"),
     ("implementation", "High-touch implementation required"),
+)
+
+NEGATIVE_CONSTRAINT_PATTERNS = (
+    ("no saas", "Exclude SaaS-first software companies"),
+    ("non-saas", "Exclude SaaS-first software companies"),
+    ("not saas", "Exclude SaaS-first software companies"),
+    ("no services", "Exclude services-led businesses"),
+    ("no consulting", "Exclude consulting-led businesses"),
 )
 
 
@@ -261,6 +278,99 @@ def _extract_employee_signal(text: str) -> Optional[str]:
     return None
 
 
+def _extract_revenue_signal(text: str) -> Optional[str]:
+    if not text:
+        return None
+    match = re.search(
+        r"(?:less than|under|below|<)\s*\$?\s*(\d+(?:\.\d+)?)\s*(m|mm|million|b|bn|billion|k|thousand)?\s*(?:in\s+)?revenue",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    amount = match.group(1)
+    suffix = (match.group(2) or "").strip().lower()
+    if suffix in {"m", "mm", "million"}:
+        normalized = f"${amount}M"
+    elif suffix in {"b", "bn", "billion"}:
+        normalized = f"${amount}B"
+    elif suffix in {"k", "thousand"}:
+        normalized = f"${amount}K"
+    else:
+        normalized = f"${amount}"
+    return f"Prefer companies under {normalized} revenue"
+
+
+def _sanitize_focus_phrase(value: str) -> str:
+    cleaned = re.sub(r"\([^)]*\)", "", str(value or "")).strip(" ,.;:-")
+    cleaned = cleaned.split("(", 1)[0].strip(" ,.;:-")
+    cleaned = re.split(
+        r"\b(?:as|with|that|which|who|where|when|and\s+they|and\s+that|but)\b",
+        cleaned,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ,.;:-")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    words = cleaned.split()
+    return " ".join(words[:8]).strip()
+
+
+def _extract_brief_capability_claims(text: str) -> list[str]:
+    if not text:
+        return []
+    claims: list[str] = []
+    patterns = (
+        r"(?:provide|provides|providing|sell|sells|selling|build|builds|building|offer|offers|offering)\s+software\s+(?:to|for)\s+([^.,;\n]+)",
+        r"software\s+(?:to|for)\s+([^.,;\n]+)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            phrase = _sanitize_focus_phrase(match.group(1))
+            if phrase:
+                claims.append(f"Software for {phrase}")
+    return _normalize_string_list(claims, max_items=3, max_len=140)
+
+
+def _humanize_customer_profile(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if cleaned.lower().startswith("targets "):
+        cleaned = cleaned[8:]
+    cleaned = re.sub(r"\s+customers?$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"^named customer proof:\s*", "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned
+
+
+def _fallback_lane_focus(
+    customer_tags: list[str],
+    include_terms: list[str],
+    business_model: list[str],
+) -> Optional[str]:
+    for tag in customer_tags:
+        customer_focus = _humanize_customer_profile(tag)
+        if not customer_focus:
+            continue
+        if "health" in customer_focus.lower() or "hospital" in customer_focus.lower() or "doctor" in customer_focus.lower():
+            return "Healthcare provider software"
+        return f"Software for {customer_focus}"
+    for term in include_terms:
+        if term.lower().startswith("prefer companies under "):
+            continue
+        if term.lower().startswith("prefer companies active in "):
+            continue
+        return term
+    if business_model:
+        return business_model[0]
+    return None
+
+
+def _lane_title(lane_type: str, capabilities: list[str], customer_tags: list[str], business_model: list[str]) -> str:
+    prefix = "Core" if lane_type == "core" else "Adjacent"
+    focus = (capabilities or [])[0] if capabilities else _fallback_lane_focus(customer_tags, [], business_model)
+    if focus:
+        return f"{prefix}: {focus}"[:255]
+    return f"{prefix} sourcing lane"
+
+
 def _claim_from_value(
     claims: list[dict[str, Any]],
     *,
@@ -342,6 +452,22 @@ def _extract_keyword_claims(text: str, patterns: Iterable[tuple[str, str]]) -> l
     for token, label in patterns:
         if token in lower_text:
             claims.append(label)
+    return _normalize_string_list(claims, max_items=6, max_len=160)
+
+
+def _extract_business_model_claims(text: str) -> list[str]:
+    lower_text = text.lower()
+    claims: list[str] = []
+    negative_saas = any(token in lower_text for token in ["no saas", "non-saas", "not saas"])
+    negative_subscription = "no subscription" in lower_text or "non-subscription" in lower_text
+    for token, label in BUSINESS_MODEL_PATTERNS:
+        if token not in lower_text:
+            continue
+        if token == "saas" and negative_saas:
+            continue
+        if token == "subscription" and negative_subscription:
+            continue
+        claims.append(label)
     return _normalize_string_list(claims, max_items=6, max_len=160)
 
 
@@ -478,7 +604,17 @@ def bootstrap_thesis_payload(
             source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
         )
 
-    for claim_value in _extract_keyword_claims(context_text, BUSINESS_MODEL_PATTERNS):
+    for claim_value in _extract_brief_capability_claims(context_text):
+        _claim_from_value(
+            claims,
+            section="core_capability",
+            value=claim_value,
+            rendering="hypothesis",
+            confidence=0.52,
+            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
+        )
+
+    for claim_value in _extract_business_model_claims(context_text):
         _claim_from_value(
             claims,
             section="business_model",
@@ -498,6 +634,16 @@ def bootstrap_thesis_payload(
             source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
         )
 
+    for claim_value in _extract_keyword_claims(context_text, NEGATIVE_CONSTRAINT_PATTERNS):
+        _claim_from_value(
+            claims,
+            section="exclude_constraint",
+            value=claim_value,
+            rendering="hypothesis",
+            confidence=0.72,
+            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
+        )
+
     employee_signal = _extract_employee_signal(context_text)
     if employee_signal:
         _claim_from_value(
@@ -506,6 +652,27 @@ def bootstrap_thesis_payload(
             value=employee_signal,
             rendering="fact",
             confidence=0.62,
+            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
+        )
+
+    revenue_signal = _extract_revenue_signal(context_text)
+    if revenue_signal:
+        _claim_from_value(
+            claims,
+            section="include_constraint",
+            value=revenue_signal,
+            rendering="hypothesis",
+            confidence=0.72,
+            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
+        )
+
+    if not profile.geo_scope and re.search(r"\beurope|european\b", context_text, flags=re.IGNORECASE):
+        _claim_from_value(
+            claims,
+            section="geography",
+            value="Primary sourcing region: Europe",
+            rendering="hypothesis",
+            confidence=0.72,
             source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
         )
 
@@ -550,6 +717,8 @@ def bootstrap_thesis_payload(
     open_questions: list[str] = []
     if not any(claim["section"] == "business_model" for claim in active_claims):
         open_questions.append("Confirm the dominant revenue model (SaaS, license, services, or mixed).")
+    if not any(claim["section"] == "core_capability" for claim in active_claims):
+        open_questions.append("Define the main workflow, product category, or capability to anchor the core lane.")
     if not any(claim["section"] == "adjacent_capability" for claim in active_claims):
         open_questions.append("Identify one or two adjacent capabilities worth sourcing against.")
     if not any(claim["section"] == "size_signal" for claim in active_claims):
@@ -605,10 +774,16 @@ def derive_search_lane_payloads(
     core_capabilities = section_values.get("core_capability", [])[:8]
     adjacent_capabilities = section_values.get("adjacent_capability", [])[:8]
     business_model = section_values.get("business_model", [])[:2]
+    if not core_capabilities:
+        fallback_core = _fallback_lane_focus(customer_tags, include_terms, business_model)
+        if fallback_core:
+            core_capabilities = [fallback_core]
+    if not adjacent_capabilities and core_capabilities:
+        adjacent_capabilities = [f"Adjacent workflows around {core_capabilities[0]}"][:1]
 
     core_lane = {
         "lane_type": "core",
-        "title": "Core sourcing lane",
+        "title": _lane_title("core", core_capabilities, customer_tags, business_model),
         "intent": (
             "Source direct-fit companies aligned with the confirmed buyer thesis."
             if core_capabilities
@@ -623,7 +798,7 @@ def derive_search_lane_payloads(
     }
     adjacent_lane = {
         "lane_type": "adjacent",
-        "title": "Adjacent sourcing lane",
+        "title": _lane_title("adjacent", adjacent_capabilities, customer_tags, business_model),
         "intent": (
             "Source adjacent capability extensions and neighboring product lines."
             if adjacent_capabilities

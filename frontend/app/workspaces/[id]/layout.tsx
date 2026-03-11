@@ -19,8 +19,8 @@ import clsx from "clsx";
 const navItems = [
   {
     href: "context",
-    label: "Company Thesis",
-    description: "Define how the system understands your company before sourcing",
+    label: "Sourcing Brief",
+    description: "Define the mandate from a company site or investment thesis before sourcing",
     icon: FileText,
     step: 1,
     gateKey: null,

@@ -18,13 +18,13 @@ const JOB_BLUEPRINTS: Record<
   }
 > = {
   context_pack: {
-    title: "Building company thesis",
-    statusLabel: "Researching company materials...",
+    title: "Building sourcing brief",
+    statusLabel: "Researching brief inputs...",
     steps: [
       { label: "Prepare source inputs", start: 0.02 },
       { label: "Crawl company and reference sites", start: 0.2 },
-      { label: "Extract product and proof pages", start: 0.45 },
-      { label: "Draft thesis from evidence", start: 0.8 },
+      { label: "Extract product and evidence pages", start: 0.45 },
+      { label: "Draft sourcing brief from evidence", start: 0.8 },
     ],
   },
   discovery_universe: {

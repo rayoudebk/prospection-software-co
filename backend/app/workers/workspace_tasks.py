@@ -6170,8 +6170,8 @@ def _fail_superseded_context_pack_jobs(db, workspace_id: int, current_job_id: in
 
     for stale_job in superseded_jobs:
         stale_job.state = JobState.failed
-        stale_job.error_message = "Superseded by newer company thesis run"
-        stale_job.progress_message = "Superseded by newer company thesis run"
+        stale_job.error_message = "Superseded by newer sourcing brief run"
+        stale_job.progress_message = "Superseded by newer sourcing brief run"
         stale_job.finished_at = datetime.utcnow()
 
     if superseded_jobs:

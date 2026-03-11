@@ -63,7 +63,8 @@ export function useUpdateContextPack(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (data: {
-      buyer_company_url?: string;
+      buyer_company_url?: string | null;
+      buyer_context_summary?: string | null;
       reference_company_urls?: string[];
       reference_evidence_urls?: string[];
       geo_scope?: GeoScope;

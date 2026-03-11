@@ -198,3 +198,39 @@ def test_search_lanes_contract_supports_patch_and_confirm(tmp_path: Path):
     gates_payload = gates_response.json()
     assert gates_payload["context_pack"] is True
     assert gates_payload["search_lanes"] is True
+
+
+def test_investment_thesis_only_supports_context_gate_and_lane_bootstrap(tmp_path: Path):
+    client, _session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Thesis-only workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+
+    patch_response = client.patch(
+        f"/workspaces/{workspace_id}/context-pack",
+        json={
+            "buyer_context_summary": (
+                "I want to invest in companies in Europe that provide software to healthcare actors "
+                "such as hospitals and doctors, sold primarily as licences with no SaaS, under $10M in revenue, "
+                "with 30-50 employees."
+            )
+        },
+    )
+    assert patch_response.status_code == 200
+    assert patch_response.json()["buyer_company_url"] is None
+
+    thesis_response = client.post(f"/workspaces/{workspace_id}/thesis-pack:refresh")
+    assert thesis_response.status_code == 200
+    thesis_payload = thesis_response.json()
+    assert thesis_payload["summary"]
+    assert any(claim["section"] == "core_capability" for claim in thesis_payload["claims"])
+
+    gates_response = client.get(f"/workspaces/{workspace_id}/gates")
+    assert gates_response.status_code == 200
+    assert gates_response.json()["context_pack"] is True
+
+    lanes_response = client.get(f"/workspaces/{workspace_id}/search-lanes")
+    assert lanes_response.status_code == 200
+    core_lane = next(lane for lane in lanes_response.json()["lanes"] if lane["lane_type"] == "core")
+    assert core_lane["capabilities"]
