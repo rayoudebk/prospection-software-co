@@ -24,7 +24,7 @@ from app.config import get_settings
 from app.models.workspace import Workspace, CompanyProfile
 from app.models.thesis import SearchLane
 from app.models.company import Company, CompanyDossier, CompanyStatus
-from app.models.job import Job, JobType, JobState
+from app.models.job import DB_ACTIVE_JOB_STATES, Job, JobType, JobState
 from app.models.source_evidence import SourceEvidence
 from app.models.report import ReportSnapshot, ReportSnapshotItem, CompanyFact
 from app.models.intelligence import (
@@ -6163,7 +6163,7 @@ def _fail_superseded_context_pack_jobs(db, workspace_id: int, current_job_id: in
             Job.workspace_id == workspace_id,
             Job.job_type == JobType.context_pack,
             Job.id < current_job_id,
-            Job.state.in_([JobState.queued, JobState.running, JobState.polling]),
+            Job.state.in_(DB_ACTIVE_JOB_STATES),
         )
         .all()
     )

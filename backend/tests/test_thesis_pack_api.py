@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 import app.models  # noqa: F401
 from app.api import workspaces
 from app.models.base import Base
+from app.models.job import Job, JobProvider, JobState, JobType
 from app.models.workspace import CompanyProfile
 
 
@@ -264,3 +265,44 @@ def test_context_pack_refresh_returns_clear_503_when_enqueue_and_inline_fail(tmp
 
     assert response.status_code == 503
     assert "Background crawl worker unavailable" in response.json()["detail"]
+
+
+def test_context_pack_refresh_supersedes_existing_active_job(tmp_path: Path):
+    client, session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Supersede workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+
+    async def seed_running_job() -> None:
+        async with session_maker() as session:
+            session.add(
+                Job(
+                    workspace_id=workspace_id,
+                    job_type=JobType.context_pack,
+                    state=JobState.running,
+                    provider=JobProvider.crawler,
+                )
+            )
+            await session.commit()
+
+    asyncio.run(seed_running_job())
+
+    with patch("app.workers.workspace_tasks.generate_context_pack_v2.delay", side_effect=RuntimeError("broker down")):
+        with patch("app.api.workspaces._run_context_pack_inline", return_value=None):
+            response = client.post(f"/workspaces/{workspace_id}/context-pack:refresh")
+
+    assert response.status_code == 200
+
+    async def fetch_jobs() -> list[Job]:
+        async with session_maker() as session:
+            result = await session.execute(
+                select(Job).where(Job.workspace_id == workspace_id).order_by(Job.id.asc())
+            )
+            return list(result.scalars().all())
+
+    jobs = asyncio.run(fetch_jobs())
+    assert len(jobs) == 2
+    assert jobs[0].state == JobState.failed
+    assert jobs[0].error_message == "Superseded by newer sourcing brief run"
+    assert jobs[1].state == JobState.queued

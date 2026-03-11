@@ -12,7 +12,14 @@ from app.models.base import get_db
 from app.models.workspace import Workspace, CompanyProfile
 from app.models.thesis import BuyerThesisPack, SearchLane
 from app.models.company import Company, CompanyDossier, CompanyStatus
-from app.models.job import Job, JobType, JobState, JobProvider
+from app.models.job import (
+    DB_ACTIVE_JOB_STATES,
+    RUNTIME_ACTIVE_JOB_STATES,
+    Job,
+    JobType,
+    JobState,
+    JobProvider,
+)
 from app.models.source_evidence import SourceEvidence
 from app.models.report import ReportSnapshot, ReportSnapshotItem, CompanyFact
 from app.models.claims_graph import ClaimGraphNode, ClaimGraphEdge, ClaimGraphEdgeEvidence
@@ -1727,7 +1734,7 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
         select(Job).where(
             Job.workspace_id == workspace_id,
             Job.job_type == JobType.context_pack,
-            Job.state.in_([JobState.queued, JobState.running, JobState.polling]),
+            Job.state.in_(DB_ACTIVE_JOB_STATES),
         )
     )
     active_jobs = active_jobs_result.scalars().all()
@@ -4663,7 +4670,7 @@ async def cancel_job(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    if job.state not in {JobState.queued, JobState.running, JobState.polling}:
+    if job.state not in RUNTIME_ACTIVE_JOB_STATES:
         raise HTTPException(status_code=400, detail="Job is not cancelable")
 
     if job.interaction_id:

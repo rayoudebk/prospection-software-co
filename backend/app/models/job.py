@@ -38,6 +38,10 @@ class JobState(enum.Enum):
     failed = "failed"
 
 
+DB_ACTIVE_JOB_STATES = (JobState.queued, JobState.running)
+RUNTIME_ACTIVE_JOB_STATES = frozenset({JobState.queued, JobState.running, JobState.polling})
+
+
 class JobProvider(enum.Enum):
     gemini_flash = "gemini_flash"
     gemini_deep_research = "gemini_deep_research"
