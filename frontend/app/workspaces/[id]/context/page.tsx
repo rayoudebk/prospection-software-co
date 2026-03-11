@@ -517,8 +517,15 @@ export default function ThesisPackPage() {
             </button>
             {entryMode === "company" ? (
               <button
-                onClick={() => refreshThesisPack.mutate()}
-                disabled={refreshThesisPack.isPending || (!profile?.buyer_company_url && !thesisPack?.summary)}
+                onClick={async () => {
+                  await saveProfileInputs();
+                  await refreshThesisPack.mutateAsync();
+                }}
+                disabled={
+                  updateProfile.isPending ||
+                  refreshThesisPack.isPending ||
+                  (!buyerUrl.trim() && !thesisPack?.summary)
+                }
                 className="btn-secondary flex items-center gap-2 disabled:opacity-50"
               >
                 {refreshThesisPack.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
