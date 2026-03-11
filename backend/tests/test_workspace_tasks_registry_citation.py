@@ -760,7 +760,7 @@ def test_resolve_buyer_employee_estimate_prefers_policy_override():
         }
     )
     profile = SimpleNamespace(
-        buyer_context_summary="We are a team of 19 employees.",
+        manual_brief_text="We are a team of 19 employees.",
         context_pack_markdown="",
         context_pack_json={},
         reference_summaries={},
@@ -772,7 +772,7 @@ def test_resolve_buyer_employee_estimate_prefers_policy_override():
 def test_resolve_buyer_employee_estimate_reads_context_text():
     workspace = SimpleNamespace(decision_policy_json={})
     profile = SimpleNamespace(
-        buyer_context_summary="Independent fintech team with 55 employees across product and ops.",
+        manual_brief_text="Independent fintech team with 55 employees across product and ops.",
         context_pack_markdown="",
         context_pack_json={},
         reference_summaries={},

@@ -179,7 +179,6 @@ export default function UniversePage() {
   return (
     <div className="space-y-6">
       <StepHeader
-        icon={Globe}
         step={3}
         title="Universe"
         subtitle="Run lane-driven sourcing, inspect why each company fits, and triage the resulting candidate universe with auditable source-backed evidence."

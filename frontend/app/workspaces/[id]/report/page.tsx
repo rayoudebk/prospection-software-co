@@ -328,7 +328,6 @@ export default function ReportPage() {
   return (
     <div className="space-y-6">
       <StepHeader
-        icon={FileSpreadsheet}
         step={5}
         title="Cards"
         subtitle="Generate exportable candidate cards with the canonical company buckets, KPI evidence, validation questions, and snapshot-level source traceability."

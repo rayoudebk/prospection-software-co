@@ -160,6 +160,43 @@ cd backend
 python -m migrations.migrate_company_profile_reference_evidence_v1
 ```
 
+## migrate_company_profile_context_split_v1.py
+
+Adds explicit manual-vs-generated context fields on company profiles.
+
+### What it does:
+
+1. Adds `manual_brief_text` to `company_profiles`
+2. Adds `generated_context_summary` to `company_profiles`
+3. Backfills legacy `buyer_context_summary` into:
+   - `manual_brief_text` when no `buyer_company_url` exists
+   - `generated_context_summary` when `buyer_company_url` exists
+
+### How to run:
+
+```bash
+cd backend
+python -m migrations.migrate_company_profile_context_split_v1
+```
+
+## migrate_remove_legacy_buyer_context_summary_v1.py
+
+Removes the deprecated `buyer_context_summary` column after the explicit split fields are available.
+
+### What it does:
+
+1. Ensures `manual_brief_text` exists
+2. Ensures `generated_context_summary` exists
+3. Backfills both fields from `buyer_context_summary` when needed
+4. Drops `company_profiles.buyer_context_summary`
+
+### How to run:
+
+```bash
+cd backend
+python -m migrations.migrate_remove_legacy_buyer_context_summary_v1
+```
+
 ## migrate_external_search_persistence_v1.py
 
 Adds external search persistence tables:

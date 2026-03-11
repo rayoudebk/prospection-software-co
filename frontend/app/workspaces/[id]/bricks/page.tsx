@@ -177,7 +177,6 @@ export default function SearchLanesPage() {
   return (
     <div className="space-y-6">
       <StepHeader
-        icon={Layers}
         step={2}
         title="Search Lanes"
         subtitle="Review the suggested sourcing lanes derived from the brief. Core captures direct-fit companies. Adjacent captures neighboring workflows, extensions, and capability edges worth sourcing separately."

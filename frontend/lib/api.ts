@@ -43,7 +43,8 @@ export interface CompanyProfile {
   id: number;
   workspace_id: number;
   buyer_company_url: string | null;
-  buyer_context_summary: string | null;
+  manual_brief_text: string | null;
+  generated_context_summary: string | null;
   reference_company_urls: string[];
   reference_evidence_urls: string[];
   reference_summaries: Record<string, string>;
@@ -537,7 +538,8 @@ export const workspaceApi = {
     id: number,
     data: {
       buyer_company_url?: string | null;
-      buyer_context_summary?: string | null;
+      manual_brief_text?: string | null;
+      generated_context_summary?: string | null;
       reference_company_urls?: string[];
       reference_evidence_urls?: string[];
       geo_scope?: GeoScope;

@@ -9,6 +9,10 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.models.thesis import BuyerThesisPack, SearchLane
 from app.models.workspace import CompanyProfile
+from app.services.company_profile_context import (
+    get_generated_context_summary,
+    get_manual_brief_text,
+)
 from app.services.reporting import normalize_domain
 from app.services.retrieval.url_normalization import normalize_url
 
@@ -251,7 +255,12 @@ def _extract_context_text(profile: CompanyProfile) -> str:
         if isinstance(profile.reference_summaries, dict)
         else []
     )
-    for value in [profile.buyer_context_summary, profile.context_pack_markdown, *reference_summaries]:
+    for value in [
+        get_manual_brief_text(profile),
+        get_generated_context_summary(profile),
+        profile.context_pack_markdown,
+        *reference_summaries,
+    ]:
         text = str(value or "").strip()
         if text:
             parts.append(text)
@@ -727,7 +736,8 @@ def bootstrap_thesis_payload(
         open_questions.extend(DEFAULT_OPEN_QUESTIONS)
 
     summary = str(
-        profile.buyer_context_summary
+        get_manual_brief_text(profile)
+        or get_generated_context_summary(profile)
         or buyer_site.get("summary")
         or context_text[:1200]
         or "System-generated sourcing thesis pending confirmation."

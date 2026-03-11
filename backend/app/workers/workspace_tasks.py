@@ -42,6 +42,10 @@ from app.services.comparator_sources import (
     ingest_source,
     resolve_external_website_from_profile,
 )
+from app.services.company_profile_context import (
+    get_generated_context_summary,
+    get_manual_brief_text,
+)
 from app.services.reporting import (
     DISCOVERY_COUNTRIES,
     RELIABLE_FILINGS_COUNTRIES,
@@ -3079,7 +3083,8 @@ def _resolve_buyer_employee_estimate(workspace: Workspace, profile: CompanyProfi
                 return parsed_text
 
     text_candidates = [
-        profile.buyer_context_summary,
+        get_manual_brief_text(profile),
+        get_generated_context_summary(profile),
         profile.context_pack_markdown,
     ]
     reference_summaries = profile.reference_summaries if isinstance(profile.reference_summaries, dict) else {}
@@ -4739,7 +4744,7 @@ def _should_add_wealth_benchmark_seeds(
     mentions: list[dict[str, Any]],
 ) -> bool:
     text_chunks: list[str] = []
-    for item in [profile.buyer_context_summary, profile.context_pack_markdown]:
+    for item in [get_manual_brief_text(profile), get_generated_context_summary(profile), profile.context_pack_markdown]:
         normalized = str(item or "").strip()
         if normalized:
             text_chunks.append(normalized[:4000])
@@ -6456,16 +6461,16 @@ def generate_context_pack_v2(job_id: int):
                         metadata={"workspace_id": workspace.id, "job_id": job.id},
                     )
                 )
-                profile.buyer_context_summary = str(summary_response.text or "").strip()[:8000]
+                profile.generated_context_summary = str(summary_response.text or "").strip()[:8000]
             except Exception as e:
                 print(f"Error generating orchestrated summary: {e}")
                 try:
                     gemini = GeminiWorkspaceClient()
                     summary = gemini.summarize_context_pack(raw_markdown, profile.buyer_company_url or "")
-                    profile.buyer_context_summary = summary
+                    profile.generated_context_summary = summary
                 except Exception as legacy_exc:
                     print(f"Error generating summary: {legacy_exc}")
-                    profile.buyer_context_summary = raw_markdown[:2000]
+                    profile.generated_context_summary = raw_markdown[:2000]
             
             # Update profile
             profile.context_pack_markdown = raw_markdown

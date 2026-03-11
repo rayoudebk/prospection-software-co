@@ -77,7 +77,8 @@ class CompanyProfile(Base):
     
     # Buyer company
     buyer_company_url = Column(String(500), nullable=True)
-    buyer_context_summary = Column(Text, nullable=True)  # AI-generated summary of buyer
+    manual_brief_text = Column(Text, nullable=True)
+    generated_context_summary = Column(Text, nullable=True)
     
     # Reference companies (2-3 examples)
     reference_company_urls = Column(JSON, default=list)  # ["https://company1.com", ...]

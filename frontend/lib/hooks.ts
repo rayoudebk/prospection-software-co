@@ -64,7 +64,8 @@ export function useUpdateContextPack(workspaceId: number) {
   return useMutation({
     mutationFn: (data: {
       buyer_company_url?: string | null;
-      buyer_context_summary?: string | null;
+      manual_brief_text?: string | null;
+      generated_context_summary?: string | null;
       reference_company_urls?: string[];
       reference_evidence_urls?: string[];
       geo_scope?: GeoScope;

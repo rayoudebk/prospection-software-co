@@ -44,7 +44,7 @@ def _seed_company_profile(session_maker: async_sessionmaker[AsyncSession], works
             )
             profile = result.scalar_one()
             profile.buyer_company_url = "https://acme.example.com"
-            profile.buyer_context_summary = (
+            profile.generated_context_summary = (
                 "Acme is a SaaS fund operations workflow platform with implementation services "
                 "and API integrations for private equity and fund teams."
             )
@@ -202,6 +202,45 @@ def test_search_lanes_contract_supports_patch_and_confirm(tmp_path: Path):
     assert gates_payload["search_lanes"] is True
 
 
+def test_workspace_region_update_keeps_profile_geo_scope_in_sync(tmp_path: Path):
+    client, session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Geo sync workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+
+    patch_context_response = client.patch(
+        f"/workspaces/{workspace_id}/context-pack",
+        json={
+            "geo_scope": {
+                "region": "EU+UK",
+                "include_countries": ["DE", "FR"],
+                "exclude_countries": ["RU"],
+            }
+        },
+    )
+    assert patch_context_response.status_code == 200
+
+    update_workspace_response = client.patch(
+        f"/workspaces/{workspace_id}",
+        json={"region_scope": "US"},
+    )
+    assert update_workspace_response.status_code == 200
+    assert update_workspace_response.json()["region_scope"] == "US"
+
+    async def fetch_profile() -> CompanyProfile:
+        async with session_maker() as session:
+            result = await session.execute(
+                select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
+            )
+            return result.scalar_one()
+
+    profile = asyncio.run(fetch_profile())
+    assert profile.geo_scope["region"] == "US"
+    assert profile.geo_scope["include_countries"] == ["DE", "FR"]
+    assert profile.geo_scope["exclude_countries"] == ["RU"]
+
+
 def test_investment_thesis_only_supports_context_gate_and_lane_bootstrap(tmp_path: Path):
     client, _session_maker = _build_test_client(tmp_path)
 
@@ -212,7 +251,7 @@ def test_investment_thesis_only_supports_context_gate_and_lane_bootstrap(tmp_pat
     patch_response = client.patch(
         f"/workspaces/{workspace_id}/context-pack",
         json={
-            "buyer_context_summary": (
+            "manual_brief_text": (
                 "I want to invest in companies in Europe that provide software to healthcare actors "
                 "such as hospitals and doctors, sold primarily as licences with no SaaS, under $10M in revenue, "
                 "with 30-50 employees."
@@ -221,6 +260,8 @@ def test_investment_thesis_only_supports_context_gate_and_lane_bootstrap(tmp_pat
     )
     assert patch_response.status_code == 200
     assert patch_response.json()["buyer_company_url"] is None
+    assert patch_response.json()["manual_brief_text"]
+    assert patch_response.json()["generated_context_summary"] is None
 
     thesis_response = client.post(f"/workspaces/{workspace_id}/thesis-pack:refresh")
     assert thesis_response.status_code == 200

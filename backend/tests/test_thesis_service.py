@@ -10,7 +10,7 @@ def _build_profile() -> CompanyProfile:
     return CompanyProfile(
         workspace_id=1,
         buyer_company_url="https://acme.example.com",
-        buyer_context_summary=(
+        generated_context_summary=(
             "Acme is a SaaS portfolio analytics platform for private equity and fund operations teams. "
             "The company also offers implementation services and API-based integrations."
         ),
@@ -65,7 +65,7 @@ def _build_profile() -> CompanyProfile:
 def test_bootstrap_thesis_payload_generates_claims_and_source_pills():
     payload = bootstrap_thesis_payload(_build_profile())
 
-    assert payload["summary"]
+    assert payload["summary"].startswith("Acme is a SaaS portfolio analytics platform")
     assert payload["source_pills"]
     sections = {claim["section"] for claim in payload["claims"]}
     assert "core_capability" in sections
@@ -117,7 +117,7 @@ def test_bootstrap_thesis_payload_supports_investment_thesis_only():
     profile = CompanyProfile(
         workspace_id=2,
         buyer_company_url=None,
-        buyer_context_summary=(
+        manual_brief_text=(
             "I want to invest in companies in Europe that provide software to healthcare actors "
             "(hospitals, doctors, etc) as licences with no SaaS, under $10M in revenue, and with 30-50 employees."
         ),

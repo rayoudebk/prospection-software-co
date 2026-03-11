@@ -55,6 +55,10 @@ from app.services.reporting import (
     source_label_for_url,
 )
 from app.services.quality_audit import normalize_quality_audit_v1
+from app.services.company_profile_context import (
+    get_generated_context_summary,
+    get_manual_brief_text,
+)
 from app.services.thesis import (
     apply_thesis_adjustment_operations,
     bootstrap_thesis_payload,
@@ -114,7 +118,8 @@ class GeoScope(BaseModel):
 
 class CompanyProfileUpdate(BaseModel):
     buyer_company_url: Optional[str] = None
-    buyer_context_summary: Optional[str] = None
+    manual_brief_text: Optional[str] = None
+    generated_context_summary: Optional[str] = None
     reference_company_urls: Optional[List[str]] = None
     reference_evidence_urls: Optional[List[str]] = None
     geo_scope: Optional[GeoScope] = None
@@ -124,7 +129,8 @@ class CompanyProfileResponse(BaseModel):
     id: int
     workspace_id: int
     buyer_company_url: Optional[str]
-    buyer_context_summary: Optional[str]
+    manual_brief_text: Optional[str]
+    generated_context_summary: Optional[str]
     reference_company_urls: List[str]
     reference_evidence_urls: List[str]
     reference_summaries: Dict[str, str]
@@ -1589,8 +1595,20 @@ async def update_workspace(
     if data.name is not None:
         workspace.name = data.name
     if data.region_scope is not None:
+        profile_result = await db.execute(
+            select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
+        )
+        profile = profile_result.scalar_one_or_none()
         workspace.region_scope = data.region_scope
-    
+        if profile:
+            geo_scope = profile.geo_scope if isinstance(profile.geo_scope, dict) else {}
+            profile.geo_scope = {
+                **geo_scope,
+                "region": data.region_scope,
+                "include_countries": geo_scope.get("include_countries") or [],
+                "exclude_countries": geo_scope.get("exclude_countries") or [],
+            }
+
     await db.commit()
     await db.refresh(workspace)
     
@@ -1630,7 +1648,8 @@ async def get_context_pack(workspace_id: int, db: AsyncSession = Depends(get_db)
         id=profile.id,
         workspace_id=profile.workspace_id,
         buyer_company_url=profile.buyer_company_url,
-        buyer_context_summary=profile.buyer_context_summary,
+        manual_brief_text=get_manual_brief_text(profile),
+        generated_context_summary=get_generated_context_summary(profile),
         reference_company_urls=profile.reference_company_urls or [],
         reference_evidence_urls=profile.reference_evidence_urls or [],
         reference_summaries=profile.reference_summaries or {},
@@ -1673,7 +1692,8 @@ async def export_context_pack(
     export_data = {
         "workspace_id": workspace_id,
         "buyer_company_url": profile.buyer_company_url,
-        "buyer_context_summary": profile.buyer_context_summary,
+        "manual_brief_text": get_manual_brief_text(profile),
+        "generated_context_summary": get_generated_context_summary(profile),
         "reference_company_urls": profile.reference_company_urls or [],
         "reference_evidence_urls": profile.reference_evidence_urls or [],
         "reference_summaries": profile.reference_summaries or {},
@@ -1703,8 +1723,10 @@ async def update_context_pack(
     
     if data.buyer_company_url is not None:
         profile.buyer_company_url = data.buyer_company_url
-    if data.buyer_context_summary is not None:
-        profile.buyer_context_summary = str(data.buyer_context_summary or "").strip()[:8000] or None
+    if data.manual_brief_text is not None:
+        profile.manual_brief_text = str(data.manual_brief_text or "").strip()[:8000] or None
+    if data.generated_context_summary is not None:
+        profile.generated_context_summary = str(data.generated_context_summary or "").strip()[:8000] or None
     if data.reference_company_urls is not None:
         profile.reference_company_urls = _clean_url_list(data.reference_company_urls, max_items=10)
     if data.reference_evidence_urls is not None:
@@ -4417,7 +4439,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
             if thesis_pack
             else bootstrap_thesis_payload(profile)
         )
-        has_brief_input = bool(str(profile.buyer_context_summary or "").strip())
+        has_brief_input = bool(get_manual_brief_text(profile))
         has_company_or_brief = bool(profile.buyer_company_url or has_brief_input)
         if not has_company_or_brief:
             missing_items["context_pack"].append("Add a company URL or paste an investment thesis")

@@ -42,7 +42,6 @@ export default function ValidationPage() {
   return (
     <div className="space-y-6">
       <StepHeader
-        icon={ClipboardCheck}
         step={4}
         title="Validation"
         subtitle="Use the universe cards as a 15-20 second scan. Then manually choose which companies deserve simple enrichment before sending only the shortlist into deep cards."
