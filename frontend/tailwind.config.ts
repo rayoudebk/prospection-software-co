@@ -7,19 +7,19 @@ const config: Config = {
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
-    fontFamily: {
-      sans: ["Arial", "Helvetica", "sans-serif"],
-    },
     extend: {
+      fontFamily: {
+        sans: ["var(--font-dm-sans)", "system-ui", "sans-serif"],
+        serif: ["var(--font-dm-serif)", "Georgia", "serif"],
+        mono: ["var(--font-ibm-mono)", "Courier New", "monospace"],
+      },
       colors: {
-        // Oxford blue palette
         oxford: {
           DEFAULT: "#002147",
           light: "#003366",
           dark: "#001a38",
           darker: "#00122a",
         },
-        // Accent colors for PE/banking
         steel: {
           50: "#f8fafc",
           100: "#f1f5f9",
@@ -32,7 +32,7 @@ const config: Config = {
           800: "#1e293b",
           900: "#0f172a",
         },
-        // Semantic colors
+        cream: "#F8F7F4",
         success: "#059669",
         warning: "#d97706",
         danger: "#dc2626",

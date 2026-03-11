@@ -4,11 +4,6 @@ import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useWorkspace, useGates } from "@/lib/hooks";
 import {
-  FileText,
-  Layers,
-  Globe,
-  ClipboardCheck,
-  FileSpreadsheet,
   ArrowLeft,
   Loader2,
   Lock,
@@ -20,40 +15,30 @@ const navItems = [
   {
     href: "context",
     label: "Sourcing Brief",
-    description: "Define the mandate from a company site or investment thesis before sourcing",
-    icon: FileText,
     step: 1,
     gateKey: null,
   },
   {
     href: "bricks",
     label: "Search Lanes",
-    description: "Confirm direct and adjacent sourcing lanes before discovery",
-    icon: Layers,
     step: 2,
     gateKey: "context_pack",
   },
   {
     href: "universe",
     label: "Universe",
-    description: "Build and curate the candidate longlist",
-    icon: Globe,
     step: 3,
     gateKey: "search_lanes",
   },
   {
     href: "validation",
     label: "Validation",
-    description: "Manually review the most promising companies before deep cards",
-    icon: ClipboardCheck,
     step: 4,
     gateKey: "universe",
   },
   {
     href: "report",
     label: "Cards",
-    description: "Export candidate cards and adjacency summaries with source pills",
-    icon: FileSpreadsheet,
     step: 5,
     gateKey: "enrichment",
   },
@@ -73,10 +58,8 @@ export default function WorkspaceLayout({
 
   const currentPath = pathname.split("/").pop();
 
-  // Calculate current step and completion
-  const currentStepIndex = navItems.findIndex((item) => item.href === currentPath);
   const completedSteps = gates
-      ? [
+    ? [
         gates.context_pack,
         gates.search_lanes,
         gates.universe,
@@ -87,70 +70,57 @@ export default function WorkspaceLayout({
 
   if (workspaceLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-steel-100">
-        <Loader2 className="w-8 h-8 animate-spin text-oxford" />
+      <div className="flex items-center justify-center min-h-screen bg-cream">
+        <Loader2 className="w-6 h-6 animate-spin text-oxford" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-steel-100">
-      {/* Top Bar */}
+    <div className="min-h-screen bg-cream">
+      {/* Top bar */}
       <div className="bg-oxford text-white">
         <div className="max-w-7xl mx-auto px-6">
-          <div className="flex items-center h-16">
+          <div className="flex items-center h-12">
             <Link
               href="/"
-              className="flex items-center gap-2 text-steel-300 hover:text-white mr-6 transition"
+              className="flex items-center gap-1.5 text-steel-400 hover:text-white mr-6 transition text-sm"
             >
-              <ArrowLeft className="w-4 h-4" />
-              <span className="text-sm">All Workspaces</span>
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Workspaces</span>
             </Link>
-            <div className="flex-1">
-              <h1 className="text-lg font-semibold">
+            <div className="flex items-center gap-2 flex-1">
+              <span className="text-sm font-medium">
                 {workspace?.name || "Loading..."}
-              </h1>
-              <p className="text-sm text-steel-400">{workspace?.region_scope}</p>
-            </div>
-            {/* Progress indicator */}
-            <div className="hidden md:flex items-center gap-2 text-sm text-steel-300">
-              <span>Progress:</span>
-              <div className="flex gap-1 ml-2">
-                {navItems.map((item, idx) => (
-                  <div
-                    key={item.href}
-                    className={clsx(
-                      "w-8 h-1.5",
-                      completedSteps[idx]
-                        ? "bg-success"
-                        : idx === currentStepIndex
-                        ? "bg-steel-50"
-                        : "bg-oxford-light"
-                    )}
-                  />
-                ))}
-              </div>
+              </span>
+              {workspace?.region_scope && (
+                <span className="text-[11px] text-steel-400 font-normal">
+                  · {workspace.region_scope}
+                </span>
+              )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Step Navigation */}
+      {/* Step navigation */}
       <div className="bg-oxford-dark border-b border-oxford">
         <div className="max-w-7xl mx-auto px-6">
-          <nav className="flex gap-0">
+          <nav className="flex">
             {navItems.map((item, idx) => {
               const isActive = currentPath === item.href;
               const isCompleted = completedSteps[idx];
-              const isLocked = item.gateKey && gates && !gates[item.gateKey as keyof typeof gates];
-              const Icon = item.icon;
+              const isLocked =
+                item.gateKey &&
+                gates &&
+                !gates[item.gateKey as keyof typeof gates];
 
               return (
                 <Link
                   key={item.href}
                   href={`/workspaces/${workspaceId}/${item.href}`}
                   className={clsx(
-                    "relative flex items-start gap-2 px-4 py-3 text-sm font-medium transition",
+                    "relative flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition",
                     isActive
                       ? "text-white bg-oxford"
                       : isLocked
@@ -161,10 +131,10 @@ export default function WorkspaceLayout({
                     if (isLocked) e.preventDefault();
                   }}
                 >
-                  {/* Step number badge */}
+                  {/* Step badge */}
                   <span
                     className={clsx(
-                      "flex items-center justify-center w-5 h-5 text-xs font-bold mt-0.5 shrink-0",
+                      "flex items-center justify-center w-5 h-5 text-xs font-bold shrink-0",
                       isCompleted
                         ? "bg-success text-white"
                         : isActive
@@ -176,23 +146,11 @@ export default function WorkspaceLayout({
                   >
                     {isCompleted ? <Check className="w-3 h-3" /> : item.step}
                   </span>
-                  
-                  <div className="flex flex-col">
-                    <div className="flex items-center gap-1">
-                      <span>{item.label}</span>
-                      {isLocked && <Lock className="w-3 h-3" />}
-                    </div>
-                    <span
-                      className={clsx(
-                        "text-xs font-normal max-w-[180px] leading-tight hidden lg:block",
-                        isActive ? "text-steel-300" : "text-steel-500"
-                      )}
-                    >
-                      {item.description}
-                    </span>
-                  </div>
 
-                  {/* Active indicator */}
+                  <span>{item.label}</span>
+                  {isLocked && <Lock className="w-3 h-3" />}
+
+                  {/* Active underline */}
                   {isActive && (
                     <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white" />
                   )}
@@ -203,7 +161,7 @@ export default function WorkspaceLayout({
         </div>
       </div>
 
-      {/* Content */}
+      {/* Page content */}
       <div className="max-w-7xl mx-auto px-6 py-6">{children}</div>
     </div>
   );
