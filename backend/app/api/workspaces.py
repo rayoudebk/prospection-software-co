@@ -1,4 +1,5 @@
 """Workspace API routes - Full CRUD and workflow endpoints."""
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -951,6 +952,12 @@ async def _ensure_search_lanes(
     return list(by_type.values())
 
 
+async def _run_context_pack_inline(job_id: int) -> None:
+    from app.workers.workspace_tasks import generate_context_pack_v2
+
+    await asyncio.to_thread(generate_context_pack_v2, job_id)
+
+
 def _source_from_evidence(evidence: Optional[SourceEvidence]) -> Optional[SourcePill]:
     if not evidence or not evidence.source_url:
         return None
@@ -1750,7 +1757,7 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
     await db.commit()
     await db.refresh(job)
     
-    # Trigger async task (Celery)
+    # Trigger async task (Celery) and fall back to inline execution if the queue path is unavailable.
     from app.workers.workspace_tasks import generate_context_pack_v2
     try:
         task_result = generate_context_pack_v2.delay(job.id)
@@ -1758,15 +1765,25 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
         await db.commit()
         await db.refresh(job)
     except Exception as exc:
-        job.state = JobState.failed
-        job.error_message = "Background crawl worker is unavailable for context-pack generation"
-        job.progress_message = "Failed to enqueue context-pack generation job"
-        job.finished_at = datetime.utcnow()
+        job.progress_message = "Background crawl worker unavailable, running inline"
         await db.commit()
-        raise HTTPException(
-            status_code=503,
-            detail=f"Could not start website crawl. Background crawl worker unavailable: {exc.__class__.__name__}",
-        ) from exc
+        try:
+            await _run_context_pack_inline(job.id)
+        except Exception as inline_exc:
+            job.state = JobState.failed
+            job.error_message = "Context-pack generation failed after queue fallback"
+            job.progress_message = "Failed to start context-pack generation"
+            job.finished_at = datetime.utcnow()
+            await db.commit()
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Could not start website crawl. "
+                    f"Background crawl worker unavailable ({exc.__class__.__name__}); "
+                    f"inline fallback failed ({inline_exc.__class__.__name__})."
+                ),
+            ) from inline_exc
+        await db.refresh(job)
     
     return JobResponse(
         id=job.id,
