@@ -1752,10 +1752,21 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
     
     # Trigger async task (Celery)
     from app.workers.workspace_tasks import generate_context_pack_v2
-    task_result = generate_context_pack_v2.delay(job.id)
-    job.interaction_id = str(task_result.id)
-    await db.commit()
-    await db.refresh(job)
+    try:
+        task_result = generate_context_pack_v2.delay(job.id)
+        job.interaction_id = str(task_result.id)
+        await db.commit()
+        await db.refresh(job)
+    except Exception as exc:
+        job.state = JobState.failed
+        job.error_message = "Background crawl worker is unavailable for context-pack generation"
+        job.progress_message = "Failed to enqueue context-pack generation job"
+        job.finished_at = datetime.utcnow()
+        await db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not start website crawl. Background crawl worker unavailable: {exc.__class__.__name__}",
+        ) from exc
     
     return JobResponse(
         id=job.id,

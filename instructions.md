@@ -4,6 +4,14 @@ This document captures the context, product requirements, and an implementation 
 
 The research engine is **Gemini Deep Research** (via the **Gemini Interactions API**) for multi-step, cited web research. Long-running research runs in background mode and is polled asynchronously.
 
+## Investigation rule
+
+For frontend regressions or “button does nothing” reports, investigate in the browser before patching:
+- Use Chrome DevTools MCP first to reproduce the issue on the actual page, inspect console errors, and inspect network requests and responses around the user action.
+- If Chrome DevTools MCP is unavailable because the local browser profile is locked or the tool cannot attach, use Playwright MCP as the fallback and follow the same workflow.
+- Always check whether the failing action is a frontend wiring issue, an API error, or an empty/stale persisted state problem before changing code.
+- For long-running actions, confirm whether the job-launch request succeeds and whether downstream worker infrastructure is available in the target deployment.
+
 ## 1) Goals and non-goals
 
 ### Goals

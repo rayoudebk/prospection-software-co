@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -234,3 +235,17 @@ def test_investment_thesis_only_supports_context_gate_and_lane_bootstrap(tmp_pat
     assert lanes_response.status_code == 200
     core_lane = next(lane for lane in lanes_response.json()["lanes"] if lane["lane_type"] == "core")
     assert core_lane["capabilities"]
+
+
+def test_context_pack_refresh_returns_clear_503_when_enqueue_fails(tmp_path: Path):
+    client, _session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Queue failure workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+
+    with patch("app.workers.workspace_tasks.generate_context_pack_v2.delay", side_effect=RuntimeError("broker down")):
+        response = client.post(f"/workspaces/{workspace_id}/context-pack:refresh")
+
+    assert response.status_code == 503
+    assert "Background crawl worker unavailable" in response.json()["detail"]

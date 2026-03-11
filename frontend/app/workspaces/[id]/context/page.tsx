@@ -158,6 +158,9 @@ export default function ThesisPackPage() {
     () => contextJobs?.find((job) => job.state === "completed") ?? null,
     [contextJobs]
   );
+  const hasGeneratedContextPack = Boolean(
+    profile?.context_pack_generated_at || profile?.context_pack_markdown || profile?.context_pack_json
+  );
 
   const crawlButtonLabel = profile?.context_pack_generated_at
     ? "Recrawl And Update Brief"
@@ -515,7 +518,7 @@ export default function ThesisPackPage() {
                 </>
               )}
             </button>
-            {entryMode === "company" ? (
+            {entryMode === "company" && hasGeneratedContextPack ? (
               <button
                 onClick={async () => {
                   await saveProfileInputs();
@@ -533,6 +536,13 @@ export default function ThesisPackPage() {
               </button>
             ) : null}
           </div>
+
+          {entryMode === "company" && !hasGeneratedContextPack ? (
+            <div className="text-xs text-steel-500 border border-steel-200 bg-white px-3 py-2">
+              <code>Regenerate Structured Draft</code> only works after a website crawl has produced a saved context
+              pack. Use <code>Generate Draft From Website</code> first.
+            </div>
+          ) : null}
 
           {entryMode === "company" && jobRunner.isRunning && (
             <JobProgressPanel
