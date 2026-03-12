@@ -94,7 +94,7 @@ def test_content_extractor_renders_product_pages_for_interactive_enrichment(monk
     monkeypatch.setattr(
         extraction_module,
         "render_page_via_chrome_devtools_mcp",
-        lambda url, timeout_seconds=20: {
+        lambda url, timeout_seconds=20, prefer_playwright=False: {
             "url": url,
             "final_url": url,
             "provider": "test",
@@ -142,3 +142,59 @@ def test_content_extractor_renders_product_pages_for_interactive_enrichment(monk
     assert any(block.type == "heading" and "Fonctionnalites detaillees" in block.content for block in page.blocks)
     assert any(block.type == "list" and "Order management" in block.content for block in page.blocks)
     assert any(block.type == "list" and "Pre-trade, trading et post-trade PATIO OMS" in block.content for block in page.blocks)
+
+
+def test_content_extractor_prefers_playwright_for_interactive_enrichment(monkeypatch):
+    html = """
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <title>Front Office</title>
+      </head>
+      <body>
+        <main>
+          <h1>Front Office</h1>
+          <p>Thin page.</p>
+        </main>
+      </body>
+    </html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://4tpm.fr/platform/front-office":
+            return httpx.Response(200, text=html)
+        return httpx.Response(404, text="")
+
+    captured = {}
+
+    def _render(url, timeout_seconds=20, prefer_playwright=False):
+        captured["prefer_playwright"] = prefer_playwright
+        return {
+            "url": url,
+            "final_url": url,
+            "provider": "playwright",
+            "content": "Expanded DOM content Order management Compliance controls",
+            "html": "<html><body><main><button>Order management</button><button>Compliance controls</button></main></body></html>",
+            "error": None,
+        }
+
+    monkeypatch.setattr(extraction_module, "render_page_via_chrome_devtools_mcp", _render)
+
+    async def run_test():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            extractor = ContentExtractor(client)
+            preview = PagePreview(
+                url="https://4tpm.fr/platform/front-office",
+                title="Front Office",
+                meta_description="",
+                h1="Front Office",
+                headings=[],
+                path_depth=2,
+            )
+            return await extractor._extract_page(preview)
+
+    page = asyncio.run(run_test())
+
+    assert page is not None
+    assert captured["prefer_playwright"] is True

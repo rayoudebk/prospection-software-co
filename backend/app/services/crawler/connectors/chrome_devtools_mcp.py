@@ -185,6 +185,7 @@ def render_page_via_chrome_devtools_mcp(
     *,
     timeout_seconds: Optional[int] = None,
     max_chars: int = 120_000,
+    prefer_playwright: bool = False,
 ) -> Dict[str, Any]:
     """
     Render a page through a Chrome-based connector.
@@ -207,12 +208,24 @@ def render_page_via_chrome_devtools_mcp(
     timeout = max(5, int(timeout_seconds or settings.chrome_mcp_timeout_seconds))
     endpoint = str(settings.chrome_mcp_endpoint or "").strip()
     result: Dict[str, Any]
-    if endpoint:
+    if prefer_playwright:
+        result = _render_via_playwright(normalized, timeout)
+        if (not str(result.get("content") or "").strip()) and endpoint:
+            try:
+                endpoint_result = _render_via_endpoint(normalized, timeout, endpoint)
+                if str(endpoint_result.get("content") or "").strip():
+                    result = endpoint_result
+            except Exception as exc:
+                result.setdefault("error", f"playwright_preferred_endpoint_failed:{exc}")
+    elif endpoint:
         try:
             result = _render_via_endpoint(normalized, timeout, endpoint)
             if _should_fallback_to_playwright(result):
                 playwright_result = _render_via_playwright(normalized, timeout)
-                if len(str(playwright_result.get("content") or "")) > len(str(result.get("content") or "")) + 80:
+                if (
+                    len(str(playwright_result.get("content") or "")) > len(str(result.get("content") or "")) + 80
+                    or len(str(playwright_result.get("html") or "")) > len(str(result.get("html") or "")) + 300
+                ):
                     result = playwright_result
         except Exception as exc:
             result = {

@@ -550,6 +550,7 @@ class ContentExtractor:
                     render_page_via_chrome_devtools_mcp,
                     preview.url,
                     timeout_seconds=20,
+                    prefer_playwright=interactive_enrichment,
                 )
                 rendered_html = str(rendered.get("html") or "")
                 rendered_text = " ".join(str(rendered.get("content") or "").split())
@@ -564,6 +565,12 @@ class ContentExtractor:
                 )
                 if rendered_html and not rendered_text:
                     rendered_text = self._rendered_html_to_text(rendered_html)
+                render_error = str(rendered.get("error") or "").strip()
+                if render_error:
+                    self._log(
+                        f"Rendered extraction issue for {preview.url}: "
+                        f"provider={rendered.get('provider')} error={render_error}"
+                    )
                 min_gain = 40 if interactive_enrichment else 120
                 rendered_block_gain = len(rendered_blocks) > len(blocks) + 2
                 if len(rendered_text) > len(" ".join(raw_content.split())) + min_gain or rendered_block_gain:
