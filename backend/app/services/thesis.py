@@ -156,6 +156,17 @@ DELIVERY_OR_INTEGRATION_KEYWORDS = (
     "cloud",
     "hosted",
 )
+DELIVERY_OR_INTEGRATION_CANONICALS = (
+    ("apis rest", "REST API"),
+    ("rest api", "REST API"),
+    ("documentation api", "API documentation"),
+    ("api documentation", "API documentation"),
+    ("partner ecosystem", "Partner ecosystem"),
+    ("modular platform", "Modular platform"),
+    ("cloud", "Cloud delivery"),
+    ("hosted", "Hosted deployment"),
+    ("infrastructure", "Infrastructure"),
+)
 WORKFLOW_KEYWORDS = (
     "front office",
     "front office titres",
@@ -186,6 +197,29 @@ WORKFLOW_KEYWORDS = (
     "resource planning",
     "replacement planning",
     "voting rights",
+)
+GENERIC_WORKFLOW_PHRASES = {
+    "front",
+    "back",
+    "front office",
+    "back office",
+    "workflow",
+    "operations",
+    "compliance",
+    "implementation",
+    "infrastructure",
+}
+CAPABILITY_CANONICAL_PATTERNS = (
+    ("plateforme wealth management", "Wealth management platform"),
+    ("wealth management platform", "Wealth management platform"),
+    ("client lifecycle management", "Client lifecycle management"),
+    ("order management system", "Order management system"),
+    ("portfolio management system", "Portfolio management system"),
+    ("pms/oms", "PMS/OMS"),
+    ("oms", "OMS"),
+    ("pms", "PMS"),
+    ("clm", "CLM"),
+    ("stp", "STP"),
 )
 CUSTOMER_ARCHETYPE_PATTERNS = (
     ("asset managers", "asset manager"),
@@ -752,6 +786,86 @@ def _phrase_case(value: str) -> str:
     return value[0].upper() + value[1:]
 
 
+def _phrase_word_count(value: Any) -> int:
+    return len([part for part in re.split(r"\s+", str(value or "").strip()) if part])
+
+
+def _canonicalize_taxonomy_phrase(layer: str, value: Any) -> str:
+    phrase = _safe_phrase(value, max_len=96)
+    if not phrase:
+        return ""
+
+    lowered = phrase.lower()
+    if layer == "customer_archetype":
+        for pattern, canonical in CUSTOMER_ARCHETYPE_PATTERNS:
+            if pattern == lowered:
+                return _phrase_case(canonical)
+
+    if layer == "capability":
+        if " - " in phrase:
+            prefix, suffix = [segment.strip() for segment in phrase.split(" - ", 1)]
+            if suffix and any(token in suffix.lower() for token in ("platform", "plateforme", "management", "oms", "pms", "lifecycle")):
+                phrase = suffix
+                lowered = phrase.lower()
+        for pattern, canonical in CAPABILITY_CANONICAL_PATTERNS:
+            if pattern in lowered:
+                return canonical
+
+    if layer == "delivery_or_integration":
+        for pattern, canonical in DELIVERY_OR_INTEGRATION_CANONICALS:
+            if pattern in lowered:
+                return canonical
+
+    return _phrase_case(phrase)
+
+
+def _is_valid_taxonomy_phrase(
+    layer: str,
+    phrase: Any,
+    *,
+    named_customer_keys: set[str],
+    integration_keys: set[str],
+) -> bool:
+    normalized = _canonicalize_taxonomy_phrase(layer, phrase)
+    if not normalized:
+        return False
+
+    phrase_key = _normalize_phrase_key(normalized)
+    if not phrase_key:
+        return False
+    if phrase_key in named_customer_keys:
+        return layer == "customer_archetype"
+    if layer != "customer_archetype" and phrase_key in integration_keys:
+        return False
+
+    lowered = normalized.lower()
+    word_count = _phrase_word_count(normalized)
+
+    if layer == "workflow":
+        if phrase_key in GENERIC_WORKFLOW_PHRASES:
+            return False
+        if word_count < 2:
+            return False
+        if any(ch.isdigit() for ch in normalized):
+            return False
+        if any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
+            return False
+    elif layer == "capability":
+        if any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
+            return False
+        if word_count < 2 and "/" not in normalized and not normalized.isupper():
+            return False
+        if lowered in {"platform", "software", "solution", "solutions"}:
+            return False
+    elif layer == "delivery_or_integration":
+        if phrase_key in integration_keys:
+            return False
+        if not any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
+            return False
+
+    return True
+
+
 def _taxonomy_phrase_candidates(
     context_pack_v2: dict[str, Any],
     *,
@@ -785,10 +899,18 @@ def _taxonomy_phrase_candidates(
                     if isinstance(item, dict)
                     and pattern in str(item.get("text") or "").lower()
                 ][:6]
+                phrase = _canonicalize_taxonomy_phrase(layer, canonical)
+                if not _is_valid_taxonomy_phrase(
+                    layer,
+                    phrase,
+                    named_customer_keys=named_customer_keys,
+                    integration_keys=integration_keys,
+                ):
+                    continue
                 candidates.append(
                     {
                         "layer": layer,
-                        "phrase": _phrase_case(canonical),
+                        "phrase": phrase,
                         "aliases": [pattern],
                         "confidence": 0.84 if evidence_ids else 0.68,
                         "evidence_ids": evidence_ids,
@@ -800,10 +922,18 @@ def _taxonomy_phrase_candidates(
             context = str(customer.get("context") or "").lower()
             for pattern, canonical in CUSTOMER_ARCHETYPE_PATTERNS:
                 if pattern in context:
+                    phrase = _canonicalize_taxonomy_phrase(layer, canonical)
+                    if not _is_valid_taxonomy_phrase(
+                        layer,
+                        phrase,
+                        named_customer_keys=named_customer_keys,
+                        integration_keys=integration_keys,
+                    ):
+                        continue
                     candidates.append(
                         {
                             "layer": layer,
-                            "phrase": _phrase_case(canonical),
+                            "phrase": phrase,
                             "aliases": [customer.get("name") or pattern],
                             "confidence": 0.78,
                             "evidence_ids": [customer.get("evidence_id")] if customer.get("evidence_id") else [],
@@ -817,38 +947,45 @@ def _taxonomy_phrase_candidates(
             kind = str(item.get("kind") or "").lower()
             if "signal:capability" not in kind and "page_signal:capability" not in kind:
                 continue
-            phrase = _compact_phrase(item.get("text"), max_words=6, max_len=72)
-            if phrase:
-                phrase_key = _normalize_phrase_key(phrase)
-                if phrase_key in named_customer_keys or phrase_key in integration_keys:
-                    continue
-                candidates.append(
-                    {
-                        "layer": layer,
-                        "phrase": _phrase_case(phrase),
-                        "aliases": [item.get("text") or phrase],
-                        "confidence": 0.82,
-                        "evidence_ids": [item.get("id")] if item.get("id") else [],
-                    }
-                )
+            phrase = _canonicalize_taxonomy_phrase(layer, _compact_phrase(item.get("text"), max_words=6, max_len=72))
+            if not _is_valid_taxonomy_phrase(
+                layer,
+                phrase,
+                named_customer_keys=named_customer_keys,
+                integration_keys=integration_keys,
+            ):
+                continue
+            candidates.append(
+                {
+                    "layer": layer,
+                    "phrase": phrase,
+                    "aliases": [item.get("text") or phrase],
+                    "confidence": 0.82,
+                    "evidence_ids": [item.get("id")] if item.get("id") else [],
+                }
+            )
         for phrase in raw_phrases:
-            compact = _compact_phrase(phrase, max_words=6, max_len=72)
+            compact = _canonicalize_taxonomy_phrase(layer, _compact_phrase(phrase, max_words=6, max_len=72))
             if not compact:
                 continue
             lowered = compact.lower()
-            compact_key = _normalize_phrase_key(compact)
-            if compact_key in named_customer_keys or compact_key in integration_keys:
-                continue
             if any(token in lowered for token in ("api", "documentation", "infrastructure")):
                 continue
             if any(
                 token in lowered
                 for token in ("platform", "software", "management", "analytics", "planning", "replacement", "oms", "pms", "stp")
             ):
+                if not _is_valid_taxonomy_phrase(
+                    layer,
+                    compact,
+                    named_customer_keys=named_customer_keys,
+                    integration_keys=integration_keys,
+                ):
+                    continue
                 candidates.append(
                     {
                         "layer": layer,
-                        "phrase": _phrase_case(compact),
+                        "phrase": compact,
                         "aliases": [phrase],
                         "confidence": 0.58,
                         "evidence_ids": [],
@@ -864,10 +1001,18 @@ def _taxonomy_phrase_candidates(
                     if isinstance(item, dict)
                     and keyword in str(item.get("text") or "").lower()
                 ][:6]
+                phrase = _canonicalize_taxonomy_phrase(layer, keyword)
+                if not _is_valid_taxonomy_phrase(
+                    layer,
+                    phrase,
+                    named_customer_keys=named_customer_keys,
+                    integration_keys=integration_keys,
+                ):
+                    continue
                 candidates.append(
                     {
                         "layer": layer,
-                        "phrase": _phrase_case(keyword),
+                        "phrase": phrase,
                         "aliases": [keyword],
                         "confidence": 0.8 if evidence_ids else 0.64,
                         "evidence_ids": evidence_ids,
@@ -881,17 +1026,23 @@ def _taxonomy_phrase_candidates(
             kind = str(item.get("kind") or "").lower()
             if "signal:workflow" not in kind and "page_signal:workflow" not in kind:
                 continue
-            phrase = _compact_phrase(text, max_words=7, max_len=72)
-            if phrase:
-                candidates.append(
-                    {
-                        "layer": layer,
-                        "phrase": _phrase_case(phrase),
-                        "aliases": [text],
-                        "confidence": 0.76,
-                        "evidence_ids": [item.get("id")] if item.get("id") else [],
-                    }
-                )
+            phrase = _canonicalize_taxonomy_phrase(layer, _compact_phrase(text, max_words=7, max_len=72))
+            if not _is_valid_taxonomy_phrase(
+                layer,
+                phrase,
+                named_customer_keys=named_customer_keys,
+                integration_keys=integration_keys,
+            ):
+                continue
+            candidates.append(
+                {
+                    "layer": layer,
+                    "phrase": phrase,
+                    "aliases": [text],
+                    "confidence": 0.76,
+                    "evidence_ids": [item.get("id")] if item.get("id") else [],
+                }
+            )
 
     if layer == "delivery_or_integration":
         for item in evidence_items:
@@ -900,36 +1051,39 @@ def _taxonomy_phrase_candidates(
             kind = str(item.get("kind") or "").lower()
             text = str(item.get("text") or "")
             lowered = text.lower()
-            if "integration" not in kind and "signal:service" not in kind and "page_signal:service" not in kind:
+            if "signal:service" not in kind and "page_signal:service" not in kind:
                 if not any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
                     continue
-            phrase = _compact_phrase(text, max_words=6, max_len=72)
-            if not phrase:
-                continue
-            phrase_key = _normalize_phrase_key(phrase)
-            if phrase_key in named_customer_keys:
+            phrase = _canonicalize_taxonomy_phrase(layer, _compact_phrase(text, max_words=6, max_len=72))
+            if not _is_valid_taxonomy_phrase(
+                layer,
+                phrase,
+                named_customer_keys=named_customer_keys,
+                integration_keys=integration_keys,
+            ):
                 continue
             candidates.append(
                 {
                     "layer": layer,
-                    "phrase": _phrase_case(phrase),
+                    "phrase": phrase,
                     "aliases": [text],
                     "confidence": 0.78 if item.get("id") else 0.62,
                     "evidence_ids": [item.get("id")] if item.get("id") else [],
                 }
             )
         for phrase in raw_phrases:
-            compact = _compact_phrase(phrase, max_words=6, max_len=72)
-            lowered = compact.lower()
-            if not compact or not any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
-                continue
-            compact_key = _normalize_phrase_key(compact)
-            if compact_key in named_customer_keys:
+            compact = _canonicalize_taxonomy_phrase(layer, _compact_phrase(phrase, max_words=6, max_len=72))
+            if not _is_valid_taxonomy_phrase(
+                layer,
+                compact,
+                named_customer_keys=named_customer_keys,
+                integration_keys=integration_keys,
+            ):
                 continue
             candidates.append(
                 {
                     "layer": layer,
-                    "phrase": _phrase_case(compact),
+                    "phrase": compact,
                     "aliases": [phrase],
                     "confidence": 0.58,
                     "evidence_ids": [],
@@ -993,11 +1147,25 @@ def _suppress_redundant_taxonomy_nodes(nodes: list[dict[str, Any]]) -> list[dict
     if "asset manager" in customer_phrases:
         suppressed_customer_phrases.add("wealth manager")
 
+    workflow_phrases = phrases_by_layer.get("workflow", set())
+    delivery_phrases = phrases_by_layer.get("delivery_or_integration", set())
+    suppressed_workflow_phrases = {
+        phrase
+        for phrase in workflow_phrases
+        if phrase in delivery_phrases
+        or (
+            _phrase_word_count(phrase) <= 2
+            and any(other != phrase and other.startswith(f"{phrase} ") for other in workflow_phrases)
+        )
+    }
+
     filtered: list[dict[str, Any]] = []
     for node in nodes:
         layer = node.get("layer")
         phrase_key = _normalize_phrase_key(node.get("phrase"))
         if layer == "customer_archetype" and phrase_key in suppressed_customer_phrases:
+            continue
+        if layer == "workflow" and phrase_key in suppressed_workflow_phrases:
             continue
         filtered.append(node)
     return filtered

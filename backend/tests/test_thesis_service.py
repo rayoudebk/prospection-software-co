@@ -342,8 +342,14 @@ def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
             ],
                 "evidence_items": [
                     {"id": "e1", "kind": "page_signal:customer_archetype", "text": "Banques privées"},
+                    {"id": "e1b", "kind": "page_signal:workflow", "text": "Front office"},
                     {"id": "e2", "kind": "page_signal:workflow", "text": "Front office titres"},
+                    {"id": "e2b", "kind": "page_signal:workflow", "text": "Operations"},
+                    {"id": "e2c", "kind": "page_signal:workflow", "text": "Infrastructure"},
+                    {"id": "e2d", "kind": "page_signal:workflow", "text": "4TPM PATIO"},
                     {"id": "e3", "kind": "page_signal:service", "text": "Documentation API"},
+                    {"id": "e3b", "kind": "page_signal:service", "text": "APIs REST"},
+                    {"id": "e3c", "kind": "page_signal:integration", "text": "BPCE"},
                     {"id": "e4", "kind": "page_customer:bundle_logo_manifest", "text": "Procapital"},
                 ],
             "named_customers": [
@@ -355,9 +361,15 @@ def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
                     "Banques privées",
                     "Bourse en ligne",
                     "Front office titres",
+                    "Front office",
+                    "Operations",
+                    "Infrastructure",
+                    "4TPM PATIO",
                     "Back office titres",
                     "Documentation API",
                     "APIs REST",
+                    "4TPM - Plateforme Wealth Management",
+                    "BPCE",
                     "Procapital",
                 ],
                 "crawl_coverage": {"total_sites": 1, "total_pages": 4},
@@ -373,7 +385,14 @@ def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
     assert "Private bank" in taxonomy_by_layer["customer_archetype"]
     assert "Online brokerage" in taxonomy_by_layer["customer_archetype"]
     assert "Front office titres" in taxonomy_by_layer["workflow"]
-    assert "Documentation API" in taxonomy_by_layer["delivery_or_integration"]
-    assert "APIs REST" in taxonomy_by_layer["delivery_or_integration"]
+    assert "Front office" not in taxonomy_by_layer["workflow"]
+    assert "Operations" not in taxonomy_by_layer["workflow"]
+    assert "Infrastructure" not in taxonomy_by_layer["workflow"]
+    assert "4TPM PATIO" not in taxonomy_by_layer["workflow"]
+    assert "API documentation" in taxonomy_by_layer["delivery_or_integration"]
+    assert "REST API" in taxonomy_by_layer["delivery_or_integration"]
+    assert "Infrastructure" in taxonomy_by_layer["delivery_or_integration"]
+    assert "BPCE" not in taxonomy_by_layer["delivery_or_integration"]
+    assert "Wealth management platform" in taxonomy_by_layer["capability"]
     assert "Procapital" not in taxonomy_by_layer.get("capability", [])
     assert "Bank" not in taxonomy_by_layer["customer_archetype"]
