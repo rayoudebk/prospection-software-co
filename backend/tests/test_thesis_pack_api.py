@@ -112,6 +112,9 @@ def test_thesis_pack_bootstrap_update_and_adjustment_contract(tmp_path: Path):
     assert thesis_payload["source_pills"]
     assert thesis_payload["buyer_evidence"]["status"] == "sufficient"
     assert any(claim["section"] == "core_capability" for claim in thesis_payload["claims"])
+    assert "market_map_brief" in thesis_payload
+    assert "taxonomy_nodes" in thesis_payload
+    assert "lens_seeds" in thesis_payload
 
     first_claim = thesis_payload["claims"][0]
     updated_claims = [
@@ -130,6 +133,41 @@ def test_thesis_pack_bootstrap_update_and_adjustment_contract(tmp_path: Path):
     patched_first_claim = next(claim for claim in patched_payload["claims"] if claim["id"] == first_claim["id"])
     assert patched_first_claim["user_status"] == "confirmed"
     assert patched_payload["confirmed_at"] is not None
+
+    taxonomy_patch_response = client.patch(
+        f"/workspaces/{workspace_id}/thesis-pack",
+        json={
+            "taxonomy_nodes": [
+                *(
+                    [
+                        {
+                            **patched_payload["taxonomy_nodes"][0],
+                            "phrase": "Private equity operations team",
+                            "aliases": ["fund operations team", "PE ops"],
+                        }
+                    ]
+                    if patched_payload["taxonomy_nodes"]
+                    else [
+                        {
+                            "id": "taxonomy_manual_customer",
+                            "layer": "customer_archetype",
+                            "phrase": "Private equity operations team",
+                            "aliases": ["fund operations team", "PE ops"],
+                            "confidence": 0.81,
+                            "evidence_ids": [],
+                            "scope_status": "in_scope",
+                        }
+                    ]
+                )
+            ]
+        },
+    )
+    assert taxonomy_patch_response.status_code == 200
+    taxonomy_payload = taxonomy_patch_response.json()
+    assert any(
+        node["phrase"] == "Private equity operations team"
+        for node in taxonomy_payload["taxonomy_nodes"]
+    )
 
     adjustment_response = client.post(
         f"/workspaces/{workspace_id}/thesis-pack:apply-adjustment",

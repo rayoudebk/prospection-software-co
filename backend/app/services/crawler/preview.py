@@ -21,6 +21,24 @@ from .constants import (
     REQUEST_DELAY,
 )
 
+CAREER_SIGNAL_KEYWORDS = (
+    "product",
+    "workflow",
+    "customer",
+    "client",
+    "integration",
+    "implementation",
+    "data",
+    "ai",
+    "compliance",
+    "operations",
+    "platform",
+    "api",
+    "scheduling",
+    "staffing",
+    "planning",
+)
+
 
 class PreviewFetcher:
     """Fetches lightweight previews of pages for scoring."""
@@ -190,6 +208,8 @@ class PageScorer:
         score = 0.0
         combined_text = preview.combined_text.lower()
         url_lower = preview.url.lower()
+        is_career_page = any(token in url_lower for token in ("/careers", "/career", "/jobs", "/job-", "/job/", "/apply"))
+        has_career_signal = any(token in combined_text for token in CAREER_SIGNAL_KEYWORDS)
         
         # 1. Capability keyword hits
         for keyword in CAPABILITY_KEYWORDS:
@@ -213,7 +233,7 @@ class PageScorer:
         if any(path in url_lower for path in PRIORITY_PATHS):
             score += 10
         
-        # 5. Hard penalty for auth/legal/careers
+        # 5. Hard penalty for auth/legal
         if any(excl in url_lower for excl in HARD_EXCLUDE):
             score -= 100
         
@@ -224,6 +244,11 @@ class PageScorer:
             # But promote back if it has proof signals (case study in press release)
             if proof_count > 0:
                 score += 20  # Net +10 for proof in blog/press
+            if is_career_page and has_career_signal:
+                score += 12
+
+        if is_career_page and not has_career_signal:
+            score -= 12
         
         # 7. Gentle depth penalty only if score is low
         if score < 15:

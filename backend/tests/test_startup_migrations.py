@@ -34,6 +34,11 @@ def test_run_startup_migrations_uses_sync_database_url(monkeypatch):
         "migrate_remove_legacy_buyer_context_summary_v1",
         lambda *, database_url: calls.append(("remove_legacy_summary", database_url)),
     )
+    monkeypatch.setattr(
+        startup_migrations,
+        "migrate_market_map_brief_v1",
+        lambda *, database_url: calls.append(("market_map_brief", database_url)),
+    )
 
     startup_migrations.run_startup_migrations()
 
@@ -42,6 +47,7 @@ def test_run_startup_migrations_uses_sync_database_url(monkeypatch):
         ("reference_evidence", "postgresql://example/test"),
         ("context_split", "postgresql://example/test"),
         ("remove_legacy_summary", "postgresql://example/test"),
+        ("market_map_brief", "postgresql://example/test"),
     ]
 
 

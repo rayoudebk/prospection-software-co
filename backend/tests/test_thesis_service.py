@@ -2,6 +2,7 @@ from app.models.workspace import CompanyProfile
 from app.services.thesis import (
     apply_thesis_adjustment_operations,
     bootstrap_thesis_payload,
+    build_context_pack_v2,
     derive_search_lane_payloads,
 )
 
@@ -78,6 +79,11 @@ def test_bootstrap_thesis_payload_generates_claims_and_source_pills():
     renderings = {claim["rendering"] for claim in payload["claims"]}
     assert "fact" in renderings
     assert "hypothesis" in renderings
+    assert payload["context_pack_v2"]["version"] == "v2"
+    assert "taxonomy_nodes" in payload
+    assert "market_map_brief" in payload
+    assert payload["market_map_brief"]["named_customer_proof"]
+    assert payload["lens_seeds"]
 
 
 def test_derive_search_lane_payloads_prefers_core_and_adjacent_claims():
@@ -142,6 +148,8 @@ def test_bootstrap_thesis_payload_supports_investment_thesis_only():
     assert "Prefer companies under $10M revenue" in claims_by_section["include_constraint"]
     assert "Employee estimate: 30-50 employees" in claims_by_section["size_signal"]
     assert "Primary sourcing region: Europe" in claims_by_section["geography"]
+    assert "market_map_brief" in payload
+    assert isinstance(payload["market_map_brief"]["open_questions"], list)
 
     lanes = derive_search_lane_payloads(payload, profile)
     core_lane = next(lane for lane in lanes if lane["lane_type"] == "core")
@@ -223,3 +231,42 @@ def test_bootstrap_thesis_payload_ignores_comparator_context_for_empty_buyer_sit
         claim["section"] == "geography" and claim["value"] == "Primary sourcing region: EU+UK"
         for claim in payload["claims"]
     )
+
+
+def test_build_context_pack_v2_keeps_high_signal_job_pages():
+    context_pack = build_context_pack_v2(
+        {
+            "generated_at": "2026-03-12T00:00:00Z",
+            "sites": [
+                {
+                    "url": "https://hublo.com",
+                    "company_name": "Hublo",
+                    "pages": [
+                        {
+                            "url": "https://careers.hublo.com/jobs/7331974-head-of-data-ai-f-h-n",
+                            "title": "Head of Data & AI",
+                            "page_type": "careers",
+                            "blocks": [{"type": "heading", "content": "Data platform for healthcare staffing"}],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": "Work closely with product, customers, operations, AI, and scheduling workflows.",
+                        },
+                        {
+                            "url": "https://careers.hublo.com/jobs/talent-partner",
+                            "title": "Talent Partner",
+                            "page_type": "careers",
+                            "blocks": [],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": "General recruiting process and interviews.",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    selected_pages = context_pack["sites"][0]["selected_pages"]
+    selected_urls = {page["url"] for page in selected_pages}
+    assert "https://careers.hublo.com/jobs/7331974-head-of-data-ai-f-h-n" in selected_urls
+    assert "https://careers.hublo.com/jobs/talent-partner" not in selected_urls

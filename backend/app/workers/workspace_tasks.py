@@ -6259,6 +6259,7 @@ def generate_context_pack_v2(job_id: int):
     """Generate context pack by crawling buyer and reference URLs."""
     from app.services.crawler import UnifiedCrawler
     from app.services.gemini_workspace import GeminiWorkspaceClient
+    from app.services.thesis import build_context_pack_v2
     
     db = SessionLocal()
     try:
@@ -6505,7 +6506,7 @@ def generate_context_pack_v2(job_id: int):
             
             # Update profile
             profile.context_pack_markdown = raw_markdown
-            profile.context_pack_json = combined_context_pack_json
+            profile.context_pack_json = build_context_pack_v2(combined_context_pack_json)
             profile.context_pack_generated_at = datetime.utcnow()
             profile.product_pages_found = product_pages_total
             profile.reference_summaries = reference_summaries
