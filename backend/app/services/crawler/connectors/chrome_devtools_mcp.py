@@ -105,6 +105,23 @@ def _render_via_playwright(url: str, timeout_seconds: int) -> Dict[str, Any]:
         }
 
 
+def _should_fallback_to_playwright(result: Dict[str, Any]) -> bool:
+    content = " ".join(str(result.get("content") or "").split())
+    if not content:
+        return True
+    if len(content) < 1200:
+        return True
+    weak_markers = (
+        "front office titres",
+        "back office titres",
+        "documentation api",
+        "plateforme wealth management",
+    )
+    if len(content) < 2200 and sum(1 for marker in weak_markers if marker in content.lower()) >= 2:
+        return True
+    return False
+
+
 def _expand_interactive_sections(page: Any) -> None:
     """Best-effort expansion of accordions/disclosures on product-style pages."""
     try:
@@ -190,6 +207,10 @@ def render_page_via_chrome_devtools_mcp(
     if endpoint:
         try:
             result = _render_via_endpoint(normalized, timeout, endpoint)
+            if _should_fallback_to_playwright(result):
+                playwright_result = _render_via_playwright(normalized, timeout)
+                if len(str(playwright_result.get("content") or "")) > len(str(result.get("content") or "")) + 80:
+                    result = playwright_result
         except Exception as exc:
             result = {
                 "url": normalized,
