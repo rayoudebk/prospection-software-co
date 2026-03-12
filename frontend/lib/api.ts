@@ -52,7 +52,76 @@ export interface CompanyProfile {
   context_pack_markdown: string | null;
   context_pack_generated_at: string | null;
   product_pages_found: number;
-  context_pack_json?: Record<string, unknown> | null;
+  context_pack_json?: ContextPackV2 | Record<string, unknown> | null;
+}
+
+export interface ContextPackEvidenceItem {
+  id: string;
+  kind: string;
+  text: string;
+  snippet?: string | null;
+  url: string;
+  page_type?: string | null;
+  page_title?: string | null;
+  captured_at?: string | null;
+  confidence?: number | null;
+}
+
+export interface ContextPackNamedCustomer {
+  name: string;
+  source_url?: string | null;
+  context?: string | null;
+  evidence_type?: string | null;
+  evidence_id?: string | null;
+}
+
+export interface ContextPackIntegration {
+  name: string;
+  source_url?: string | null;
+  evidence_id?: string | null;
+}
+
+export interface ContextPackSelectedPage {
+  url?: string | null;
+  title?: string | null;
+  page_type?: string | null;
+  headings?: string[];
+  has_signals?: boolean;
+  has_customer_evidence?: boolean;
+}
+
+export interface ContextPackSiteV2 {
+  url?: string | null;
+  company_name?: string | null;
+  website?: string | null;
+  summary?: string | null;
+  selected_pages?: ContextPackSelectedPage[];
+  evidence_items?: ContextPackEvidenceItem[];
+  named_customers?: ContextPackNamedCustomer[];
+  integrations?: ContextPackIntegration[];
+  partners?: ContextPackIntegration[];
+  extracted_raw_phrases?: string[];
+  crawl_coverage?: Record<string, unknown>;
+}
+
+export interface ContextPackV2 {
+  version?: string;
+  generated_at?: string | null;
+  urls_crawled?: string[];
+  sites?: ContextPackSiteV2[];
+  evidence_items?: ContextPackEvidenceItem[];
+  named_customers?: ContextPackNamedCustomer[];
+  integrations?: ContextPackIntegration[];
+  partners?: ContextPackIntegration[];
+  extracted_raw_phrases?: string[];
+  crawl_coverage?: {
+    total_sites?: number;
+    total_pages?: number;
+    page_type_counts?: Record<string, number>;
+    pages_with_signals?: number;
+    pages_with_customer_evidence?: number;
+    career_pages_selected?: number;
+  };
 }
 
 export interface CitationSentence {
@@ -118,6 +187,67 @@ export interface BuyerEvidenceDiagnostics {
   };
 }
 
+export interface TaxonomyNode {
+  id: string;
+  layer: "customer_archetype" | "workflow" | "capability" | string;
+  phrase: string;
+  aliases: string[];
+  confidence: number;
+  evidence_ids: string[];
+  scope_status: "in_scope" | "out_of_scope" | "removed" | string;
+}
+
+export interface TaxonomyEdge {
+  from_node_id: string;
+  to_node_id: string;
+  relation_type: string;
+  evidence_ids: string[];
+}
+
+export interface LensSeed {
+  id: string;
+  lens_type:
+    | "same_customer_different_product"
+    | "same_product_different_customer"
+    | "different_product_different_customer_within_market_box"
+    | string;
+  label: string;
+  query_phrase?: string | null;
+  rationale: string;
+  supporting_node_ids: string[];
+  evidence_ids: string[];
+  confidence: number;
+}
+
+export interface MarketMapBrief {
+  source_company?: {
+    name?: string | null;
+    website?: string | null;
+  };
+  source_summary?: string | null;
+  customer_nodes: TaxonomyNode[];
+  workflow_nodes: TaxonomyNode[];
+  capability_nodes: TaxonomyNode[];
+  named_customer_proof: ContextPackNamedCustomer[];
+  integration_partner_proof: ContextPackIntegration[];
+  active_lenses: LensSeed[];
+  adjacency_hypotheses: Array<{
+    id: string;
+    text: string;
+    supporting_node_ids: string[];
+    evidence_ids: string[];
+    confidence: number;
+  }>;
+  strongest_evidence_buckets: Array<{
+    label: string;
+    count: number;
+  }>;
+  confidence_gaps: string[];
+  open_questions: string[];
+  crawl_coverage?: ContextPackV2["crawl_coverage"];
+  confirmed_at?: string | null;
+}
+
 export interface BuyerThesisPack {
   id: number;
   workspace_id: number;
@@ -126,6 +256,11 @@ export interface BuyerThesisPack {
   source_pills: ThesisSourcePill[];
   open_questions: string[];
   buyer_evidence?: BuyerEvidenceDiagnostics | null;
+  context_pack_v2?: ContextPackV2 | null;
+  taxonomy_nodes: TaxonomyNode[];
+  taxonomy_edges: TaxonomyEdge[];
+  lens_seeds: LensSeed[];
+  market_map_brief?: MarketMapBrief | null;
   generated_at: string | null;
   confirmed_at: string | null;
 }
@@ -582,6 +717,7 @@ export const workspaceApi = {
       claims?: ThesisClaim[];
       source_pills?: ThesisSourcePill[];
       open_questions?: string[];
+      taxonomy_nodes?: TaxonomyNode[];
       confirmed?: boolean;
     }
   ) =>

@@ -26,7 +26,6 @@ PROOF_SIGNALS = [
 HARD_EXCLUDE = [
     "/login", "/signin", "/signup", "/register", "/auth",
     "/legal", "/privacy", "/terms", "/cookie", "/gdpr",
-    "/careers", "/jobs", "/job-", "/apply",
     "/cart", "/checkout", "/account",
 ]
 
@@ -34,6 +33,7 @@ HARD_EXCLUDE = [
 SOFT_DEMOTE = [
     "/blog", "/news", "/press", "/event", "/webinar",
     "/podcast", "/newsletter", "/rss",
+    "/careers", "/career", "/jobs", "/job-", "/job/", "/apply",
 ]
 
 # Priority path patterns for discovery
@@ -48,6 +48,7 @@ PRIORITY_PATHS = [
     "/doc", "/resource", "/whitepaper", "/datasheet", "/guide",
     "/industr", "/vertical", "/use-case", "/workflow",
     "/partner", "/ecosystem", "/marketplace",
+    "/careers", "/career", "/jobs",
 ]
 
 # Hub pages that are good starting points for BFS
@@ -67,6 +68,7 @@ COVERAGE_QUOTAS = {
     "services": (0, 2),
     "docs": (0, 3),
     "integrations": (1, 3),
+    "careers": (0, 2),
     "other": (0, 2),
 }
 
@@ -82,6 +84,7 @@ PAGE_TYPE_PATTERNS = {
     "security": ["/security", "/trust", "/compliance", "/soc", "/gdpr", "/hipaa"],
     "docs": ["/doc", "/resource", "/whitepaper", "/datasheet", "/guide", "/help"],
     "about": ["/about", "/company", "/who-we-are", "/team", "/leadership", "/history"],
+    "careers": ["/careers", "/career", "/jobs", "/job-", "/apply"],
 }
 
 # URL parameters to strip during normalization

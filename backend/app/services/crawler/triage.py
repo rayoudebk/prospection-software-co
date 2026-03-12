@@ -111,7 +111,7 @@ class LLMTriage:
 
 ## Task
 For each page, determine:
-1. page_type: one of [product, solutions, features, integrations, customers, services, pricing, security, docs, about, other]
+1. page_type: one of [product, solutions, features, integrations, customers, services, pricing, security, docs, about, careers, other]
 2. contains_tags: which topics it likely covers from [capabilities, services, customers, integrations, pricing, security, docs]
 3. priority: 1-10 (10 = highest value for understanding the company)
 
@@ -124,7 +124,7 @@ For each page, determine:
 - 5: About/company overview
 - 4: Pricing pages
 - 3: Security/compliance pages
-- 2: Documentation/resources
+- 2: Documentation/resources or high-signal careers pages
 - 1: Generic or low-value pages
 
 ## Output

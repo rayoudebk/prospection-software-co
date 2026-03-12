@@ -7,6 +7,7 @@ import {
   GeoScope,
   ThesisClaim,
   ThesisSourcePill,
+  TaxonomyNode,
   SearchLane,
 } from "./api";
 import { useEffect, useRef, useState } from "react";
@@ -104,6 +105,7 @@ export function useUpdateThesisPack(workspaceId: number) {
       claims?: ThesisClaim[];
       source_pills?: ThesisSourcePill[];
       open_questions?: string[];
+      taxonomy_nodes?: TaxonomyNode[];
       confirmed?: boolean;
     }) => workspaceApi.updateThesisPack(workspaceId, data),
     onSuccess: () => {

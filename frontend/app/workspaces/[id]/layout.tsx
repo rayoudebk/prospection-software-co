@@ -14,7 +14,7 @@ import clsx from "clsx";
 const navItems = [
   {
     href: "context",
-    label: "Sourcing Brief",
+    label: "Market Map Brief",
     step: 1,
     gateKey: null,
   },

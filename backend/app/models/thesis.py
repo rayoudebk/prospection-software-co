@@ -17,6 +17,10 @@ class BuyerThesisPack(Base):
     claims_json = Column(JSON, default=list)
     source_pills_json = Column(JSON, default=list)
     open_questions_json = Column(JSON, default=list)
+    market_map_brief_json = Column(JSON, default=dict)
+    taxonomy_nodes_json = Column(JSON, default=list)
+    taxonomy_edges_json = Column(JSON, default=list)
+    lens_seeds_json = Column(JSON, default=list)
 
     generated_at = Column(DateTime, nullable=True)
     confirmed_at = Column(DateTime, nullable=True)

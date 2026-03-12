@@ -67,9 +67,12 @@ from app.services.thesis import (
     normalize_open_questions,
     normalize_search_lane_payload,
     normalize_source_pills,
+    normalize_taxonomy_edges,
+    normalize_taxonomy_nodes,
     normalize_thesis_claims,
     search_lane_to_payload,
     thesis_pack_to_payload,
+    _build_market_map_artifacts,
 )
 
 router = APIRouter()
@@ -179,6 +182,61 @@ class BuyerEvidenceDiagnosticsResponse(BaseModel):
     metrics: Dict[str, int] = Field(default_factory=dict)
 
 
+class TaxonomyNodeResponse(BaseModel):
+    id: str
+    layer: str
+    phrase: str
+    aliases: List[str] = Field(default_factory=list)
+    confidence: float
+    evidence_ids: List[str] = Field(default_factory=list)
+    scope_status: str = "in_scope"
+
+
+class TaxonomyNodeInput(BaseModel):
+    id: Optional[str] = None
+    layer: str
+    phrase: str
+    aliases: List[str] = Field(default_factory=list)
+    confidence: float = 0.68
+    evidence_ids: List[str] = Field(default_factory=list)
+    scope_status: str = "in_scope"
+
+
+class TaxonomyEdgeResponse(BaseModel):
+    from_node_id: str
+    to_node_id: str
+    relation_type: str
+    evidence_ids: List[str] = Field(default_factory=list)
+
+
+class LensSeedResponse(BaseModel):
+    id: str
+    lens_type: str
+    label: str
+    query_phrase: Optional[str] = None
+    rationale: str
+    supporting_node_ids: List[str] = Field(default_factory=list)
+    evidence_ids: List[str] = Field(default_factory=list)
+    confidence: float
+
+
+class MarketMapBriefResponse(BaseModel):
+    source_company: Dict[str, Any] = Field(default_factory=dict)
+    source_summary: Optional[str] = None
+    customer_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
+    workflow_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
+    capability_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
+    named_customer_proof: List[Dict[str, Any]] = Field(default_factory=list)
+    integration_partner_proof: List[Dict[str, Any]] = Field(default_factory=list)
+    active_lenses: List[LensSeedResponse] = Field(default_factory=list)
+    adjacency_hypotheses: List[Dict[str, Any]] = Field(default_factory=list)
+    strongest_evidence_buckets: List[Dict[str, Any]] = Field(default_factory=list)
+    confidence_gaps: List[str] = Field(default_factory=list)
+    open_questions: List[str] = Field(default_factory=list)
+    crawl_coverage: Dict[str, Any] = Field(default_factory=dict)
+    confirmed_at: Optional[Any] = None
+
+
 class BuyerThesisPackResponse(BaseModel):
     id: int
     workspace_id: int
@@ -187,6 +245,11 @@ class BuyerThesisPackResponse(BaseModel):
     source_pills: List[ThesisSourcePillResponse] = Field(default_factory=list)
     open_questions: List[str] = Field(default_factory=list)
     buyer_evidence: Optional[BuyerEvidenceDiagnosticsResponse] = None
+    context_pack_v2: Optional[Dict[str, Any]] = None
+    taxonomy_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
+    taxonomy_edges: List[TaxonomyEdgeResponse] = Field(default_factory=list)
+    lens_seeds: List[LensSeedResponse] = Field(default_factory=list)
+    market_map_brief: Optional[MarketMapBriefResponse] = None
     generated_at: Optional[datetime]
     confirmed_at: Optional[datetime]
 
@@ -196,6 +259,7 @@ class BuyerThesisPackUpdate(BaseModel):
     claims: Optional[List[ThesisClaimInput]] = None
     source_pills: Optional[List[ThesisSourcePillInput]] = None
     open_questions: Optional[List[str]] = None
+    taxonomy_nodes: Optional[List[TaxonomyNodeInput]] = None
     confirmed: Optional[bool] = None
 
 
@@ -861,6 +925,7 @@ async def _latest_completed_discovery_job(
 
 
 def _buyer_thesis_response_from_payload(payload: Dict[str, Any]) -> BuyerThesisPackResponse:
+    market_map_brief = payload.get("market_map_brief")
     return BuyerThesisPackResponse(
         id=int(payload.get("id") or 0),
         workspace_id=int(payload.get("workspace_id") or 0),
@@ -875,6 +940,27 @@ def _buyer_thesis_response_from_payload(payload: Dict[str, Any]) -> BuyerThesisP
         buyer_evidence=(
             BuyerEvidenceDiagnosticsResponse.model_validate(payload.get("buyer_evidence"))
             if isinstance(payload.get("buyer_evidence"), dict)
+            else None
+        ),
+        context_pack_v2=payload.get("context_pack_v2") if isinstance(payload.get("context_pack_v2"), dict) else None,
+        taxonomy_nodes=[
+            TaxonomyNodeResponse.model_validate(item)
+            for item in (payload.get("taxonomy_nodes") or [])
+            if isinstance(item, dict)
+        ],
+        taxonomy_edges=[
+            TaxonomyEdgeResponse.model_validate(item)
+            for item in (payload.get("taxonomy_edges") or [])
+            if isinstance(item, dict)
+        ],
+        lens_seeds=[
+            LensSeedResponse.model_validate(item)
+            for item in (payload.get("lens_seeds") or [])
+            if isinstance(item, dict)
+        ],
+        market_map_brief=(
+            MarketMapBriefResponse.model_validate(market_map_brief)
+            if isinstance(market_map_brief, dict)
             else None
         ),
         generated_at=payload.get("generated_at"),
@@ -922,6 +1008,10 @@ async def _ensure_thesis_pack(
         claims_json=bootstrap_payload.get("claims") or [],
         source_pills_json=bootstrap_payload.get("source_pills") or [],
         open_questions_json=bootstrap_payload.get("open_questions") or [],
+        market_map_brief_json=bootstrap_payload.get("market_map_brief") or {},
+        taxonomy_nodes_json=bootstrap_payload.get("taxonomy_nodes") or [],
+        taxonomy_edges_json=bootstrap_payload.get("taxonomy_edges") or [],
+        lens_seeds_json=bootstrap_payload.get("lens_seeds") or [],
         generated_at=bootstrap_payload.get("generated_at"),
         confirmed_at=bootstrap_payload.get("confirmed_at"),
     )
@@ -1885,6 +1975,9 @@ async def update_thesis_pack(
     existing_pills = normalize_source_pills(thesis_pack.source_pills_json or [])
     if data.summary is not None:
         thesis_pack.summary = str(data.summary or "").strip()[:8000] or None
+        market_map_brief = thesis_pack.market_map_brief_json if isinstance(thesis_pack.market_map_brief_json, dict) else {}
+        market_map_brief["source_summary"] = thesis_pack.summary
+        thesis_pack.market_map_brief_json = market_map_brief
     if data.source_pills is not None:
         thesis_pack.source_pills_json = normalize_source_pills(
             [item.model_dump() for item in data.source_pills],
@@ -1900,8 +1993,38 @@ async def update_thesis_pack(
         )
     if data.open_questions is not None:
         thesis_pack.open_questions_json = normalize_open_questions(data.open_questions)
+        market_map_brief = thesis_pack.market_map_brief_json if isinstance(thesis_pack.market_map_brief_json, dict) else {}
+        market_map_brief["open_questions"] = thesis_pack.open_questions_json
+        thesis_pack.market_map_brief_json = market_map_brief
+    if data.taxonomy_nodes is not None:
+        normalized_nodes = normalize_taxonomy_nodes([item.model_dump() for item in data.taxonomy_nodes])
+        (
+            _context_pack_v2,
+            rebuilt_nodes,
+            rebuilt_edges,
+            rebuilt_lens_seeds,
+            rebuilt_open_questions,
+            rebuilt_market_map_brief,
+        ) = _build_market_map_artifacts(
+            profile,
+            source_pills=existing_pills,
+            override_nodes=normalized_nodes,
+        )
+        thesis_pack.taxonomy_nodes_json = rebuilt_nodes
+        thesis_pack.taxonomy_edges_json = rebuilt_edges
+        thesis_pack.lens_seeds_json = rebuilt_lens_seeds
+        thesis_pack.market_map_brief_json = {
+            **rebuilt_market_map_brief,
+            "source_summary": thesis_pack.summary or rebuilt_market_map_brief.get("source_summary"),
+            "confirmed_at": thesis_pack.confirmed_at.isoformat() if thesis_pack.confirmed_at else None,
+        }
+        if data.open_questions is None:
+            thesis_pack.open_questions_json = normalize_open_questions(rebuilt_open_questions)
     if data.confirmed is not None:
         thesis_pack.confirmed_at = datetime.utcnow() if data.confirmed else None
+    market_map_brief = thesis_pack.market_map_brief_json if isinstance(thesis_pack.market_map_brief_json, dict) else {}
+    market_map_brief["confirmed_at"] = thesis_pack.confirmed_at.isoformat() if thesis_pack.confirmed_at else None
+    thesis_pack.market_map_brief_json = market_map_brief
     thesis_pack.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(thesis_pack)
@@ -1926,6 +2049,10 @@ async def refresh_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_
     thesis_pack.claims_json = refreshed.get("claims") or []
     thesis_pack.source_pills_json = refreshed.get("source_pills") or []
     thesis_pack.open_questions_json = refreshed.get("open_questions") or []
+    thesis_pack.market_map_brief_json = refreshed.get("market_map_brief") or {}
+    thesis_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
+    thesis_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
+    thesis_pack.lens_seeds_json = refreshed.get("lens_seeds") or []
     thesis_pack.generated_at = refreshed.get("generated_at")
     thesis_pack.confirmed_at = None
     thesis_pack.updated_at = datetime.utcnow()
@@ -1987,7 +2114,16 @@ async def apply_thesis_adjustment(
     thesis_pack.claims_json = adjusted.get("claims") or []
     thesis_pack.source_pills_json = adjusted.get("source_pills") or thesis_pack.source_pills_json
     thesis_pack.open_questions_json = adjusted.get("open_questions") or []
+    thesis_pack.market_map_brief_json = adjusted.get("market_map_brief") or thesis_pack.market_map_brief_json
+    thesis_pack.taxonomy_nodes_json = adjusted.get("taxonomy_nodes") or thesis_pack.taxonomy_nodes_json
+    thesis_pack.taxonomy_edges_json = adjusted.get("taxonomy_edges") or thesis_pack.taxonomy_edges_json
+    thesis_pack.lens_seeds_json = adjusted.get("lens_seeds") or thesis_pack.lens_seeds_json
     thesis_pack.confirmed_at = adjusted.get("confirmed_at")
+    market_map_brief = thesis_pack.market_map_brief_json if isinstance(thesis_pack.market_map_brief_json, dict) else {}
+    market_map_brief["source_summary"] = thesis_pack.summary
+    market_map_brief["open_questions"] = thesis_pack.open_questions_json
+    market_map_brief["confirmed_at"] = thesis_pack.confirmed_at.isoformat() if thesis_pack.confirmed_at else None
+    thesis_pack.market_map_brief_json = market_map_brief
     thesis_pack.updated_at = datetime.utcnow()
 
     db.add(

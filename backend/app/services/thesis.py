@@ -98,6 +98,98 @@ NEGATIVE_CONSTRAINT_PATTERNS = (
     ("no consulting", "Exclude consulting-led businesses"),
 )
 
+TAXONOMY_LAYERS = {"customer_archetype", "workflow", "capability"}
+TAXONOMY_SCOPE_STATUSES = {"in_scope", "out_of_scope", "removed"}
+LENS_TYPES = {
+    "same_customer_different_product",
+    "same_product_different_customer",
+    "different_product_different_customer_within_market_box",
+}
+RELATION_TYPES = {"buys_capability", "supports_workflow", "adjacent_to"}
+JOB_PAGE_KEYWORDS = (
+    "product",
+    "workflow",
+    "customer",
+    "client",
+    "integration",
+    "implementation",
+    "operations",
+    "compliance",
+    "portfolio",
+    "staffing",
+    "shift",
+    "planning",
+    "scheduling",
+    "reporting",
+    "data",
+    "ai",
+    "api",
+    "platform",
+)
+WORKFLOW_KEYWORDS = (
+    "front office",
+    "front-office",
+    "portfolio management",
+    "portfolio analytics",
+    "order management",
+    "portfolio reporting",
+    "reporting",
+    "fund operations",
+    "fund administration",
+    "reconciliation",
+    "compliance",
+    "risk management",
+    "implementation",
+    "integration",
+    "workflow",
+    "operations",
+    "staffing",
+    "shift replacement",
+    "shift planning",
+    "scheduling",
+    "workforce planning",
+    "internal mobility",
+    "resource planning",
+    "replacement planning",
+    "voting rights",
+)
+CUSTOMER_ARCHETYPE_PATTERNS = (
+    ("asset managers", "asset manager"),
+    ("asset manager", "asset manager"),
+    ("private banks", "private bank"),
+    ("private bank", "private bank"),
+    ("wealth managers", "wealth manager"),
+    ("wealth manager", "wealth manager"),
+    ("fund managers", "fund manager"),
+    ("fund manager", "fund manager"),
+    ("institutional investors", "institutional investor"),
+    ("institutional investor", "institutional investor"),
+    ("fund administrators", "fund administrator"),
+    ("fund administrator", "fund administrator"),
+    ("banks", "bank"),
+    ("bank", "bank"),
+    ("insurers", "insurer"),
+    ("insurer", "insurer"),
+    ("advisors", "advisor"),
+    ("advisor", "advisor"),
+    ("hospitals", "hospital"),
+    ("hospital", "hospital"),
+    ("care facilities", "care facility"),
+    ("care facility", "care facility"),
+    ("healthcare providers", "healthcare provider"),
+    ("healthcare provider", "healthcare provider"),
+    ("clinics", "clinic"),
+    ("clinic", "clinic"),
+    ("medical practices", "medical practice"),
+    ("medical practice", "medical practice"),
+    ("operations teams", "operations team"),
+    ("operations team", "operations team"),
+    ("finance teams", "finance team"),
+    ("finance team", "finance team"),
+    ("compliance teams", "compliance team"),
+    ("compliance team", "compliance team"),
+)
+
 
 def _slugify(value: str, *, max_len: int = 48) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
@@ -125,6 +217,831 @@ def _normalize_string_list(values: Any, *, max_items: int = 20, max_len: int = 1
         if len(results) >= max_items:
             break
     return results
+
+
+def _context_pack_version(context_pack_json: Any) -> Optional[str]:
+    if not isinstance(context_pack_json, dict):
+        return None
+    version = str(context_pack_json.get("version") or "").strip()
+    return version or None
+
+
+def _extract_page_headings(page: dict[str, Any]) -> list[str]:
+    headings: list[str] = []
+    for block in page.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("type") or "").strip().lower() != "heading":
+            continue
+        content = str(block.get("content") or "").strip()
+        if content and content not in headings:
+            headings.append(content[:200])
+    return headings[:10]
+
+
+def _safe_phrase(value: Any, *, max_len: int = 80) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    text = text.strip(" ,.;:-")
+    return text[:max_len]
+
+
+def _normalize_phrase_key(value: Any) -> str:
+    text = re.sub(r"[^a-z0-9+/ ]+", " ", str(value or "").lower())
+    text = re.sub(r"\s+", " ", text).strip()
+    if text.endswith("s") and len(text) > 4 and "/" not in text:
+        text = text[:-1]
+    return text
+
+
+def _compact_phrase(value: Any, *, max_words: int = 7, max_len: int = 80) -> str:
+    text = _safe_phrase(value, max_len=240)
+    if not text:
+        return ""
+    text = re.sub(
+        r"^(?:our|their|the|a|an)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"^(?:we offer|we provide|we help|platform for|solution for|software for)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    parts = text.split()
+    text = " ".join(parts[:max_words]).strip()
+    return text[:max_len]
+
+
+def _is_job_page_url(url: Any) -> bool:
+    lowered = str(url or "").lower()
+    return any(token in lowered for token in ("/careers", "/career", "/jobs", "/job-", "/job/", "/apply"))
+
+
+def _job_page_is_relevant(page: dict[str, Any]) -> bool:
+    combined_parts = [
+        str(page.get("title") or ""),
+        str(page.get("raw_content") or "")[:5000],
+        " ".join(_extract_page_headings(page)),
+    ]
+    combined = " ".join(combined_parts).lower()
+    return any(token in combined for token in JOB_PAGE_KEYWORDS)
+
+
+def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
+    if not isinstance(context_pack_json, dict):
+        return {
+            "version": "v2",
+            "generated_at": None,
+            "urls_crawled": [],
+            "sites": [],
+            "evidence_items": [],
+            "named_customers": [],
+            "integrations": [],
+            "partners": [],
+            "extracted_raw_phrases": [],
+            "crawl_coverage": {
+                "total_sites": 0,
+                "total_pages": 0,
+                "page_type_counts": {},
+                "pages_with_signals": 0,
+                "pages_with_customer_evidence": 0,
+                "career_pages_selected": 0,
+            },
+        }
+    if _context_pack_version(context_pack_json) == "v2":
+        return context_pack_json
+
+    sites_out: list[dict[str, Any]] = []
+    aggregate_evidence: dict[str, dict[str, Any]] = {}
+    aggregate_customers: dict[str, dict[str, Any]] = {}
+    aggregate_integrations: dict[str, dict[str, Any]] = {}
+    aggregate_phrases: set[str] = set()
+    page_type_counts: dict[str, int] = {}
+    pages_with_signals = 0
+    pages_with_customer_evidence = 0
+    total_pages = 0
+    career_pages_selected = 0
+
+    for site in context_pack_json.get("sites") or []:
+        if not isinstance(site, dict):
+            continue
+        pages = [page for page in (site.get("pages") or []) if isinstance(page, dict)]
+        evidence_items: dict[str, dict[str, Any]] = {}
+        named_customers: dict[str, dict[str, Any]] = {}
+        integrations: dict[str, dict[str, Any]] = {}
+        selected_pages: list[dict[str, Any]] = []
+        raw_phrases: set[str] = set()
+        site_page_type_counts: dict[str, int] = {}
+
+        def _register_evidence(
+            *,
+            source_url: Any,
+            kind: str,
+            text: Any,
+            snippet: Any = "",
+            page_type: Any = None,
+            page_title: Any = None,
+            confidence: float = 0.75,
+        ) -> Optional[str]:
+            url = normalize_url(source_url)
+            phrase = _safe_phrase(text, max_len=180)
+            if not url or not phrase:
+                return None
+            evidence_id = _stable_id("evidence", kind, url, phrase)
+            payload = {
+                "id": evidence_id,
+                "kind": kind,
+                "text": phrase,
+                "snippet": _safe_phrase(snippet, max_len=320),
+                "url": url,
+                "page_type": str(page_type or "").strip() or None,
+                "page_title": _safe_phrase(page_title, max_len=180) or None,
+                "captured_at": context_pack_json.get("generated_at"),
+                "confidence": _clamp_confidence(confidence, default=confidence),
+            }
+            evidence_items[evidence_id] = payload
+            aggregate_evidence.setdefault(evidence_id, payload)
+            return evidence_id
+
+        for signal in site.get("signals") or []:
+            if not isinstance(signal, dict):
+                continue
+            evidence_id = _register_evidence(
+                source_url=signal.get("source_url"),
+                kind=f"site_signal:{signal.get('type') or 'unknown'}",
+                text=signal.get("value"),
+                snippet=signal.get("snippet"),
+                page_type="site_summary",
+                page_title=site.get("company_name") or site.get("website"),
+                confidence=0.78,
+            )
+            phrase = _compact_phrase(signal.get("value"))
+            if phrase:
+                raw_phrases.add(phrase)
+                aggregate_phrases.add(phrase)
+            if str(signal.get("type") or "").strip().lower() == "integration":
+                key = _normalize_phrase_key(signal.get("value"))
+                if key:
+                    integrations[key] = {
+                        "name": _safe_phrase(signal.get("value")),
+                        "source_url": normalize_url(signal.get("source_url")),
+                        "evidence_id": evidence_id,
+                    }
+                    aggregate_integrations.setdefault(key, integrations[key])
+
+        for customer in site.get("customer_evidence") or []:
+            if not isinstance(customer, dict):
+                continue
+            evidence_id = _register_evidence(
+                source_url=customer.get("source_url"),
+                kind=f"site_customer:{customer.get('evidence_type') or 'unknown'}",
+                text=customer.get("name"),
+                snippet=customer.get("context"),
+                page_type="customers",
+                page_title=site.get("company_name") or site.get("website"),
+                confidence=0.82,
+            )
+            name = _safe_phrase(customer.get("name"), max_len=120)
+            if name:
+                key = _normalize_phrase_key(name)
+                named_customers[key] = {
+                    "name": name,
+                    "source_url": normalize_url(customer.get("source_url")),
+                    "context": _safe_phrase(customer.get("context"), max_len=240),
+                    "evidence_type": str(customer.get("evidence_type") or "").strip() or "customer",
+                    "evidence_id": evidence_id,
+                }
+                aggregate_customers.setdefault(key, named_customers[key])
+                raw_phrases.add(name)
+                aggregate_phrases.add(name)
+
+        for page in pages:
+            page_type = str(page.get("page_type") or "other").strip() or "other"
+            headings = _extract_page_headings(page)
+            has_signals = bool(page.get("signals"))
+            has_customers = bool(page.get("customer_evidence"))
+            site_page_type_counts[page_type] = site_page_type_counts.get(page_type, 0) + 1
+            page_type_counts[page_type] = page_type_counts.get(page_type, 0) + 1
+            total_pages += 1
+            if has_signals:
+                pages_with_signals += 1
+            if has_customers:
+                pages_with_customer_evidence += 1
+            if _is_job_page_url(page.get("url")):
+                if _job_page_is_relevant(page):
+                    career_pages_selected += 1
+                else:
+                    continue
+
+            selected_pages.append(
+                {
+                    "url": normalize_url(page.get("url")),
+                    "title": _safe_phrase(page.get("title"), max_len=180),
+                    "page_type": page_type,
+                    "headings": headings,
+                    "has_signals": has_signals,
+                    "has_customer_evidence": has_customers,
+                }
+            )
+
+            for heading in headings:
+                phrase = _compact_phrase(heading)
+                if phrase:
+                    raw_phrases.add(phrase)
+                    aggregate_phrases.add(phrase)
+
+            for signal in page.get("signals") or []:
+                if not isinstance(signal, dict):
+                    continue
+                evidence_id = _register_evidence(
+                    source_url=signal.get("source_url") or page.get("url"),
+                    kind=f"page_signal:{signal.get('type') or 'unknown'}",
+                    text=signal.get("value"),
+                    snippet=signal.get("snippet"),
+                    page_type=page_type,
+                    page_title=page.get("title"),
+                    confidence=0.8,
+                )
+                phrase = _compact_phrase(signal.get("value"))
+                if phrase:
+                    raw_phrases.add(phrase)
+                    aggregate_phrases.add(phrase)
+                if str(signal.get("type") or "").strip().lower() == "integration":
+                    key = _normalize_phrase_key(signal.get("value"))
+                    if key:
+                        integrations[key] = {
+                            "name": _safe_phrase(signal.get("value")),
+                            "source_url": normalize_url(signal.get("source_url") or page.get("url")),
+                            "evidence_id": evidence_id,
+                        }
+                        aggregate_integrations.setdefault(key, integrations[key])
+
+            for customer in page.get("customer_evidence") or []:
+                if not isinstance(customer, dict):
+                    continue
+                evidence_id = _register_evidence(
+                    source_url=customer.get("source_url") or page.get("url"),
+                    kind=f"page_customer:{customer.get('evidence_type') or 'unknown'}",
+                    text=customer.get("name"),
+                    snippet=customer.get("context"),
+                    page_type=page_type,
+                    page_title=page.get("title"),
+                    confidence=0.84,
+                )
+                name = _safe_phrase(customer.get("name"), max_len=120)
+                if name:
+                    key = _normalize_phrase_key(name)
+                    named_customers[key] = {
+                        "name": name,
+                        "source_url": normalize_url(customer.get("source_url") or page.get("url")),
+                        "context": _safe_phrase(customer.get("context"), max_len=240),
+                        "evidence_type": str(customer.get("evidence_type") or "").strip() or "customer",
+                        "evidence_id": evidence_id,
+                    }
+                    aggregate_customers.setdefault(key, named_customers[key])
+                    raw_phrases.add(name)
+                    aggregate_phrases.add(name)
+
+        sites_out.append(
+            {
+                **site,
+                "selected_pages": selected_pages,
+                "evidence_items": list(evidence_items.values()),
+                "named_customers": list(named_customers.values()),
+                "integrations": list(integrations.values()),
+                "partners": list(integrations.values()),
+                "extracted_raw_phrases": sorted(raw_phrases)[:80],
+                "crawl_coverage": {
+                    "total_pages": len(pages),
+                    "page_type_counts": site_page_type_counts,
+                    "selected_pages": len(selected_pages),
+                    "pages_with_signals": len([page for page in pages if page.get("signals")]),
+                    "pages_with_customer_evidence": len([page for page in pages if page.get("customer_evidence")]),
+                    "career_pages_selected": len(
+                        [page for page in selected_pages if str(page.get("page_type") or "") == "careers"]
+                    ),
+                },
+            }
+        )
+
+    return {
+        **context_pack_json,
+        "version": "v2",
+        "sites": sites_out,
+        "evidence_items": list(aggregate_evidence.values()),
+        "named_customers": list(aggregate_customers.values()),
+        "integrations": list(aggregate_integrations.values()),
+        "partners": list(aggregate_integrations.values()),
+        "extracted_raw_phrases": sorted(aggregate_phrases)[:160],
+        "crawl_coverage": {
+            "total_sites": len(sites_out),
+            "total_pages": total_pages,
+            "page_type_counts": page_type_counts,
+            "pages_with_signals": pages_with_signals,
+            "pages_with_customer_evidence": pages_with_customer_evidence,
+            "career_pages_selected": career_pages_selected,
+        },
+    }
+
+
+def _phrase_case(value: str) -> str:
+    if not value:
+        return ""
+    if value.isupper() or "/" in value:
+        return value
+    return value[0].upper() + value[1:]
+
+
+def _taxonomy_phrase_candidates(
+    context_pack_v2: dict[str, Any],
+    *,
+    layer: str,
+) -> list[dict[str, Any]]:
+    if layer not in TAXONOMY_LAYERS:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    evidence_items = context_pack_v2.get("evidence_items") or []
+    raw_phrases = context_pack_v2.get("extracted_raw_phrases") or []
+    raw_joined = "\n".join(str(value or "") for value in raw_phrases)
+    lower_blob = raw_joined.lower()
+
+    if layer == "customer_archetype":
+        for pattern, canonical in CUSTOMER_ARCHETYPE_PATTERNS:
+            if pattern in lower_blob:
+                evidence_ids = [
+                    item.get("id")
+                    for item in evidence_items
+                    if isinstance(item, dict)
+                    and pattern in str(item.get("text") or "").lower()
+                ][:6]
+                candidates.append(
+                    {
+                        "phrase": _phrase_case(canonical),
+                        "aliases": [pattern],
+                        "confidence": 0.84 if evidence_ids else 0.68,
+                        "evidence_ids": evidence_ids,
+                    }
+                )
+        for customer in context_pack_v2.get("named_customers") or []:
+            if not isinstance(customer, dict):
+                continue
+            context = str(customer.get("context") or "").lower()
+            for pattern, canonical in CUSTOMER_ARCHETYPE_PATTERNS:
+                if pattern in context:
+                    candidates.append(
+                        {
+                            "phrase": _phrase_case(canonical),
+                            "aliases": [customer.get("name") or pattern],
+                            "confidence": 0.78,
+                            "evidence_ids": [customer.get("evidence_id")] if customer.get("evidence_id") else [],
+                        }
+                    )
+
+    if layer == "capability":
+        for item in evidence_items:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "").lower()
+            if "signal:capability" not in kind and "page_signal:capability" not in kind:
+                continue
+            phrase = _compact_phrase(item.get("text"), max_words=6, max_len=72)
+            if phrase:
+                candidates.append(
+                    {
+                        "phrase": _phrase_case(phrase),
+                        "aliases": [item.get("text") or phrase],
+                        "confidence": 0.82,
+                        "evidence_ids": [item.get("id")] if item.get("id") else [],
+                    }
+                )
+        for phrase in raw_phrases:
+            compact = _compact_phrase(phrase, max_words=6, max_len=72)
+            if not compact:
+                continue
+            lowered = compact.lower()
+            if any(token in lowered for token in ("platform", "software", "management", "analytics", "planning", "replacement", "oms", "pms")):
+                candidates.append(
+                    {
+                        "phrase": _phrase_case(compact),
+                        "aliases": [phrase],
+                        "confidence": 0.58,
+                        "evidence_ids": [],
+                    }
+                )
+
+    if layer == "workflow":
+        for keyword in WORKFLOW_KEYWORDS:
+            if keyword in lower_blob:
+                evidence_ids = [
+                    item.get("id")
+                    for item in evidence_items
+                    if isinstance(item, dict)
+                    and keyword in str(item.get("text") or "").lower()
+                ][:6]
+                candidates.append(
+                    {
+                        "phrase": _phrase_case(keyword),
+                        "aliases": [keyword],
+                        "confidence": 0.8 if evidence_ids else 0.64,
+                        "evidence_ids": evidence_ids,
+                    }
+                )
+        for item in evidence_items:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "")
+            lowered = text.lower()
+            if "workflow" not in lowered and not any(token in lowered for token in ("planning", "reporting", "operations", "replacement", "portfolio management", "voting rights")):
+                continue
+            phrase = _compact_phrase(text, max_words=7, max_len=72)
+            if phrase:
+                candidates.append(
+                    {
+                        "phrase": _phrase_case(phrase),
+                        "aliases": [text],
+                        "confidence": 0.76,
+                        "evidence_ids": [item.get("id")] if item.get("id") else [],
+                    }
+                )
+
+    return candidates
+
+
+def normalize_taxonomy_nodes(nodes: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    if not isinstance(nodes, list):
+        nodes = []
+    for item in nodes:
+        if not isinstance(item, dict):
+            continue
+        layer = str(item.get("layer") or "").strip()
+        phrase = _safe_phrase(item.get("phrase"), max_len=80)
+        if layer not in TAXONOMY_LAYERS or not phrase:
+            continue
+        key = (layer, _normalize_phrase_key(phrase))
+        record = grouped.get(key)
+        aliases = _normalize_string_list(item.get("aliases"), max_items=12, max_len=80)
+        aliases = [alias for alias in aliases if _normalize_phrase_key(alias) != key[1]]
+        evidence_ids = _normalize_string_list(item.get("evidence_ids"), max_items=12, max_len=96)
+        scope_status = str(item.get("scope_status") or "in_scope").strip().lower()
+        if scope_status not in TAXONOMY_SCOPE_STATUSES:
+            scope_status = "in_scope"
+        if record is None:
+            record = {
+                "id": str(item.get("id") or _stable_id("taxonomy", layer, phrase)),
+                "layer": layer,
+                "phrase": phrase,
+                "aliases": aliases,
+                "confidence": _clamp_confidence(item.get("confidence"), default=0.68),
+                "evidence_ids": evidence_ids,
+                "scope_status": scope_status,
+            }
+            grouped[key] = record
+            normalized.append(record)
+            continue
+        record["aliases"] = _normalize_string_list(record.get("aliases", []) + aliases, max_items=12, max_len=80)
+        record["evidence_ids"] = _normalize_string_list(record.get("evidence_ids", []) + evidence_ids, max_items=12, max_len=96)
+        record["confidence"] = _clamp_confidence(max(float(record.get("confidence") or 0.0), float(item.get("confidence") or 0.0)), default=0.68)
+        if record.get("scope_status") != "removed":
+            record["scope_status"] = scope_status
+    return normalized[:80]
+
+
+def normalize_taxonomy_edges(edges: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    if not isinstance(edges, list):
+        edges = []
+    for item in edges:
+        if not isinstance(item, dict):
+            continue
+        from_node_id = str(item.get("from_node_id") or "").strip()
+        to_node_id = str(item.get("to_node_id") or "").strip()
+        relation_type = str(item.get("relation_type") or "").strip()
+        if not from_node_id or not to_node_id or relation_type not in RELATION_TYPES:
+            continue
+        key = (from_node_id, to_node_id, relation_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(
+            {
+                "from_node_id": from_node_id,
+                "to_node_id": to_node_id,
+                "relation_type": relation_type,
+                "evidence_ids": _normalize_string_list(item.get("evidence_ids"), max_items=12, max_len=96),
+            }
+        )
+    return normalized[:120]
+
+
+def normalize_lens_seeds(seeds: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    if not isinstance(seeds, list):
+        seeds = []
+    for item in seeds:
+        if not isinstance(item, dict):
+            continue
+        lens_type = str(item.get("lens_type") or "").strip()
+        rationale = _safe_phrase(item.get("rationale"), max_len=320)
+        if lens_type not in LENS_TYPES or not rationale:
+            continue
+        normalized.append(
+            {
+                "id": str(item.get("id") or _stable_id("lens", lens_type, rationale)),
+                "lens_type": lens_type,
+                "label": _safe_phrase(item.get("label"), max_len=120) or lens_type.replace("_", " "),
+                "query_phrase": _safe_phrase(item.get("query_phrase"), max_len=120) or None,
+                "rationale": rationale,
+                "supporting_node_ids": _normalize_string_list(item.get("supporting_node_ids"), max_items=12, max_len=96),
+                "evidence_ids": _normalize_string_list(item.get("evidence_ids"), max_items=12, max_len=96),
+                "confidence": _clamp_confidence(item.get("confidence"), default=0.7),
+            }
+        )
+    return normalized[:12]
+
+
+def _build_taxonomy_map(
+    context_pack_v2: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    nodes = normalize_taxonomy_nodes(
+        _taxonomy_phrase_candidates(context_pack_v2, layer="customer_archetype")
+        + _taxonomy_phrase_candidates(context_pack_v2, layer="workflow")
+        + _taxonomy_phrase_candidates(context_pack_v2, layer="capability")
+    )
+    nodes_by_layer: dict[str, list[dict[str, Any]]] = {
+        layer: [node for node in nodes if node.get("layer") == layer and node.get("scope_status") != "removed"]
+        for layer in TAXONOMY_LAYERS
+    }
+    edges: list[dict[str, Any]] = []
+    for capability in nodes_by_layer.get("capability", [])[:8]:
+        for workflow in nodes_by_layer.get("workflow", [])[:6]:
+            shared = sorted(
+                set(capability.get("evidence_ids") or []) & set(workflow.get("evidence_ids") or [])
+            )
+            if not shared:
+                continue
+            edges.append(
+                {
+                    "from_node_id": capability["id"],
+                    "to_node_id": workflow["id"],
+                    "relation_type": "supports_workflow",
+                    "evidence_ids": shared[:6],
+                }
+            )
+    for customer in nodes_by_layer.get("customer_archetype", [])[:8]:
+        for capability in nodes_by_layer.get("capability", [])[:8]:
+            shared = sorted(
+                set(customer.get("evidence_ids") or []) & set(capability.get("evidence_ids") or [])
+            )
+            if not shared:
+                continue
+            edges.append(
+                {
+                    "from_node_id": customer["id"],
+                    "to_node_id": capability["id"],
+                    "relation_type": "buys_capability",
+                    "evidence_ids": shared[:6],
+                }
+            )
+    workflows = nodes_by_layer.get("workflow", [])[:8]
+    for idx, workflow in enumerate(workflows):
+        for other in workflows[idx + 1 : idx + 3]:
+            edges.append(
+                {
+                    "from_node_id": workflow["id"],
+                    "to_node_id": other["id"],
+                    "relation_type": "adjacent_to",
+                    "evidence_ids": _normalize_string_list(
+                        list(set((workflow.get("evidence_ids") or []) + (other.get("evidence_ids") or []))),
+                        max_items=6,
+                        max_len=96,
+                    ),
+                }
+            )
+    return nodes, normalize_taxonomy_edges(edges)
+
+
+def _generate_market_map_summary(
+    company_name: str,
+    *,
+    capabilities: list[dict[str, Any]],
+    workflows: list[dict[str, Any]],
+    customers: list[dict[str, Any]],
+    named_customers: list[dict[str, Any]],
+) -> str:
+    capability_names = [node.get("phrase") for node in capabilities[:3] if node.get("phrase")]
+    workflow_names = [node.get("phrase") for node in workflows[:3] if node.get("phrase")]
+    customer_names = [node.get("phrase") for node in customers[:3] if node.get("phrase")]
+    named_names = [item.get("name") for item in named_customers[:2] if item.get("name")]
+    sentences: list[str] = []
+    if capability_names and customer_names:
+        sentences.append(
+            f"{company_name} appears to offer {', '.join(capability_names)} to {', '.join(customer_names)} buyers."
+        )
+    elif capability_names:
+        sentences.append(f"{company_name} appears to offer {', '.join(capability_names)}.")
+    if workflow_names:
+        sentences.append(
+            f"The strongest workflow signals cluster around {', '.join(workflow_names)}."
+        )
+    if named_names:
+        sentences.append(
+            f"Named customer proof includes {', '.join(named_names)}."
+        )
+    if not sentences:
+        sentences.append(
+            f"{company_name} has limited first-party evidence; add more product, customer, or integration pages before trusting the market map."
+        )
+    return " ".join(sentences)[:800]
+
+
+def _build_market_map_artifacts(
+    profile: CompanyProfile,
+    *,
+    source_pills: list[dict[str, Any]],
+    override_nodes: Any = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+    context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
+    nodes, edges = _build_taxonomy_map(context_pack_v2)
+    if override_nodes is not None:
+        nodes = normalize_taxonomy_nodes(override_nodes)
+        edges = normalize_taxonomy_edges(edges)
+
+    active_nodes = [node for node in nodes if node.get("scope_status") != "removed"]
+    customers = [node for node in active_nodes if node.get("layer") == "customer_archetype"]
+    workflows = [node for node in active_nodes if node.get("layer") == "workflow"]
+    capabilities = [node for node in active_nodes if node.get("layer") == "capability"]
+    named_customers = [
+        item for item in (context_pack_v2.get("named_customers") or []) if isinstance(item, dict)
+    ][:8]
+    integrations = [
+        item for item in (context_pack_v2.get("integrations") or []) if isinstance(item, dict)
+    ][:8]
+    evidence_ids_for_customers = _normalize_string_list(
+        [item.get("evidence_id") for item in named_customers if isinstance(item, dict)],
+        max_items=12,
+        max_len=96,
+    )
+    evidence_ids_for_integrations = _normalize_string_list(
+        [item.get("evidence_id") for item in integrations if isinstance(item, dict)],
+        max_items=12,
+        max_len=96,
+    )
+    company_name = (
+        str((profile.context_pack_json or {}).get("sites", [{}])[0].get("company_name") or "").strip()
+        or normalize_domain(profile.buyer_company_url)
+        or "Source company"
+    )
+
+    lens_seeds: list[dict[str, Any]] = []
+    if named_customers or customers:
+        lens_seeds.append(
+            {
+                "lens_type": "same_customer_different_product",
+                "label": "Same Customer, Different Product",
+                "query_phrase": (workflows[0]["phrase"] if workflows else capabilities[0]["phrase"] if capabilities else None),
+                "rationale": (
+                    "Named customer and customer-archetype evidence suggests adjacent products sold into the same buying accounts."
+                ),
+                "supporting_node_ids": [node["id"] for node in (customers[:2] + capabilities[:2])],
+                "evidence_ids": evidence_ids_for_customers[:6],
+                "confidence": 0.82 if named_customers else 0.7,
+            }
+        )
+    if capabilities:
+        lens_seeds.append(
+            {
+                "lens_type": "same_product_different_customer",
+                "label": "Same Product, Different Customer",
+                "query_phrase": capabilities[0]["phrase"],
+                "rationale": "Capability evidence is strong enough to map vendors offering the same solution into other customer segments.",
+                "supporting_node_ids": [node["id"] for node in (capabilities[:2] + customers[:2])],
+                "evidence_ids": _normalize_string_list(
+                    [evidence_id for node in capabilities[:2] for evidence_id in (node.get("evidence_ids") or [])],
+                    max_items=6,
+                    max_len=96,
+                ),
+                "confidence": 0.8 if len(capabilities) >= 2 else 0.68,
+            }
+        )
+    if workflows and (len(capabilities) >= 2 or integrations):
+        lens_seeds.append(
+            {
+                "lens_type": "different_product_different_customer_within_market_box",
+                "label": "Different Product, Different Customer, Same Market Box",
+                "query_phrase": workflows[0]["phrase"],
+                "rationale": "Workflow and integration evidence bounds a market box wide enough for adjacency mapping without drifting into generic industry search.",
+                "supporting_node_ids": [node["id"] for node in (workflows[:2] + capabilities[:2])],
+                "evidence_ids": evidence_ids_for_integrations[:6]
+                or _normalize_string_list(
+                    [evidence_id for node in workflows[:2] for evidence_id in (node.get("evidence_ids") or [])],
+                    max_items=6,
+                    max_len=96,
+                ),
+                "confidence": 0.66,
+            }
+        )
+    lens_seeds = normalize_lens_seeds(lens_seeds)
+
+    adjacency_hypotheses: list[dict[str, Any]] = []
+    if customers and workflows:
+        adjacency_hypotheses.append(
+            {
+                "id": _stable_id("hypothesis", customers[0]["phrase"], workflows[0]["phrase"]),
+                "text": (
+                    f"Customers like {customers[0]['phrase']} that buy {capabilities[0]['phrase'] if capabilities else 'the source product'} "
+                    f"likely evaluate adjacent workflows around {workflows[0]['phrase']}."
+                )[:280],
+                "supporting_node_ids": [customers[0]["id"], workflows[0]["id"], *( [capabilities[0]["id"]] if capabilities else [])],
+                "evidence_ids": _normalize_string_list(
+                    list((customers[0].get("evidence_ids") or []) + (workflows[0].get("evidence_ids") or [])),
+                    max_items=6,
+                    max_len=96,
+                ),
+                "confidence": 0.72,
+            }
+        )
+    if integrations and capabilities:
+        adjacency_hypotheses.append(
+            {
+                "id": _stable_id("hypothesis", capabilities[0]["phrase"], integrations[0].get("name") or ""),
+                "text": (
+                    f"Integration evidence around {integrations[0].get('name') or 'the ecosystem'} suggests buyers may bundle {capabilities[0]['phrase']} with adjacent tooling."
+                )[:280],
+                "supporting_node_ids": [capabilities[0]["id"]],
+                "evidence_ids": _normalize_string_list(
+                    [integrations[0].get("evidence_id")] + (capabilities[0].get("evidence_ids") or []),
+                    max_items=6,
+                    max_len=96,
+                ),
+                "confidence": 0.68,
+            }
+        )
+
+    confidence_gaps: list[str] = []
+    if not customers:
+        confidence_gaps.append("Customer archetype evidence is still thin.")
+    if not capabilities:
+        confidence_gaps.append("Capability evidence is too weak to anchor competitor mapping.")
+    if not workflows:
+        confidence_gaps.append("Workflow evidence is too weak to bound the market box.")
+    if not named_customers:
+        confidence_gaps.append("No named customer proof yet; same-customer adjacency is lower confidence.")
+
+    open_questions = confidence_gaps.copy()
+    if not open_questions:
+        open_questions.extend(
+            [
+                "Which customer segment is most strategic for the first market map pass?",
+                "Which adjacent workflow should discovery prioritize first?",
+            ]
+        )
+
+    market_map_brief = {
+        "source_company": {
+            "name": company_name,
+            "website": normalize_url(profile.buyer_company_url) if profile.buyer_company_url else None,
+        },
+        "source_summary": _generate_market_map_summary(
+            company_name,
+            capabilities=capabilities,
+            workflows=workflows,
+            customers=customers,
+            named_customers=named_customers,
+        ),
+        "customer_nodes": customers[:8],
+        "workflow_nodes": workflows[:8],
+        "capability_nodes": capabilities[:8],
+        "named_customer_proof": named_customers,
+        "integration_partner_proof": integrations,
+        "active_lenses": lens_seeds,
+        "adjacency_hypotheses": adjacency_hypotheses[:6],
+        "strongest_evidence_buckets": [
+            {"label": "Customers", "count": len(named_customers)},
+            {"label": "Customer archetypes", "count": len(customers)},
+            {"label": "Capabilities", "count": len(capabilities)},
+            {"label": "Workflows", "count": len(workflows)},
+            {"label": "Integrations", "count": len(integrations)},
+        ],
+        "confidence_gaps": confidence_gaps[:6],
+        "open_questions": open_questions[:8],
+        "crawl_coverage": context_pack_v2.get("crawl_coverage") or {},
+        "confirmed_at": None,
+    }
+
+    return (
+        context_pack_v2,
+        nodes,
+        edges,
+        lens_seeds,
+        open_questions[:8],
+        market_map_brief,
+    )
 
 
 def _clamp_confidence(value: Any, *, default: float = 0.65) -> float:
@@ -956,6 +1873,18 @@ def bootstrap_thesis_payload(
         available_pill_ids={pill["id"] for pill in source_pills},
     )
 
+    (
+        context_pack_v2,
+        taxonomy_nodes,
+        taxonomy_edges,
+        lens_seeds,
+        market_map_open_questions,
+        market_map_brief,
+    ) = _build_market_map_artifacts(
+        profile,
+        source_pills=source_pills,
+    )
+
     active_claims = [claim for claim in normalized_claims if claim["user_status"] != "removed"]
     open_questions: list[str] = []
     if buyer_evidence.get("status") == "insufficient" and buyer_evidence.get("warning"):
@@ -970,8 +1899,16 @@ def bootstrap_thesis_payload(
         open_questions.append("Set an employee or company-size window for sourcing.")
     if not active_claims:
         open_questions.extend(DEFAULT_OPEN_QUESTIONS)
+    for question in market_map_open_questions:
+        if question not in open_questions:
+            open_questions.append(question)
 
     buyer_site_summary = str(buyer_site.get("summary") or "").strip() if isinstance(buyer_site, dict) else ""
+    market_map_summary = (
+        str(market_map_brief.get("source_summary") or "").strip()
+        if (not buyer_url or bool(buyer_evidence.get("used_for_inference")))
+        else ""
+    )
     summary = str(
         get_manual_brief_text(profile)
         or buyer_generated_summary
@@ -979,6 +1916,7 @@ def bootstrap_thesis_payload(
         or (buyer_site_context_text[:1200] if buyer_url and buyer_site_context_text else "")
         or (get_generated_context_summary(profile) if not buyer_url else "")
         or context_text[:1200]
+        or market_map_summary
         or (
             "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
             "Add supporting evidence or regenerate after improving the crawl target."
@@ -993,6 +1931,15 @@ def bootstrap_thesis_payload(
         "source_pills": source_pills,
         "open_questions": normalize_open_questions(open_questions),
         "buyer_evidence": buyer_evidence,
+        "context_pack_v2": context_pack_v2,
+        "taxonomy_nodes": taxonomy_nodes,
+        "taxonomy_edges": taxonomy_edges,
+        "lens_seeds": lens_seeds,
+        "market_map_brief": {
+            **market_map_brief,
+            "source_summary": summary,
+            "open_questions": normalize_open_questions(open_questions),
+        },
         "generated_at": datetime.utcnow(),
         "confirmed_at": None,
     }
@@ -1004,14 +1951,30 @@ def derive_search_lane_payloads(
 ) -> list[dict[str, Any]]:
     if isinstance(thesis_pack, BuyerThesisPack):
         claims = thesis_pack.claims_json or []
+        market_map_brief = thesis_pack.market_map_brief_json or {}
+        taxonomy_nodes = thesis_pack.taxonomy_nodes_json or []
+        lens_seeds = thesis_pack.lens_seeds_json or []
         confirmed_at = thesis_pack.confirmed_at
     else:
         claims = thesis_pack.get("claims") or []
+        market_map_brief = thesis_pack.get("market_map_brief") or {}
+        taxonomy_nodes = thesis_pack.get("taxonomy_nodes") or []
+        lens_seeds = thesis_pack.get("lens_seeds") or []
         confirmed_at = thesis_pack.get("confirmed_at")
     active_claims = [
         claim for claim in normalize_thesis_claims(claims)
         if str(claim.get("user_status") or "system") != "removed"
     ]
+    active_nodes = [
+        node
+        for node in normalize_taxonomy_nodes(taxonomy_nodes)
+        if str(node.get("scope_status") or "in_scope") == "in_scope"
+    ]
+    nodes_by_layer: dict[str, list[dict[str, Any]]] = {
+        layer: [node for node in active_nodes if node.get("layer") == layer]
+        for layer in TAXONOMY_LAYERS
+    }
+    normalized_lens_seeds = normalize_lens_seeds(lens_seeds)
 
     section_values: dict[str, list[str]] = {}
     for claim in active_claims:
@@ -1026,9 +1989,55 @@ def derive_search_lane_payloads(
     customer_tags = section_values.get("customer_profile", [])
     reference_seed_urls = _normalize_string_list(profile.reference_company_urls or [], max_items=8, max_len=220)
 
-    core_capabilities = section_values.get("core_capability", [])[:8]
-    adjacent_capabilities = section_values.get("adjacent_capability", [])[:8]
+    customer_phrases = [
+        str(node.get("phrase") or "").strip()
+        for node in nodes_by_layer.get("customer_archetype", [])
+        if str(node.get("phrase") or "").strip()
+    ]
+    workflow_phrases = [
+        str(node.get("phrase") or "").strip()
+        for node in nodes_by_layer.get("workflow", [])
+        if str(node.get("phrase") or "").strip()
+    ]
+    capability_phrases = [
+        str(node.get("phrase") or "").strip()
+        for node in nodes_by_layer.get("capability", [])
+        if str(node.get("phrase") or "").strip()
+    ]
+    active_lens_labels = [
+        str(seed.get("label") or seed.get("lens_type") or "").strip()
+        for seed in normalized_lens_seeds
+        if str(seed.get("label") or seed.get("lens_type") or "").strip()
+    ]
+
+    customer_tags = _normalize_string_list(customer_phrases + customer_tags, max_items=8, max_len=140)
+    core_capabilities = _normalize_string_list(
+        capability_phrases + workflow_phrases + section_values.get("core_capability", []),
+        max_items=8,
+        max_len=140,
+    )
+    adjacent_capabilities = _normalize_string_list(
+        section_values.get("adjacent_capability", []) + workflow_phrases[1:] + active_lens_labels,
+        max_items=8,
+        max_len=140,
+    )
     business_model = section_values.get("business_model", [])[:2]
+    market_map_include_terms = _normalize_string_list(
+        workflow_phrases[:3]
+        + [
+            item.get("name")
+            for item in (market_map_brief.get("named_customer_proof") or [])
+            if isinstance(item, dict) and item.get("name")
+        ]
+        + [
+            item.get("name")
+            for item in (market_map_brief.get("integration_partner_proof") or [])
+            if isinstance(item, dict) and item.get("name")
+        ],
+        max_items=8,
+        max_len=140,
+    )
+    include_terms = _normalize_string_list(include_terms + market_map_include_terms, max_items=10, max_len=140)
     if not core_capabilities:
         fallback_core = _fallback_lane_focus(customer_tags, include_terms, business_model)
         if fallback_core:
@@ -1101,6 +2110,10 @@ def apply_thesis_adjustment_operations(
             "claims": deepcopy(thesis_pack.claims_json or []),
             "source_pills": deepcopy(thesis_pack.source_pills_json or []),
             "open_questions": deepcopy(thesis_pack.open_questions_json or []),
+            "market_map_brief": deepcopy(thesis_pack.market_map_brief_json or {}),
+            "taxonomy_nodes": deepcopy(thesis_pack.taxonomy_nodes_json or []),
+            "taxonomy_edges": deepcopy(thesis_pack.taxonomy_edges_json or []),
+            "lens_seeds": deepcopy(thesis_pack.lens_seeds_json or []),
             "generated_at": thesis_pack.generated_at,
             "confirmed_at": thesis_pack.confirmed_at,
         }
@@ -1110,6 +2123,10 @@ def apply_thesis_adjustment_operations(
             "claims": deepcopy(thesis_pack.get("claims") or []),
             "source_pills": deepcopy(thesis_pack.get("source_pills") or []),
             "open_questions": deepcopy(thesis_pack.get("open_questions") or []),
+            "market_map_brief": deepcopy(thesis_pack.get("market_map_brief") or {}),
+            "taxonomy_nodes": deepcopy(thesis_pack.get("taxonomy_nodes") or []),
+            "taxonomy_edges": deepcopy(thesis_pack.get("taxonomy_edges") or []),
+            "lens_seeds": deepcopy(thesis_pack.get("lens_seeds") or []),
             "generated_at": thesis_pack.get("generated_at"),
             "confirmed_at": thesis_pack.get("confirmed_at"),
         }
@@ -1252,6 +2269,11 @@ def thesis_pack_to_payload(
     profile: CompanyProfile | None = None,
 ) -> dict[str, Any]:
     source_pills = normalize_source_pills(thesis_pack.source_pills_json or [])
+    context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {}) if profile else None
+    taxonomy_nodes = normalize_taxonomy_nodes(thesis_pack.taxonomy_nodes_json or [])
+    taxonomy_edges = normalize_taxonomy_edges(thesis_pack.taxonomy_edges_json or [])
+    lens_seeds = normalize_lens_seeds(thesis_pack.lens_seeds_json or [])
+    market_map_brief = thesis_pack.market_map_brief_json or {}
     return {
         "id": thesis_pack.id,
         "workspace_id": thesis_pack.workspace_id,
@@ -1263,6 +2285,11 @@ def thesis_pack_to_payload(
         "source_pills": source_pills,
         "open_questions": normalize_open_questions(thesis_pack.open_questions_json or []),
         "buyer_evidence": assess_buyer_evidence(profile) if profile else None,
+        "context_pack_v2": context_pack_v2,
+        "taxonomy_nodes": taxonomy_nodes,
+        "taxonomy_edges": taxonomy_edges,
+        "lens_seeds": lens_seeds,
+        "market_map_brief": market_map_brief,
         "generated_at": thesis_pack.generated_at,
         "confirmed_at": thesis_pack.confirmed_at,
     }

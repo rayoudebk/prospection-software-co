@@ -10,6 +10,7 @@ from migrations.migrate_company_profile_context_split_v1 import (
 from migrations.migrate_remove_legacy_buyer_context_summary_v1 import (
     migrate_remove_legacy_buyer_context_summary_v1,
 )
+from migrations.migrate_market_map_brief_v1 import migrate_market_map_brief_v1
 from migrations.migrate_workspace_policy_v1 import migrate_workspace_policy_v1
 
 
@@ -20,3 +21,4 @@ def run_startup_migrations(database_url: str | None = None) -> None:
     migrate_company_profile_reference_evidence_v1(database_url=database_url)
     migrate_company_profile_context_split_v1(database_url=database_url)
     migrate_remove_legacy_buyer_context_summary_v1(database_url=database_url)
+    migrate_market_map_brief_v1(database_url=database_url)

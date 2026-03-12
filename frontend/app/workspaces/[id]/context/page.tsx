@@ -2,18 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import {
-  useApplyThesisAdjustment,
-  useContextPack,
-  useGates,
-  useRefreshThesisPack,
-  useThesisPack,
-  useUpdateContextPack,
-  useUpdateThesisPack,
-  useWorkspaceJobs,
-  useWorkspaceJobWithPolling,
-} from "@/lib/hooks";
-import { workspaceApi, ThesisClaim, ThesisSourcePill } from "@/lib/api";
+import clsx from "clsx";
 import {
   AlertCircle,
   Bot,
@@ -25,54 +14,44 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  Save,
   X,
 } from "lucide-react";
+
 import { StepHeader } from "@/components/StepHeader";
 import { JobProgressPanel } from "@/components/JobProgressPanel";
 import { JobRunSummary } from "@/components/JobRunSummary";
-import ReactMarkdown from "react-markdown";
-import clsx from "clsx";
+import {
+  ContextPackV2,
+  ContextPackEvidenceItem,
+  TaxonomyNode,
+  ThesisSourcePill,
+  workspaceApi,
+} from "@/lib/api";
+import {
+  useContextPack,
+  useGates,
+  useRefreshThesisPack,
+  useThesisPack,
+  useUpdateContextPack,
+  useUpdateThesisPack,
+  useWorkspaceJobs,
+  useWorkspaceJobWithPolling,
+} from "@/lib/hooks";
 
-const SECTION_LABELS: Record<string, string> = {
-  core_capability: "Core Capabilities",
-  adjacent_capability: "Adjacent Capabilities",
-  business_model: "Business Model",
-  customer_profile: "Customer Profile",
-  deployment_model: "Deployment Model",
-  size_signal: "Size Signals",
-  geography: "Geography",
-  include_constraint: "Include Constraints",
-  exclude_constraint: "Exclude Constraints",
+const LAYER_LABELS: Record<string, string> = {
+  customer_archetype: "Customer Archetypes",
+  workflow: "Workflow Taxonomy",
+  capability: "Capabilities",
 };
 
-const CLAIM_SECTION_ORDER = [
-  "customer_profile",
-  "core_capability",
-  "adjacent_capability",
-  "business_model",
-  "deployment_model",
-  "size_signal",
-  "geography",
-  "include_constraint",
-  "exclude_constraint",
-] as const;
-
-const PILL_EDITOR_SECTIONS = new Set<string>([
-  "customer_profile",
-  "core_capability",
-  "adjacent_capability",
-  "business_model",
-  "deployment_model",
-  "geography",
-]);
-
-const PILL_INPUT_PLACEHOLDERS: Record<string, string> = {
-  customer_profile: "Add customer profile",
-  core_capability: "Add core capability",
-  adjacent_capability: "Add adjacent capability",
-  business_model: "Add business model",
-  deployment_model: "Add deployment model",
-  geography: "Add geography",
+const LAYER_DESCRIPTIONS: Record<string, string> = {
+  customer_archetype:
+    "Who the source company appears to sell to, based on first-party language and named proof.",
+  workflow:
+    "The workflow cluster that bounds the market box and keeps adjacency mapping from drifting into generic industry search.",
+  capability:
+    "The concrete solution or product phrases that anchor direct competitor and same-product views.",
 };
 
 type SourceDrawerItem = ThesisSourcePill & {
@@ -80,6 +59,30 @@ type SourceDrawerItem = ThesisSourcePill & {
   displayUrl: string;
   badge: string | null;
 };
+
+type TaxonomyDraft = {
+  phrase: string;
+  aliases: string;
+};
+
+function normalizeUrlInput(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const candidate =
+    trimmed.startsWith("http://") || trimmed.startsWith("https://")
+      ? trimmed
+      : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    const query = parsed.search || "";
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}${query}`;
+  } catch {
+    return null;
+  }
+}
 
 function getSourceHostname(url: string): string {
   try {
@@ -197,140 +200,158 @@ function SourcesDrawer({
   );
 }
 
-function EditableClaimPillsSection({
-  section,
-  claims,
-  sourcePillById,
-  draftValue,
-  error,
-  isPending,
-  onDraftChange,
-  onAdd,
-  onRemove,
+function EvidenceLinks({
+  evidenceItems,
 }: {
-  section: string;
-  claims: ThesisClaim[];
-  sourcePillById: Map<string, ThesisSourcePill>;
-  draftValue: string;
-  error?: string | null;
-  isPending: boolean;
-  onDraftChange: (value: string) => void;
-  onAdd: () => void;
-  onRemove: (claimId: string) => void;
+  evidenceItems: ContextPackEvidenceItem[];
 }) {
+  if (!evidenceItems.length) return null;
+
   return (
-    <div>
-      <div className="flex items-center gap-3 mb-2">
-        <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400 shrink-0">
-          {SECTION_LABELS[section] || section}
-        </span>
-        <div className="flex-1 border-t border-steel-200" />
-      </div>
-
-      <div className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
-        <div className="flex flex-wrap gap-2">
-          {claims.length > 0 ? (
-            claims.map((claim) => {
-              const linkedSources = claim.source_pill_ids
-                .map((pillId) => sourcePillById.get(pillId))
-                .filter((pill): pill is ThesisSourcePill => Boolean(pill));
-              const sourceLink = linkedSources[0];
-              const sourceLabel =
-                linkedSources.length > 1 ? `${linkedSources.length} src` : "src";
-
-              return (
-                <div
-                  key={claim.id}
-                  className={clsx(
-                    "inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-2 text-sm leading-tight",
-                    claim.user_status === "confirmed"
-                      ? "border-success/30 bg-success/10 text-success"
-                      : claim.rendering === "hypothesis"
-                      ? "border-warning/30 bg-warning/10 text-amber-900"
-                      : "border-oxford/15 bg-white text-steel-800"
-                  )}
-                >
-                  <span className="max-w-[28rem] whitespace-normal break-words">
-                    {claim.value}
-                  </span>
-                  {sourceLink ? (
-                    <a
-                      href={sourceLink.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="shrink-0 text-[11px] font-medium uppercase tracking-[0.16em] text-info hover:underline"
-                      title={sourceLink.label}
-                    >
-                      {sourceLabel}
-                    </a>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => onRemove(claim.id)}
-                    disabled={isPending}
-                    className="shrink-0 text-steel-400 transition-colors hover:text-danger disabled:opacity-50"
-                    aria-label={`Remove ${claim.value}`}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              );
-            })
-          ) : (
-            <p className="text-sm text-steel-400">No items added yet.</p>
-          )}
-        </div>
-
-        <div className="mt-3 flex gap-2">
-          <input
-            type="text"
-            value={draftValue}
-            onChange={(e) => onDraftChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                onAdd();
-              }
-            }}
-            placeholder={PILL_INPUT_PLACEHOLDERS[section] || "Add item"}
-            className="input text-sm"
-          />
-          <button
-            type="button"
-            onClick={onAdd}
-            disabled={isPending || !draftValue.trim()}
-            className="btn-secondary px-3 shrink-0 disabled:opacity-50"
-            aria-label={`Add ${SECTION_LABELS[section] || section}`}
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-        </div>
-        {error ? <p className="mt-1 text-xs text-danger">{error}</p> : null}
-      </div>
+    <div className="mt-3 flex flex-wrap gap-2">
+      {evidenceItems.map((item) => (
+        <a
+          key={item.id}
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 rounded-full border border-steel-200 bg-white px-2.5 py-1 text-[11px] font-medium text-steel-600 transition-colors hover:border-oxford hover:text-oxford"
+        >
+          <ExternalLink className="h-3 w-3" />
+          <span>{item.page_title || item.text || item.page_type || "Source"}</span>
+        </a>
+      ))}
     </div>
   );
 }
 
-function normalizeUrlInput(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const candidate =
-    trimmed.startsWith("http://") || trimmed.startsWith("https://")
-      ? trimmed
-      : `https://${trimmed}`;
-  try {
-    const parsed = new URL(candidate);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return null;
-    }
-    const query = parsed.search || "";
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname}${query}`;
-  } catch {
-    return null;
-  }
+function TaxonomyCard({
+  node,
+  draft,
+  evidenceItems,
+  isPending,
+  onDraftChange,
+  onSave,
+  onScopeChange,
+}: {
+  node: TaxonomyNode;
+  draft: TaxonomyDraft;
+  evidenceItems: ContextPackEvidenceItem[];
+  isPending: boolean;
+  onDraftChange: (nextDraft: TaxonomyDraft) => void;
+  onSave: () => void;
+  onScopeChange: (status: TaxonomyNode["scope_status"]) => void;
+}) {
+  const scopeClass =
+    node.scope_status === "out_of_scope"
+      ? "border-warning/40 bg-warning/5"
+      : node.scope_status === "removed"
+      ? "border-danger/30 bg-danger/5"
+      : "border-steel-200 bg-white";
+
+  return (
+    <div className={clsx("rounded-2xl border p-4", scopeClass)}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-oxford">{node.phrase}</div>
+          <div className="mt-1 text-xs text-steel-500">
+            Confidence {Math.round((node.confidence || 0) * 100)}%
+          </div>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => onScopeChange("in_scope")}
+            disabled={isPending}
+            className={clsx(
+              "rounded-full px-2.5 py-1 text-[11px] font-medium",
+              node.scope_status === "in_scope"
+                ? "bg-success/15 text-success"
+                : "border border-steel-200 text-steel-500"
+            )}
+          >
+            In scope
+          </button>
+          <button
+            type="button"
+            onClick={() => onScopeChange("out_of_scope")}
+            disabled={isPending}
+            className={clsx(
+              "rounded-full px-2.5 py-1 text-[11px] font-medium",
+              node.scope_status === "out_of_scope"
+                ? "bg-warning/15 text-warning"
+                : "border border-steel-200 text-steel-500"
+            )}
+          >
+            Out of scope
+          </button>
+          <button
+            type="button"
+            onClick={() => onScopeChange("removed")}
+            disabled={isPending}
+            className={clsx(
+              "rounded-full px-2.5 py-1 text-[11px] font-medium",
+              node.scope_status === "removed"
+                ? "bg-danger/15 text-danger"
+                : "border border-steel-200 text-steel-500"
+            )}
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <input
+          value={draft.phrase}
+          onChange={(event) =>
+            onDraftChange({ ...draft, phrase: event.target.value })
+          }
+          className="input text-sm"
+          placeholder="Canonical phrase"
+        />
+        <input
+          value={draft.aliases}
+          onChange={(event) =>
+            onDraftChange({ ...draft, aliases: event.target.value })
+          }
+          className="input text-sm"
+          placeholder="Aliases, comma separated"
+        />
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={isPending}
+          className="btn-secondary gap-2 whitespace-nowrap disabled:opacity-50"
+        >
+          <Save className="h-4 w-4" />
+          Save
+        </button>
+      </div>
+
+      {draft.aliases.trim() ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {draft.aliases
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean)
+            .map((alias) => (
+              <span
+                key={alias}
+                className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1 text-[11px] text-steel-600"
+              >
+                {alias}
+              </span>
+            ))}
+        </div>
+      ) : null}
+
+      <EvidenceLinks evidenceItems={evidenceItems.slice(0, 3)} />
+    </div>
+  );
 }
 
-export default function ThesisPackPage() {
+export default function MarketMapBriefPage() {
   const params = useParams();
   const workspaceId = Number(params.id);
 
@@ -341,7 +362,6 @@ export default function ThesisPackPage() {
   const updateProfile = useUpdateContextPack(workspaceId);
   const updateThesisPack = useUpdateThesisPack(workspaceId);
   const refreshThesisPack = useRefreshThesisPack(workspaceId);
-  const applyThesisAdjustment = useApplyThesisAdjustment(workspaceId);
 
   const [buyerUrl, setBuyerUrl] = useState("");
   const [entryMode, setEntryMode] = useState<"company" | "thesis">("company");
@@ -352,50 +372,41 @@ export default function ThesisPackPage() {
   const [evidenceUrls, setEvidenceUrls] = useState<string[]>([]);
   const [newEvidenceUrl, setNewEvidenceUrl] = useState("");
   const [evidenceUrlError, setEvidenceUrlError] = useState<string | null>(null);
-  const [editingClaimId, setEditingClaimId] = useState<string | null>(null);
-  const [editingValue, setEditingValue] = useState("");
-  const [claimDraftValues, setClaimDraftValues] = useState<Record<string, string>>({});
-  const [claimDraftErrors, setClaimDraftErrors] = useState<Record<string, string>>({});
-  const [adjustmentMessage, setAdjustmentMessage] = useState("");
   const [draftSummary, setDraftSummary] = useState("");
+  const [taxonomyDrafts, setTaxonomyDrafts] = useState<Record<string, TaxonomyDraft>>({});
   const [isSourcesDrawerOpen, setIsSourcesDrawerOpen] = useState(false);
 
   useEffect(() => {
-    if (profile) {
-      setBuyerUrl(profile.buyer_company_url || "");
-      setEntryMode(
-        profile.buyer_company_url
-          ? "company"
-          : profile.manual_brief_text
-          ? "thesis"
-          : "company"
-      );
-      setBriefText(
-        profile.buyer_company_url ? "" : profile.manual_brief_text || ""
-      );
-      setReferenceUrls(profile.reference_company_urls || []);
-      setEvidenceUrls(profile.reference_evidence_urls || []);
-    }
+    if (!profile) return;
+    setBuyerUrl(profile.buyer_company_url || "");
+    setEntryMode(
+      profile.buyer_company_url
+        ? "company"
+        : profile.manual_brief_text
+        ? "thesis"
+        : "company"
+    );
+    setBriefText(profile.buyer_company_url ? "" : profile.manual_brief_text || "");
+    setReferenceUrls(profile.reference_company_urls || []);
+    setEvidenceUrls(profile.reference_evidence_urls || []);
   }, [profile]);
 
   useEffect(() => {
-    setDraftSummary(thesisPack?.summary || "");
-  }, [thesisPack?.summary]);
+    setDraftSummary(
+      thesisPack?.market_map_brief?.source_summary || thesisPack?.summary || ""
+    );
+  }, [thesisPack?.market_map_brief?.source_summary, thesisPack?.summary]);
 
-  const sourceDrawerItems = useMemo(
-    () =>
-      (thesisPack?.source_pills || []).map((pill) => ({
-        ...pill,
-        hostname: getSourceHostname(pill.url),
-        displayUrl: getSourceDisplayUrl(pill.url),
-        badge: getSourceBadge(pill.label),
-      })),
-    [thesisPack?.source_pills]
-  );
-
-  const buyerEvidence = thesisPack?.buyer_evidence || null;
-  const showBuyerEvidenceWarning =
-    entryMode === "company" && buyerEvidence?.status === "insufficient";
+  useEffect(() => {
+    const nextDrafts: Record<string, TaxonomyDraft> = {};
+    for (const node of thesisPack?.taxonomy_nodes || []) {
+      nextDrafts[node.id] = {
+        phrase: node.phrase || "",
+        aliases: (node.aliases || []).join(", "),
+      };
+    }
+    setTaxonomyDrafts(nextDrafts);
+  }, [thesisPack?.taxonomy_nodes]);
 
   useEffect(() => {
     if (!isSourcesDrawerOpen) return;
@@ -409,7 +420,6 @@ export default function ThesisPackPage() {
 
     document.body.style.overflow = "hidden";
     window.addEventListener("keydown", handleKeyDown);
-
     return () => {
       document.body.style.overflow = overflow;
       window.removeEventListener("keydown", handleKeyDown);
@@ -425,34 +435,6 @@ export default function ThesisPackPage() {
     (jobId) => workspaceApi.cancelJob(workspaceId, jobId)
   );
 
-  const sourcePillById = useMemo(
-    () =>
-      new Map(
-        (thesisPack?.source_pills || []).map((pill) => [pill.id, pill])
-      ),
-    [thesisPack]
-  );
-
-  const groupedClaims = useMemo(() => {
-    const groups = new Map<string, ThesisClaim[]>();
-    for (const claim of thesisPack?.claims || []) {
-      if (claim.user_status === "removed") continue;
-      const bucket = groups.get(claim.section) || [];
-      bucket.push(claim);
-      groups.set(claim.section, bucket);
-    }
-    return groups;
-  }, [thesisPack]);
-
-  const displaySections = useMemo(
-    () =>
-      CLAIM_SECTION_ORDER.filter(
-        (section) =>
-          groupedClaims.has(section) || PILL_EDITOR_SECTIONS.has(section)
-      ).map((section) => [section, groupedClaims.get(section) || []] as const),
-    [groupedClaims]
-  );
-
   const latestCompletedContextJob = useMemo(
     () => contextJobs?.find((job) => job.state === "completed") ?? null,
     [contextJobs]
@@ -464,28 +446,60 @@ export default function ThesisPackPage() {
       profile?.context_pack_json
   );
 
-  const crawlButtonLabel = profile?.context_pack_generated_at
-    ? "Recrawl and update brief"
-    : "Generate draft from website";
-  const thesisButtonLabel = thesisPack?.generated_at
-    ? "Regenerate draft from brief"
-    : "Generate draft from brief";
-  const jobStateLabel =
-    jobRunner.job?.state === "queued"
-      ? "Queued..."
-      : `Running... ${Math.round(jobRunner.progress * 100)}%`;
+  const sourceDrawerItems = useMemo(
+    () =>
+      (thesisPack?.source_pills || []).map((pill) => ({
+        ...pill,
+        hostname: getSourceHostname(pill.url),
+        displayUrl: getSourceDisplayUrl(pill.url),
+        badge: getSourceBadge(pill.label),
+      })),
+    [thesisPack?.source_pills]
+  );
 
-  // Merged meta line for the output panel header
+  const contextPack = (thesisPack?.context_pack_v2 ||
+    profile?.context_pack_json ||
+    null) as ContextPackV2 | null;
+
+  const evidenceById = useMemo(() => {
+    const map = new Map<string, ContextPackEvidenceItem>();
+    for (const item of contextPack?.evidence_items || []) {
+      if (!item?.id) continue;
+      map.set(item.id, item);
+    }
+    return map;
+  }, [contextPack]);
+
+  const taxonomyByLayer = useMemo(() => {
+    const grouped = new Map<string, TaxonomyNode[]>();
+    for (const node of thesisPack?.taxonomy_nodes || []) {
+      if (node.scope_status === "removed") continue;
+      const bucket = grouped.get(node.layer) || [];
+      bucket.push(node);
+      grouped.set(node.layer, bucket);
+    }
+    return grouped;
+  }, [thesisPack?.taxonomy_nodes]);
+
+  const buyerEvidence = thesisPack?.buyer_evidence || null;
+  const showBuyerEvidenceWarning =
+    entryMode === "company" && buyerEvidence?.status === "insufficient";
+  const crawlButtonLabel = profile?.context_pack_generated_at
+    ? "Recrawl and update map"
+    : "Generate map from website";
+  const thesisButtonLabel = thesisPack?.generated_at
+    ? "Regenerate map from thesis"
+    : "Generate map from thesis";
   const outputMetaLine = thesisPack?.generated_at
     ? [
         `Last generated ${new Date(thesisPack.generated_at).toLocaleString()}`,
-        profile?.product_pages_found
-          ? `${profile.product_pages_found} pages crawled`
+        contextPack?.crawl_coverage?.total_pages
+          ? `${contextPack.crawl_coverage.total_pages} pages analyzed`
           : null,
       ]
         .filter(Boolean)
         .join(" · ")
-    : "Generate a draft from your inputs to populate this panel";
+    : "Generate a market-map brief from a company website or thesis to populate this panel";
 
   const saveProfileInputs = async () => {
     const shouldClearThesisBrief =
@@ -505,55 +519,56 @@ export default function ThesisPackPage() {
     });
   };
 
-  const updateClaim = async (claimId: string, patch: Partial<ThesisClaim>) => {
+  const patchTaxonomyNodes = async (updater: (nodes: TaxonomyNode[]) => TaxonomyNode[]) => {
     if (!thesisPack) return;
-    const claims = thesisPack.claims.map((claim) =>
-      claim.id === claimId ? { ...claim, ...patch } : claim
-    );
-    await updateThesisPack.mutateAsync({ claims });
-  };
-
-  const setClaimDraftValue = (section: string, value: string) => {
-    setClaimDraftValues((current) => ({ ...current, [section]: value }));
-    setClaimDraftErrors((current) => ({ ...current, [section]: "" }));
-  };
-
-  const handleAddSectionClaim = async (section: string) => {
-    if (!thesisPack) return;
-    const value = (claimDraftValues[section] || "").trim();
-    if (!value) return;
-
-    const duplicateExists = thesisPack.claims.some(
-      (claim) =>
-        claim.section === section &&
-        claim.user_status !== "removed" &&
-        claim.value.trim().toLowerCase() === value.toLowerCase()
-    );
-    if (duplicateExists) {
-      setClaimDraftErrors((current) => ({
-        ...current,
-        [section]: "That item is already present.",
-      }));
-      return;
-    }
-
     await updateThesisPack.mutateAsync({
-      claims: [
-        ...thesisPack.claims,
-        {
-          id: `manual_${section}_${Date.now()}`,
-          section,
-          value,
-          rendering: "hypothesis",
-          confidence: 0.9,
-          source_pill_ids: [],
-          user_status: "edited",
-        },
-      ],
+      taxonomy_nodes: updater(thesisPack.taxonomy_nodes || []),
     });
+  };
 
-    setClaimDraftValues((current) => ({ ...current, [section]: "" }));
-    setClaimDraftErrors((current) => ({ ...current, [section]: "" }));
+  const saveTaxonomyNode = async (nodeId: string) => {
+    const draft = taxonomyDrafts[nodeId];
+    if (!draft) return;
+    await patchTaxonomyNodes((nodes) =>
+      nodes.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              phrase: draft.phrase.trim() || node.phrase,
+              aliases: draft.aliases
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean),
+            }
+          : node
+      )
+    );
+  };
+
+  const setTaxonomyScope = async (
+    nodeId: string,
+    scopeStatus: TaxonomyNode["scope_status"]
+  ) => {
+    await patchTaxonomyNodes((nodes) =>
+      nodes.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              scope_status: scopeStatus,
+            }
+          : node
+      )
+    );
+  };
+
+  const saveSummary = async () => {
+    await updateThesisPack.mutateAsync({
+      summary: draftSummary.trim() || null,
+    });
+  };
+
+  const confirmBrief = async () => {
+    await updateThesisPack.mutateAsync({ confirmed: true });
   };
 
   const handleAddReference = () => {
@@ -562,11 +577,7 @@ export default function ThesisPackPage() {
       setReferenceUrlError("Enter a valid URL.");
       return;
     }
-    if (
-      referenceUrls.some(
-        (url) => url.toLowerCase() === normalized.toLowerCase()
-      )
-    ) {
+    if (referenceUrls.some((url) => url.toLowerCase() === normalized.toLowerCase())) {
       setReferenceUrlError("That comparator URL is already added.");
       return;
     }
@@ -581,11 +592,7 @@ export default function ThesisPackPage() {
       setEvidenceUrlError("Enter a valid supporting-evidence URL.");
       return;
     }
-    if (
-      evidenceUrls.some(
-        (url) => url.toLowerCase() === normalized.toLowerCase()
-      )
-    ) {
+    if (evidenceUrls.some((url) => url.toLowerCase() === normalized.toLowerCase())) {
       setEvidenceUrlError("That evidence URL is already added.");
       return;
     }
@@ -594,66 +601,53 @@ export default function ThesisPackPage() {
     setEvidenceUrlError(null);
   };
 
-  const handleAdjustmentSubmit = async () => {
-    if (!adjustmentMessage.trim()) return;
-    await applyThesisAdjustment.mutateAsync({
-      message: adjustmentMessage.trim(),
-    });
-    setAdjustmentMessage("");
-  };
-
-  const handleSaveSummary = async () => {
-    await updateThesisPack.mutateAsync({
-      summary: draftSummary.trim() || null,
-    });
-  };
+  const evidenceForIds = (ids: string[] = []) =>
+    ids
+      .map((id) => evidenceById.get(id))
+      .filter((item): item is ContextPackEvidenceItem => Boolean(item))
+      .slice(0, 3);
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-24">
-        <Loader2 className="w-6 h-6 animate-spin text-oxford" />
+        <Loader2 className="h-6 w-6 animate-spin text-oxford" />
       </div>
     );
   }
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-
-      {/* Page header */}
-      <div className="flex items-start justify-between">
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex items-start justify-between gap-4">
         <StepHeader
           step={1}
-          title="Sourcing Brief"
-          subtitle="Define your mandate from a company website or investment thesis. Add comparables and evidence, then generate and verify a structured brief before moving to Search Lanes."
+          title="Market Map Brief"
+          subtitle="Ground the market map in a source-company crawl, confirm the customer/workflow/capability taxonomy, and activate the map lenses you want to carry into discovery."
         />
-        {gates && (
+        {gates ? (
           <div
             className={clsx(
-              "flex items-center gap-1.5 text-xs shrink-0 mt-1",
+              "mt-1 flex shrink-0 items-center gap-1.5 text-xs",
               gates.context_pack ? "text-success" : "text-steel-400"
             )}
           >
             {gates.context_pack ? (
               <>
-                <CheckCircle className="w-3.5 h-3.5" />
+                <CheckCircle className="h-3.5 w-3.5" />
                 <span className="font-medium">Ready</span>
               </>
             ) : (
               <>
-                <AlertCircle className="w-3.5 h-3.5 text-warning" />
-                <span className="text-warning font-medium">Incomplete</span>
+                <AlertCircle className="h-3.5 w-3.5 text-warning" />
+                <span className="font-medium text-warning">Incomplete</span>
               </>
             )}
           </div>
-        )}
+        ) : null}
       </div>
 
-      {/* ── INPUT CARD ── */}
-      <div className="bg-white border border-steel-200 p-6 space-y-5">
-
-        {/* Entry mode toggle */}
+      <div className="space-y-5 border border-steel-200 bg-white p-6">
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-widest text-steel-400 mb-2">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-widest text-steel-400">
             Entry point
           </p>
           <div className="flex border border-steel-200">
@@ -667,13 +661,13 @@ export default function ThesisPackPage() {
                   : "bg-white text-steel-600 hover:text-oxford"
               )}
             >
-              Company website
+              Source company website
             </button>
             <button
               type="button"
               onClick={() => setEntryMode("thesis")}
               className={clsx(
-                "flex-1 px-3 py-2 text-sm font-medium transition-colors border-l border-steel-200",
+                "flex-1 border-l border-steel-200 px-3 py-2 text-sm font-medium transition-colors",
                 entryMode === "thesis"
                   ? "bg-oxford text-white"
                   : "bg-white text-steel-600 hover:text-oxford"
@@ -684,168 +678,156 @@ export default function ThesisPackPage() {
           </div>
         </div>
 
-        {/* Main input */}
         {entryMode === "company" ? (
           <div>
-            <label className="flex items-center justify-between mb-1.5">
+            <label className="mb-1.5 flex items-center justify-between">
               <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-                Company website
+                Source company website
               </span>
               <span className="text-[11px] text-warning">Required</span>
             </label>
             <input
               type="url"
               value={buyerUrl}
-              onChange={(e) => setBuyerUrl(e.target.value)}
-              placeholder="https://your-company.com"
+              onChange={(event) => setBuyerUrl(event.target.value)}
+              placeholder="https://company.com"
               className="input"
             />
           </div>
         ) : (
           <div>
-            <label className="flex items-center justify-between mb-1.5">
+            <label className="mb-1.5 flex items-center justify-between">
               <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-                Thesis or brief
+                Thesis or sourcing note
               </span>
               <span className="text-[11px] text-warning">Required</span>
             </label>
             <textarea
               value={briefText}
-              onChange={(e) => setBriefText(e.target.value)}
-              placeholder="I want to invest in companies in Europe that provide software to healthcare actors such as hospitals and doctors, sold primarily as licensed software rather than SaaS, with less than $10M in revenue..."
-              className="w-full min-h-[148px] border border-steel-200 bg-white px-3 py-2 text-sm text-steel-900 placeholder:text-steel-400 focus:outline-none focus:border-oxford focus:ring-1 focus:ring-oxford/20 transition resize-none"
+              onChange={(event) => setBriefText(event.target.value)}
+              placeholder="Asset managers who buy front-office PMS/OMS often also buy adjacent workflows such as voting-rights software, reporting, and compliance tooling..."
+              className="min-h-[148px] w-full resize-none border border-steel-200 bg-white px-3 py-2 text-sm text-steel-900 placeholder:text-steel-400 focus:border-oxford focus:outline-none focus:ring-1 focus:ring-oxford/20"
             />
           </div>
         )}
 
-        {/* Comparable companies */}
         <div>
-          <label className="flex items-center justify-between mb-1.5">
+          <label className="mb-1.5 flex items-center justify-between">
             <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
               Comparable companies
             </span>
             <span className="text-[11px] text-steel-400">Optional</span>
           </label>
-          {referenceUrls.length > 0 && (
-            <div className="space-y-1.5 mb-2">
+          {referenceUrls.length ? (
+            <div className="mb-2 space-y-1.5">
               {referenceUrls.map((url, index) => (
                 <div
                   key={`${url}-${index}`}
-                  className="flex items-center gap-2 px-2.5 py-1.5 bg-steel-50 border border-steel-200"
+                  className="flex items-center gap-2 border border-steel-200 bg-steel-50 px-2.5 py-1.5"
                 >
-                  <Globe className="w-3 h-3 text-steel-400 shrink-0" />
-                  <span className="flex-1 text-xs font-mono text-steel-600 truncate">
+                  <Globe className="h-3 w-3 shrink-0 text-steel-400" />
+                  <span className="flex-1 truncate font-mono text-xs text-steel-600">
                     {url}
                   </span>
                   <button
+                    type="button"
                     onClick={() =>
-                      setReferenceUrls(
-                        referenceUrls.filter((_, i) => i !== index)
-                      )
+                      setReferenceUrls(referenceUrls.filter((_, itemIndex) => itemIndex !== index))
                     }
-                    className="text-steel-400 hover:text-danger transition-colors"
+                    className="text-steel-400 transition-colors hover:text-danger"
                   >
-                    <X className="w-3.5 h-3.5" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
               ))}
             </div>
-          )}
+          ) : null}
           <div className="flex gap-2">
             <input
               type="url"
               value={newReferenceUrl}
-              onChange={(e) => {
-                setNewReferenceUrl(e.target.value);
+              onChange={(event) => {
+                setNewReferenceUrl(event.target.value);
                 setReferenceUrlError(null);
               }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
                   handleAddReference();
                 }
               }}
               placeholder="https://comparable-company.com"
               className="input text-sm"
             />
-            <button
-              onClick={handleAddReference}
-              className="btn-secondary px-3 shrink-0"
-            >
-              <Plus className="w-4 h-4" />
+            <button type="button" onClick={handleAddReference} className="btn-secondary px-3">
+              <Plus className="h-4 w-4" />
             </button>
           </div>
-          {referenceUrlError && (
-            <p className="text-xs text-danger mt-1">{referenceUrlError}</p>
-          )}
+          {referenceUrlError ? (
+            <p className="mt-1 text-xs text-danger">{referenceUrlError}</p>
+          ) : null}
         </div>
 
-        {/* Supporting evidence */}
         <div>
-          <label className="flex items-center justify-between mb-1.5">
+          <label className="mb-1.5 flex items-center justify-between">
             <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
               Supporting evidence
             </span>
             <span className="text-[11px] text-success">High value</span>
           </label>
-          {evidenceUrls.length > 0 && (
-            <div className="space-y-1.5 mb-2">
+          {evidenceUrls.length ? (
+            <div className="mb-2 space-y-1.5">
               {evidenceUrls.map((url, index) => (
                 <div
                   key={`${url}-${index}`}
-                  className="flex items-center gap-2 px-2.5 py-1.5 bg-steel-50 border border-steel-200"
+                  className="flex items-center gap-2 border border-steel-200 bg-steel-50 px-2.5 py-1.5"
                 >
-                  <Globe className="w-3 h-3 text-steel-400 shrink-0" />
-                  <span className="flex-1 text-xs font-mono text-steel-600 truncate">
+                  <Globe className="h-3 w-3 shrink-0 text-steel-400" />
+                  <span className="flex-1 truncate font-mono text-xs text-steel-600">
                     {url}
                   </span>
                   <button
+                    type="button"
                     onClick={() =>
-                      setEvidenceUrls(
-                        evidenceUrls.filter((_, i) => i !== index)
-                      )
+                      setEvidenceUrls(evidenceUrls.filter((_, itemIndex) => itemIndex !== index))
                     }
-                    className="text-steel-400 hover:text-danger transition-colors"
+                    className="text-steel-400 transition-colors hover:text-danger"
                   >
-                    <X className="w-3.5 h-3.5" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
               ))}
             </div>
-          )}
+          ) : null}
           <div className="flex gap-2">
             <input
               type="url"
               value={newEvidenceUrl}
-              onChange={(e) => {
-                setNewEvidenceUrl(e.target.value);
+              onChange={(event) => {
+                setNewEvidenceUrl(event.target.value);
                 setEvidenceUrlError(null);
               }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
                   handleAddEvidence();
                 }
               }}
               placeholder="https://company.com/customer-story"
               className="input text-sm"
             />
-            <button
-              onClick={handleAddEvidence}
-              className="btn-secondary px-3 shrink-0"
-            >
-              <Plus className="w-4 h-4" />
+            <button type="button" onClick={handleAddEvidence} className="btn-secondary px-3">
+              <Plus className="h-4 w-4" />
             </button>
           </div>
-          {evidenceUrlError && (
-            <p className="text-xs text-danger mt-1">{evidenceUrlError}</p>
-          )}
+          {evidenceUrlError ? (
+            <p className="mt-1 text-xs text-danger">{evidenceUrlError}</p>
+          ) : null}
         </div>
 
-        {/* Actions */}
-        <div className="pt-3 border-t border-steel-100 space-y-2">
-          {/* Primary: Generate (auto-saves inputs before running) */}
+        <div className="space-y-2 border-t border-steel-100 pt-3">
           <button
+            type="button"
             onClick={async () => {
               await saveProfileInputs();
               if (entryMode === "company") {
@@ -857,50 +839,45 @@ export default function ThesisPackPage() {
             disabled={
               updateProfile.isPending ||
               (entryMode === "company"
-                ? jobRunner.isRunning || !buyerUrl
+                ? jobRunner.isRunning || !buyerUrl.trim()
                 : refreshThesisPack.isPending || !briefText.trim())
             }
-            className="w-full btn-primary gap-2 disabled:opacity-50"
+            className="btn-primary w-full gap-2 disabled:opacity-50"
           >
             {entryMode === "company" && jobRunner.isRunning ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {jobStateLabel}
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Running... {Math.round(jobRunner.progress * 100)}%
               </>
             ) : (
               <>
-                <RefreshCw className="w-4 h-4" />
+                <RefreshCw className="h-4 w-4" />
                 {entryMode === "company" ? crawlButtonLabel : thesisButtonLabel}
               </>
             )}
           </button>
 
-          {/* Secondary: Regenerate structured draft (company mode only, post-crawl) */}
-          {entryMode === "company" && hasGeneratedContextPack && (
+          {entryMode === "company" && hasGeneratedContextPack ? (
             <button
+              type="button"
               onClick={async () => {
                 await saveProfileInputs();
                 await refreshThesisPack.mutateAsync();
               }}
-              disabled={
-                updateProfile.isPending ||
-                refreshThesisPack.isPending ||
-                (!buyerUrl.trim() && !thesisPack?.summary)
-              }
-              className="w-full btn-secondary gap-1.5 disabled:opacity-50"
+              disabled={updateProfile.isPending || refreshThesisPack.isPending}
+              className="btn-secondary w-full gap-1.5 disabled:opacity-50"
             >
               {refreshThesisPack.isPending ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
+                <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
-                <RefreshCw className="w-3 h-3" />
+                <RefreshCw className="h-3 w-3" />
               )}
-              Regenerate structured draft
+              Re-run reasoning on current crawl
             </button>
-          )}
+          ) : null}
         </div>
 
-        {/* Job progress panel */}
-        {entryMode === "company" && jobRunner.isRunning && (
+        {entryMode === "company" && jobRunner.isRunning ? (
           <JobProgressPanel
             job={
               jobRunner.job ?? {
@@ -927,31 +904,25 @@ export default function ThesisPackPage() {
             isStopping={jobRunner.isStopping}
             onStop={jobRunner.canStop ? jobRunner.stop : undefined}
           />
-        )}
+        ) : null}
 
-        {/* Job run summary */}
-        {entryMode === "company" && !jobRunner.isRunning && (
+        {entryMode === "company" && !jobRunner.isRunning ? (
           <JobRunSummary job={latestCompletedContextJob} />
-        )}
+        ) : null}
 
-        {/* Error state */}
-        {(jobRunner.jobError || applyThesisAdjustment.error) && (
-          <div className="text-sm text-danger border border-danger/30 bg-danger/5 px-3 py-2">
-            {jobRunner.jobError || applyThesisAdjustment.error?.message}
+        {jobRunner.jobError ? (
+          <div className="border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
+            {jobRunner.jobError}
           </div>
-        )}
+        ) : null}
       </div>
 
-      {/* ── OUTPUT CARD ── */}
-      <div className="bg-white border border-steel-200 p-6 space-y-5">
-
-        {/* Output header — timestamp + pages crawled merged into one line */}
+      <div className="space-y-5 border border-steel-200 bg-white p-6">
         <div>
-          <h3 className="font-serif text-xl text-oxford">Draft Sourcing Brief</h3>
-          <p className="text-xs text-steel-400 mt-1">{outputMetaLine}</p>
+          <h3 className="font-serif text-xl text-oxford">System Market Map Brief</h3>
+          <p className="mt-1 text-xs text-steel-400">{outputMetaLine}</p>
         </div>
 
-        {/* Source pills */}
         {sourceDrawerItems.length ? (
           <div className="flex items-center">
             <button
@@ -976,11 +947,11 @@ export default function ThesisPackPage() {
               <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
               <div className="min-w-0">
                 <div className="text-sm font-medium text-warning">
-                  Buyer evidence is too weak for reliable inference
+                  Buyer evidence is still weak
                 </div>
                 <p className="mt-1 text-sm text-steel-700">
                   {buyerEvidence?.warning ||
-                    "Add first-party product pages, PDFs, case studies, or supporting evidence before trusting buyer claims."}
+                    "Add first-party product pages, customer stories, docs, PDFs, and integration pages before relying on the map."}
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-steel-600">
                   <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
@@ -995,284 +966,321 @@ export default function ThesisPackPage() {
                   <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
                     Customer proof: {buyerEvidence?.metrics.customer_evidence_count ?? 0}
                   </span>
-                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
-                    Summary chars: {buyerEvidence?.metrics.summary_chars ?? 0}
-                  </span>
-                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
-                    Score: {buyerEvidence?.score ?? 0}
-                  </span>
                 </div>
               </div>
             </div>
           </div>
         ) : null}
 
-        {/* Editable summary */}
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-              Summary
-            </span>
-            <button
-              onClick={handleSaveSummary}
-              disabled={updateThesisPack.isPending}
-              className="text-xs text-oxford hover:text-oxford-light disabled:opacity-50 transition-colors font-medium"
-            >
-              {updateThesisPack.isPending ? "Saving..." : "Save"}
-            </button>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.7fr)]">
+          <div className="rounded-2xl border border-steel-200 bg-steel-50 p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+                Source Summary
+              </span>
+              <button
+                type="button"
+                onClick={saveSummary}
+                disabled={updateThesisPack.isPending}
+                className="inline-flex items-center gap-1 text-xs font-medium text-oxford transition-colors hover:text-oxford-light disabled:opacity-50"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {updateThesisPack.isPending ? "Saving..." : "Save"}
+              </button>
+            </div>
+            <textarea
+              value={draftSummary}
+              onChange={(event) => setDraftSummary(event.target.value)}
+              placeholder="Generate a brief to populate this system summary."
+              className="min-h-[150px] w-full resize-none border border-steel-200 bg-white px-3 py-2 text-sm text-steel-800 placeholder:text-steel-400 focus:border-oxford focus:outline-none focus:ring-1 focus:ring-oxford/20"
+            />
           </div>
-          <textarea
-            value={draftSummary}
-            onChange={(e) => setDraftSummary(e.target.value)}
-            placeholder="Generate a draft to populate the structured summary. Edit here if the system interpreted your mandate incorrectly."
-            className="w-full min-h-[100px] bg-steel-50 border border-steel-200 px-3 py-2.5 text-sm text-steel-800 placeholder:text-steel-400 focus:outline-none focus:border-oxford focus:ring-1 focus:ring-oxford/20 transition resize-none leading-relaxed"
-          />
-        </div>
 
-        {/* Claims by section */}
-        <div className="space-y-5">
-          {displaySections.map(([section, claims]) =>
-            PILL_EDITOR_SECTIONS.has(section) ? (
-              <EditableClaimPillsSection
-                key={section}
-                section={section}
-                claims={claims}
-                sourcePillById={sourcePillById}
-                draftValue={claimDraftValues[section] || ""}
-                error={claimDraftErrors[section] || null}
-                isPending={updateThesisPack.isPending}
-                onDraftChange={(value) => setClaimDraftValue(section, value)}
-                onAdd={() => handleAddSectionClaim(section)}
-                onRemove={(claimId) =>
-                  updateClaim(claimId, { user_status: "removed" })
-                }
-              />
-            ) : (
-              <div key={section}>
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400 shrink-0">
-                    {SECTION_LABELS[section] || section}
-                  </span>
-                  <div className="flex-1 border-t border-steel-200" />
-                </div>
-
-                <div className="space-y-1.5">
-                  {claims.map((claim: ThesisClaim) => {
-                    const isEditing = editingClaimId === claim.id;
-                    const isConfirmed = claim.user_status === "confirmed";
-                    const isHypothesis = claim.rendering === "hypothesis";
-
-                    return (
-                      <div
-                        key={claim.id}
-                        className={clsx(
-                          "bg-steel-50 border border-steel-200 border-l-2 px-3 py-2.5 group transition-all hover:bg-white hover:shadow-sm",
-                          isConfirmed
-                            ? "border-l-success"
-                            : isHypothesis
-                            ? "border-l-warning"
-                            : "border-l-oxford"
-                        )}
-                      >
-                        {isEditing ? (
-                          <div className="flex gap-2 mb-2">
-                            <input
-                              value={editingValue}
-                              onChange={(e) => setEditingValue(e.target.value)}
-                              className="flex-1 border border-steel-200 bg-white px-2 py-1.5 text-sm text-steel-900 font-mono focus:outline-none focus:border-oxford"
-                              autoFocus
-                              onKeyDown={(e) => {
-                                if (e.key === "Escape") setEditingClaimId(null);
-                              }}
-                            />
-                            <button
-                              onClick={async () => {
-                                await updateClaim(claim.id, {
-                                  value: editingValue,
-                                  user_status: "edited",
-                                });
-                                setEditingClaimId(null);
-                                setEditingValue("");
-                              }}
-                              className="btn-primary text-xs px-3 py-1.5"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={() => setEditingClaimId(null)}
-                              className="btn-secondary text-xs px-2 py-1.5"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                        ) : (
-                          <p className="text-sm font-mono text-steel-800 mb-2 leading-relaxed">
-                            {claim.value}
-                          </p>
-                        )}
-
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-[11px] text-steel-400">
-                            <span className={isHypothesis ? "text-warning" : ""}>
-                              {isHypothesis ? "Hypothesis" : "Fact"}
-                            </span>
-                            <span>·</span>
-                            <span>{Math.round((claim.confidence || 0) * 100)}%</span>
-                            {claim.source_pill_ids.length > 0 && (
-                              <>
-                                <span>·</span>
-                                <div className="flex gap-1">
-                                  {claim.source_pill_ids
-                                    .slice(0, 3)
-                                    .map((pillId: string) => {
-                                      const pill = sourcePillById.get(pillId);
-                                      if (!pill) return null;
-                                      return (
-                                        <a
-                                          key={pillId}
-                                          href={pill.url}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-info hover:underline"
-                                          title={pill.label}
-                                        >
-                                          [src]
-                                        </a>
-                                      );
-                                    })}
-                                </div>
-                              </>
-                            )}
-                          </div>
-
-                          <div className="flex items-center gap-3 text-xs opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={() =>
-                                updateClaim(claim.id, { user_status: "confirmed" })
-                              }
-                              disabled={updateThesisPack.isPending || isConfirmed}
-                              className={clsx(
-                                "font-medium transition-colors",
-                                isConfirmed
-                                  ? "text-success cursor-default"
-                                  : "text-steel-500 hover:text-success"
-                              )}
-                            >
-                              {isConfirmed ? (
-                                <span className="flex items-center gap-1">
-                                  <Check className="w-3 h-3" /> Accepted
-                                </span>
-                              ) : (
-                                "Accept"
-                              )}
-                            </button>
-                            <button
-                              onClick={() => {
-                                setEditingClaimId(claim.id);
-                                setEditingValue(claim.value);
-                              }}
-                              className="text-steel-400 hover:text-oxford transition-colors"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() =>
-                                updateClaim(claim.id, { user_status: "removed" })
-                              }
-                              disabled={updateThesisPack.isPending}
-                              className="text-steel-400 hover:text-danger transition-colors"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+          <div className="rounded-2xl border border-steel-200 bg-white p-4">
+            <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+              Crawl Coverage
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <div className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                <div className="text-xs text-steel-500">Sites</div>
+                <div className="mt-1 text-2xl font-semibold text-oxford">
+                  {contextPack?.crawl_coverage?.total_sites ?? 0}
                 </div>
               </div>
-            )
-          )}
-
-          {displaySections.every(([, claims]) => claims.length === 0) &&
-            !thesisPack?.generated_at && (
-            <div className="flex flex-col items-center justify-center py-14 border border-dashed border-steel-300 bg-steel-50">
-              <FileText className="w-8 h-8 text-steel-300 mb-3" />
-              <p className="text-sm text-steel-400">No claims generated yet</p>
-              <p className="text-xs text-steel-400 mt-1">
-                Generate a draft from your inputs above to start reviewing
-              </p>
+              <div className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                <div className="text-xs text-steel-500">Pages</div>
+                <div className="mt-1 text-2xl font-semibold text-oxford">
+                  {contextPack?.crawl_coverage?.total_pages ?? 0}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                <div className="text-xs text-steel-500">Signal pages</div>
+                <div className="mt-1 text-2xl font-semibold text-oxford">
+                  {contextPack?.crawl_coverage?.pages_with_signals ?? 0}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                <div className="text-xs text-steel-500">Career pages kept</div>
+                <div className="mt-1 text-2xl font-semibold text-oxford">
+                  {contextPack?.crawl_coverage?.career_pages_selected ?? 0}
+                </div>
+              </div>
             </div>
-          )}
-        </div>
 
-        {/* Correct / refine */}
-        <div className="border-t border-steel-200 pt-5">
-          <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-widest text-steel-400 mb-2">
-            <Bot className="w-3.5 h-3.5" />
-            Correct or refine
-          </div>
-          <textarea
-            value={adjustmentMessage}
-            onChange={(e) => setAdjustmentMessage(e.target.value)}
-            placeholder={"add core: healthcare provider software\nremove Named customer proof: Example Corp\nbusiness model: license-based software\nexclude: SaaS-first vendors"}
-            className="w-full min-h-[96px] bg-steel-50 border border-steel-200 px-3 py-2.5 text-sm text-steel-800 placeholder:text-steel-400 focus:outline-none focus:border-oxford focus:ring-1 focus:ring-oxford/20 transition resize-none font-mono leading-relaxed"
-          />
-          <div className="flex items-center justify-between mt-2">
-            <p className="text-xs text-steel-400">
-              Use short corrections — changes write back as structured updates
-            </p>
-            <button
-              onClick={handleAdjustmentSubmit}
-              disabled={
-                applyThesisAdjustment.isPending || !adjustmentMessage.trim()
-              }
-              className="btn-primary gap-1.5 text-sm px-3 py-1.5 disabled:opacity-50"
-            >
-              {applyThesisAdjustment.isPending ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : null}
-              Apply
-            </button>
-          </div>
-        </div>
-
-        {/* Open questions */}
-        {thesisPack?.open_questions?.length ? (
-          <div className="border-t border-steel-200 pt-4">
-            <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400 mb-2">
-              Open questions
+            <div className="mt-4 text-[11px] font-medium uppercase tracking-widest text-steel-400">
+              Strongest Evidence Buckets
             </div>
-            <ul className="space-y-1.5">
-              {thesisPack.open_questions.map((question) => (
-                <li
-                  key={question}
-                  className="text-sm text-steel-600 flex items-start gap-2"
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(thesisPack?.market_map_brief?.strongest_evidence_buckets || []).map((bucket) => (
+                <span
+                  key={bucket.label}
+                  className="rounded-full border border-steel-200 bg-steel-50 px-3 py-1 text-xs text-steel-600"
                 >
-                  <span className="text-steel-300 shrink-0 mt-0.5 font-serif">—</span>
-                  <span>{question}</span>
-                </li>
+                  {bucket.label}: {bucket.count}
+                </span>
               ))}
-            </ul>
+            </div>
           </div>
-        ) : null}
-      </div>
+        </div>
 
-      {/* Raw crawl output — collapsed */}
-      <details className="bg-white border border-steel-200">
-        <summary className="cursor-pointer px-4 py-3 text-[11px] font-medium uppercase tracking-widest text-steel-400 hover:text-steel-600 transition-colors select-none">
-          Raw crawl output
-        </summary>
-        {profile?.context_pack_markdown ? (
-          <div className="prose prose-sm px-4 pb-4 max-h-[560px] overflow-y-auto border-t border-steel-100 pt-3">
-            <ReactMarkdown>{profile.context_pack_markdown}</ReactMarkdown>
+        <div className="space-y-5">
+          {(["customer_archetype", "workflow", "capability"] as const).map((layer) => {
+            const nodes = taxonomyByLayer.get(layer) || [];
+
+            return (
+              <div key={layer}>
+                <div className="mb-3 flex items-center gap-3">
+                  <div>
+                    <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+                      {LAYER_LABELS[layer]}
+                    </div>
+                    <p className="mt-1 text-sm text-steel-500">
+                      {LAYER_DESCRIPTIONS[layer]}
+                    </p>
+                  </div>
+                </div>
+
+                {nodes.length ? (
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    {nodes.map((node) => (
+                      <TaxonomyCard
+                        key={node.id}
+                        node={node}
+                        draft={
+                          taxonomyDrafts[node.id] || {
+                            phrase: node.phrase || "",
+                            aliases: (node.aliases || []).join(", "),
+                          }
+                        }
+                        evidenceItems={evidenceForIds(node.evidence_ids)}
+                        isPending={updateThesisPack.isPending}
+                        onDraftChange={(nextDraft) =>
+                          setTaxonomyDrafts((current) => ({
+                            ...current,
+                            [node.id]: nextDraft,
+                          }))
+                        }
+                        onSave={() => saveTaxonomyNode(node.id)}
+                        onScopeChange={(status) => setTaxonomyScope(node.id, status)}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-steel-200 bg-steel-50 px-4 py-5 text-sm text-steel-500">
+                    No {LAYER_LABELS[layer].toLowerCase()} extracted yet.
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="rounded-2xl border border-steel-200 bg-white p-4">
+            <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+              Named Customer Proof
+            </div>
+            <div className="mt-3 space-y-3">
+              {(thesisPack?.market_map_brief?.named_customer_proof || []).length ? (
+                thesisPack?.market_map_brief?.named_customer_proof.map((item) => (
+                  <div key={`${item.name}-${item.source_url || item.evidence_id || ""}`} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                    <div className="text-sm font-semibold text-oxford">{item.name}</div>
+                    {item.context ? (
+                      <p className="mt-1 text-sm text-steel-600">{item.context}</p>
+                    ) : null}
+                    <EvidenceLinks
+                      evidenceItems={evidenceForIds(item.evidence_id ? [item.evidence_id] : [])}
+                    />
+                    {!item.evidence_id && item.source_url ? (
+                      <a
+                        href={item.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-oxford hover:underline"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        Open source
+                      </a>
+                    ) : null}
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-steel-200 bg-steel-50 px-4 py-5 text-sm text-steel-500">
+                  No named-customer proof extracted yet.
+                </div>
+              )}
+            </div>
           </div>
-        ) : (
-          <div className="px-4 pb-4 text-sm text-steel-400 border-t border-steel-100 pt-3">
-            No raw context pack available yet.
+
+          <div className="rounded-2xl border border-steel-200 bg-white p-4">
+            <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+              Integration / Partner Proof
+            </div>
+            <div className="mt-3 space-y-3">
+              {(thesisPack?.market_map_brief?.integration_partner_proof || []).length ? (
+                thesisPack?.market_map_brief?.integration_partner_proof.map((item) => (
+                  <div key={`${item.name}-${item.source_url || item.evidence_id || ""}`} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                    <div className="text-sm font-semibold text-oxford">{item.name}</div>
+                    <EvidenceLinks
+                      evidenceItems={evidenceForIds(item.evidence_id ? [item.evidence_id] : [])}
+                    />
+                    {!item.evidence_id && item.source_url ? (
+                      <a
+                        href={item.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-oxford hover:underline"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        Open source
+                      </a>
+                    ) : null}
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-steel-200 bg-steel-50 px-4 py-5 text-sm text-steel-500">
+                  No integration or partner evidence extracted yet.
+                </div>
+              )}
+            </div>
           </div>
-        )}
-      </details>
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="rounded-2xl border border-steel-200 bg-white p-4">
+            <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-widest text-steel-400">
+              <Bot className="h-3.5 w-3.5" />
+              Recommended Lenses
+            </div>
+            <div className="mt-3 space-y-3">
+              {(thesisPack?.market_map_brief?.active_lenses || thesisPack?.lens_seeds || []).length ? (
+                (thesisPack?.market_map_brief?.active_lenses || thesisPack?.lens_seeds || []).map((lens) => (
+                  <div key={lens.id} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-oxford">{lens.label}</div>
+                      <span className="rounded-full border border-steel-200 bg-white px-2.5 py-1 text-[11px] text-steel-500">
+                        {Math.round((lens.confidence || 0) * 100)}%
+                      </span>
+                    </div>
+                    {lens.query_phrase ? (
+                      <div className="mt-1 text-xs text-steel-500">
+                        Seed phrase: {lens.query_phrase}
+                      </div>
+                    ) : null}
+                    <p className="mt-2 text-sm text-steel-600">{lens.rationale}</p>
+                    <EvidenceLinks evidenceItems={evidenceForIds(lens.evidence_ids)} />
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-steel-200 bg-steel-50 px-4 py-5 text-sm text-steel-500">
+                  No map lenses are active yet. Improve capability, workflow, or customer coverage first.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-steel-200 bg-white p-4">
+            <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-widest text-steel-400">
+              <FileText className="h-3.5 w-3.5" />
+              Adjacency Hypotheses
+            </div>
+            <div className="mt-3 space-y-3">
+              {(thesisPack?.market_map_brief?.adjacency_hypotheses || []).length ? (
+                thesisPack?.market_map_brief?.adjacency_hypotheses.map((item) => (
+                  <div key={item.id} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                    <div className="text-sm text-steel-700">{item.text}</div>
+                    <div className="mt-2 text-xs text-steel-500">
+                      Confidence {Math.round((item.confidence || 0) * 100)}%
+                    </div>
+                    <EvidenceLinks evidenceItems={evidenceForIds(item.evidence_ids)} />
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-steel-200 bg-steel-50 px-4 py-5 text-sm text-steel-500">
+                  No adjacency hypotheses generated yet.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="rounded-2xl border border-steel-200 bg-white p-4">
+            <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+              Confidence Gaps
+            </div>
+            <div className="mt-3 space-y-2">
+              {(thesisPack?.market_map_brief?.confidence_gaps || []).length ? (
+                thesisPack?.market_map_brief?.confidence_gaps.map((gap) => (
+                  <div
+                    key={gap}
+                    className="rounded-2xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm text-steel-700"
+                  >
+                    {gap}
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-success/20 bg-success/10 px-3 py-2 text-sm text-success">
+                  No major confidence gaps flagged by the current artifact set.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-steel-200 bg-white p-4">
+            <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+              Open Questions
+            </div>
+            <div className="mt-3 space-y-2">
+              {(thesisPack?.market_map_brief?.open_questions || thesisPack?.open_questions || []).map((question) => (
+                <div
+                  key={question}
+                  className="rounded-2xl border border-steel-200 bg-steel-50 px-3 py-2 text-sm text-steel-700"
+                >
+                  {question}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-steel-100 pt-4">
+          <div className="text-sm text-steel-500">
+            {thesisPack?.confirmed_at
+              ? `Brief confirmed ${new Date(thesisPack.confirmed_at).toLocaleString()}`
+              : "Confirm this brief once the taxonomy and lenses match the market map you want to search."}
+          </div>
+          <button
+            type="button"
+            onClick={confirmBrief}
+            disabled={updateThesisPack.isPending}
+            className="btn-primary gap-2 disabled:opacity-50"
+          >
+            <Check className="h-4 w-4" />
+            Confirm brief
+          </button>
+        </div>
+      </div>
 
       <SourcesDrawer
         isOpen={isSourcesDrawerOpen}
