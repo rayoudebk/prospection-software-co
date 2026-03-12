@@ -375,7 +375,11 @@ class OutputGenerator:
             lines.append("\n### Identified Customers\n")
             
             # Group by evidence type
-            logo_customers = [e for e in customer_evidence if e.evidence_type in ("logo_alt", "aria_label")]
+            logo_customers = [
+                e
+                for e in customer_evidence
+                if e.evidence_type in ("logo_alt", "aria_label", "bundle_logo_manifest")
+            ]
             text_customers = [e for e in customer_evidence if e.evidence_type == "text_mention"]
             
             if logo_customers:

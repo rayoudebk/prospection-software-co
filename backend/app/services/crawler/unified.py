@@ -306,7 +306,17 @@ class UnifiedCrawler:
             # Extract signals from pages
             signal_extractor = SignalExtractor()
             for page in pages:
-                page.signals = signal_extractor.extract_signals(page)
+                extracted_signals = signal_extractor.extract_signals(page)
+                merged_signals = list(page.signals or []) + extracted_signals
+                deduped_signals = []
+                seen_signal_keys: set[tuple[str, str]] = set()
+                for signal in merged_signals:
+                    key = (str(signal.type or "").strip().lower(), str(signal.value or "").strip().lower())
+                    if key in seen_signal_keys:
+                        continue
+                    seen_signal_keys.add(key)
+                    deduped_signals.append(signal)
+                page.signals = deduped_signals
             
             self._log(f"Extracted content from {len(pages)} pages")
             

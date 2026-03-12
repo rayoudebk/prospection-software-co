@@ -3,7 +3,7 @@
 import asyncio
 import re
 from typing import List, Optional, Callable, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import trafilatura
@@ -36,6 +36,7 @@ class ContentExtractor:
     ):
         self.client = client
         self.progress_callback = progress_callback
+        self._bundle_text_cache: dict[str, str] = {}
     
     def _log(self, message: str) -> None:
         """Log progress if callback is set."""
@@ -62,6 +63,31 @@ class ContentExtractor:
         if raw is None:
             return ""
         return str(raw).strip()
+
+    def _decode_js_string(self, value: str) -> str:
+        text = str(value or "")
+        if not text:
+            return ""
+        if "\\u" in text or "\\x" in text:
+            try:
+                text = bytes(text, "utf-8").decode("unicode_escape")
+            except Exception:
+                pass
+        return " ".join(text.split()).strip()
+
+    def _extract_meta_description(self, tree: HTMLParser) -> str:
+        for selector in (
+            'meta[name="description"]',
+            'meta[property="og:description"]',
+            'meta[name="twitter:description"]',
+        ):
+            node = tree.css_first(selector)
+            if not node:
+                continue
+            content = self._safe_attr_text(node, "content")
+            if content:
+                return content
+        return ""
 
     def _looks_like_customer_entity(self, name: str, evidence_type: str) -> bool:
         text = str(name or "").strip()
@@ -125,6 +151,169 @@ class ContentExtractor:
             return False
         return True
 
+    def _bundle_candidate_urls(self, tree: HTMLParser, source_url: str) -> List[str]:
+        parsed = urlparse(source_url)
+        domain = parsed.netloc
+        candidates: list[tuple[int, str]] = []
+        seen: set[str] = set()
+        for script in tree.css("script[src]"):
+            src = self._safe_attr_text(script, "src")
+            if not src:
+                continue
+            absolute = urljoin(source_url, src)
+            bundle = urlparse(absolute)
+            if bundle.netloc != domain:
+                continue
+            path = (bundle.path or "").lower()
+            if not path.endswith(".js"):
+                continue
+            key = absolute.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            score = 0
+            if "/assets/" in path:
+                score += 12
+            if any(token in path for token in ("/index-", "/main-", "/app-", "/index.", "/main.", "/app.")):
+                score += 20
+            if "vendor" in path or "polyfill" in path:
+                score -= 8
+            score -= min(len(path), 120) // 24
+            candidates.append((score, absolute))
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return [url for _, url in candidates[:3]]
+
+    async def _fetch_bundle_text(self, bundle_url: str) -> str:
+        cached = self._bundle_text_cache.get(bundle_url)
+        if cached is not None:
+            return cached
+        try:
+            response = await self.client.get(bundle_url, timeout=20.0)
+            if response.status_code != 200:
+                self._bundle_text_cache[bundle_url] = ""
+                return ""
+            text = str(response.text or "")
+            self._bundle_text_cache[bundle_url] = text
+            return text
+        except Exception:
+            self._bundle_text_cache[bundle_url] = ""
+            return ""
+
+    def _looks_like_route_label(self, label: str) -> bool:
+        text = str(label or "").strip()
+        if not text:
+            return False
+        if len(text) < 3 or len(text) > 80:
+            return False
+        if any(ch in text for ch in "{}[]<>"):
+            return False
+        if text.lower() in {"solutions", "plateforme", "technologie & services", "à propos"}:
+            return False
+        return True
+
+    async def _extract_spa_bundle_artifacts(
+        self,
+        tree: HTMLParser,
+        source_url: str,
+    ) -> tuple[list[CustomerEvidence], list[Signal], list[str]]:
+        bundle_urls = self._bundle_candidate_urls(tree, source_url)
+        if not bundle_urls:
+            return [], [], []
+
+        customers: list[CustomerEvidence] = []
+        signals: list[Signal] = []
+        text_fragments: list[str] = []
+        seen_customer_names: set[str] = set()
+        seen_signal_keys: set[tuple[str, str]] = set()
+        seen_fragments: set[str] = set()
+
+        def add_fragment(value: str) -> None:
+            normalized = " ".join(str(value or "").split()).strip()
+            if not normalized or normalized.lower() in seen_fragments:
+                return
+            seen_fragments.add(normalized.lower())
+            text_fragments.append(normalized)
+
+        for bundle_url in bundle_urls:
+            bundle_text = await self._fetch_bundle_text(bundle_url)
+            if not bundle_text:
+                continue
+
+            for match in re.finditer(r'\{name:"([^"]{2,120})",(?:logo|src):"([^"]{1,240})"', bundle_text):
+                raw_name, raw_asset = match.groups()
+                name = self._decode_js_string(raw_name)
+                asset = self._decode_js_string(raw_asset)
+                asset_lower = asset.lower()
+                if not self._looks_like_customer_entity(name, "bundle_logo_manifest"):
+                    continue
+                if "/customer_logo/" in asset_lower:
+                    key = name.lower()
+                    if key in seen_customer_names:
+                        continue
+                    seen_customer_names.add(key)
+                    customers.append(
+                        CustomerEvidence(
+                            name=name,
+                            source_url=source_url,
+                            evidence_type="bundle_logo_manifest",
+                            context="Named account from first-party SPA customer logo manifest",
+                            selector=bundle_url,
+                        )
+                    )
+                    add_fragment(name)
+                elif any(token in asset_lower for token in ("/partenaire/", "/partner", "/integration", "/ecosystem")):
+                    key = ("integration", name.lower())
+                    if key in seen_signal_keys:
+                        continue
+                    seen_signal_keys.add(key)
+                    signals.append(
+                        Signal(
+                            type="integration",
+                            value=name,
+                            evidence=Evidence(
+                                source_url=source_url,
+                                snippet="Named partner from first-party SPA partner logo manifest",
+                                selector_or_offset=bundle_url,
+                            ),
+                        )
+                    )
+                    add_fragment(name)
+
+            for route_match in re.finditer(r'to:"(/[^"]+)"', bundle_text):
+                route_path = route_match.group(1)
+                if not route_path.startswith(("/solutions/", "/platform/", "/technology", "/technology-and-services/", "/infrastructure")):
+                    continue
+                window = bundle_text[route_match.end() : route_match.end() + 450]
+                label_match = re.search(r'children:"([^"]{2,120})"', window)
+                if not label_match:
+                    continue
+                label = self._decode_js_string(label_match.group(1))
+                if not self._looks_like_route_label(label):
+                    continue
+                signal_type = "workflow"
+                if route_path.startswith("/solutions/"):
+                    signal_type = "customer_archetype"
+                elif route_path.startswith(("/technology", "/technology-and-services/")):
+                    signal_type = "service"
+                key = (signal_type, label.lower())
+                if key in seen_signal_keys:
+                    continue
+                seen_signal_keys.add(key)
+                signals.append(
+                    Signal(
+                        type=signal_type,
+                        value=label,
+                        evidence=Evidence(
+                            source_url=source_url,
+                            snippet=f"SPA route label for {route_path}",
+                            selector_or_offset=bundle_url,
+                        ),
+                    )
+                )
+                add_fragment(label)
+
+        return customers, signals, text_fragments
+
     def _rendered_blocks(self, preview: PagePreview, rendered_text: str) -> List[ContentBlock]:
         blocks: List[ContentBlock] = []
         heading = str(preview.h1 or preview.title or "").strip()
@@ -187,12 +376,16 @@ class ContentExtractor:
             
             # Determine page type from URL
             page_type = self._classify_page_type(preview.url)
+
+            bundle_customers, bundle_signals, bundle_fragments = await self._extract_spa_bundle_artifacts(tree, preview.url)
             
             # Extract structured content blocks
             blocks = self._extract_content_blocks(tree)
             
             # Extract customer evidence (logos, mentions)
             customer_evidence = self._extract_customer_evidence(tree, html, preview.url)
+            if bundle_customers:
+                customer_evidence.extend(bundle_customers)
             
             # Extract raw text using trafilatura (for full content)
             raw_content = trafilatura.extract(
@@ -209,6 +402,19 @@ class ContentExtractor:
                 title_node = tree.css_first('title')
                 if title_node:
                     title = self._safe_node_text(title_node, strip=True)
+            meta_description = self._extract_meta_description(tree)
+            content_fragments = [fragment for fragment in [meta_description, *bundle_fragments] if fragment]
+            if content_fragments:
+                existing_content = " ".join(str(raw_content or "").split())
+                additions = [
+                    fragment
+                    for fragment in content_fragments
+                    if fragment.lower() not in existing_content.lower()
+                ]
+                if additions:
+                    raw_content = "\n".join([*additions, raw_content]).strip()
+                    if not blocks:
+                        blocks = self._rendered_blocks(preview, "\n\n".join(additions))
 
             if self._needs_render_fallback(
                 blocks=blocks,
@@ -232,7 +438,7 @@ class ContentExtractor:
                 title=title,
                 page_type=page_type,
                 blocks=blocks,
-                signals=[],  # Signals extracted in Phase 5
+                signals=bundle_signals,
                 customer_evidence=customer_evidence,
                 raw_content=raw_content,
                 raw_html=html,
