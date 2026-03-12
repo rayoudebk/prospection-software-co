@@ -53,6 +53,7 @@ def _render_via_endpoint(url: str, timeout_seconds: int, endpoint: str) -> Dict[
         "final_url": final_url,
         "provider": str(payload.get("provider") or "chrome_devtools_mcp_endpoint"),
         "content": text,
+        "html": html,
         "error": None if text else "empty_rendered_content",
     }
 
@@ -93,6 +94,7 @@ def _render_via_playwright(url: str, timeout_seconds: int) -> Dict[str, Any]:
             "final_url": final_url,
             "provider": "chrome_devtools_mcp_playwright",
             "content": content,
+            "html": html,
             "error": None if content else "empty_rendered_content",
         }
     except Exception as exc:
@@ -101,6 +103,7 @@ def _render_via_playwright(url: str, timeout_seconds: int) -> Dict[str, Any]:
             "final_url": url,
             "provider": "chrome_devtools_mcp_playwright",
             "content": "",
+            "html": "",
             "error": f"playwright_render_failed:{exc}",
         }
 

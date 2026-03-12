@@ -103,6 +103,19 @@ def test_content_extractor_renders_product_pages_for_interactive_enrichment(monk
                 "Fonctionnalites detaillees Order management Compliance controls "
                 "Portfolio analytics Trade capture Reporting."
             ),
+            "html": """
+            <html><body><main>
+              <h1>Front Office</h1>
+              <h2>Fonctionnalites detaillees</h2>
+              <button>Pre-trade, trading et post-trade PATIO OMS</button>
+              <button>Compliance et controles reglementaires PATIO OMS</button>
+              <ul>
+                <li>Order management</li>
+                <li>Compliance controls</li>
+                <li>Portfolio analytics</li>
+              </ul>
+            </main></body></html>
+            """,
             "error": None,
         },
     )
@@ -126,4 +139,6 @@ def test_content_extractor_renders_product_pages_for_interactive_enrichment(monk
     assert page is not None
     assert "Order management" in page.raw_content
     assert "Compliance controls" in page.raw_content
-    assert any(block.type == "paragraph" and "Order management" in block.content for block in page.blocks)
+    assert any(block.type == "heading" and "Fonctionnalites detaillees" in block.content for block in page.blocks)
+    assert any(block.type == "list" and "Order management" in block.content for block in page.blocks)
+    assert any(block.type == "list" and "Pre-trade, trading et post-trade PATIO OMS" in block.content for block in page.blocks)

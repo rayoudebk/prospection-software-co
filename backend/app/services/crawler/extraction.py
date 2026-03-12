@@ -351,6 +351,99 @@ class ContentExtractor:
             if len(blocks) >= 5:
                 break
         return blocks
+
+    def _looks_like_interactive_capability_label(self, value: str) -> bool:
+        text = " ".join(str(value or "").split()).strip()
+        if len(text) < 16 or len(text) > 180:
+            return False
+        lowered = text.lower()
+        if lowered in {
+            "solutions",
+            "plateforme",
+            "technologie & services",
+            "à propos",
+            "demander une présentation",
+        }:
+            return False
+        if any(token in lowered for token in ("linkedin", "mentions légales", "contact@")):
+            return False
+        keywords = (
+            "pms",
+            "oms",
+            "trading",
+            "trade",
+            "portfolio",
+            "portefeuille",
+            "ordre",
+            "reporting",
+            "performance",
+            "compliance",
+            "contrôle",
+            "monitoring",
+            "routage",
+            "connectivité",
+            "modélisation",
+            "allocation",
+            "bourse",
+            "gestion",
+            "post-trade",
+            "pré-trade",
+        )
+        return any(token in lowered for token in keywords)
+
+    def _rendered_html_to_text(self, rendered_html: str) -> str:
+        extracted = trafilatura.extract(
+            rendered_html,
+            include_links=False,
+            include_images=False,
+            include_tables=True,
+            no_fallback=False,
+        ) or ""
+        normalized = " ".join(str(extracted or "").split())
+        if normalized:
+            return normalized
+        tree = HTMLParser(rendered_html)
+        if tree is None:
+            return ""
+        body = tree.body or tree.css_first("main")
+        text = body.text(separator=" ", strip=True) if body else tree.text(separator=" ", strip=True)
+        return " ".join(str(text or "").split())
+
+    def _extract_rendered_dom_blocks(
+        self,
+        *,
+        preview: PagePreview,
+        page_type: str,
+        rendered_html: str,
+    ) -> List[ContentBlock]:
+        tree = HTMLParser(str(rendered_html or ""))
+        if tree is None:
+            return []
+        blocks = self._extract_content_blocks(tree)
+
+        url_lower = str(preview.url or "").lower()
+        if page_type in {"product", "solutions"} and any(token in url_lower for token in ("/platform/", "/solutions/")):
+            main = tree.css_first("main") or tree.body or tree
+            interactive_items: list[str] = []
+            seen_items: set[str] = set()
+            for button in main.css("button"):
+                text = " ".join(self._safe_node_text(button, strip=True).split())
+                if not self._looks_like_interactive_capability_label(text):
+                    continue
+                key = text.lower()
+                if key in seen_items:
+                    continue
+                seen_items.add(key)
+                interactive_items.append(f"- {text}")
+            if interactive_items:
+                blocks.append(
+                    ContentBlock(
+                        type="list",
+                        content="\n".join(interactive_items[:24]),
+                        level=0,
+                    )
+                )
+        return blocks
     
     async def extract_pages(
         self,
@@ -458,11 +551,24 @@ class ContentExtractor:
                     preview.url,
                     timeout_seconds=20,
                 )
+                rendered_html = str(rendered.get("html") or "")
                 rendered_text = " ".join(str(rendered.get("content") or "").split())
+                rendered_blocks = (
+                    self._extract_rendered_dom_blocks(
+                        preview=preview,
+                        page_type=page_type,
+                        rendered_html=rendered_html,
+                    )
+                    if rendered_html
+                    else []
+                )
+                if rendered_html and not rendered_text:
+                    rendered_text = self._rendered_html_to_text(rendered_html)
                 min_gain = 40 if interactive_enrichment else 120
-                if len(rendered_text) > len(" ".join(raw_content.split())) + min_gain:
+                rendered_block_gain = len(rendered_blocks) > len(blocks) + 2
+                if len(rendered_text) > len(" ".join(raw_content.split())) + min_gain or rendered_block_gain:
                     raw_content = rendered_text
-                    blocks = self._rendered_blocks(preview, rendered_text)
+                    blocks = rendered_blocks or self._rendered_blocks(preview, rendered_text)
             
             return CrawledPage(
                 url=preview.url,
