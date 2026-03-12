@@ -472,3 +472,68 @@ def test_bootstrap_thesis_payload_scopes_market_map_to_buyer_site():
     assert "Wealth management platform" in taxonomy_by_layer["capability"]
     assert "Portfolio management" not in taxonomy_by_layer["workflow"]
     assert "Integrate data from all sources with" not in taxonomy_by_layer["capability"]
+
+
+def test_bootstrap_thesis_payload_promotes_rendered_product_features_into_cleaner_capabilities():
+    profile = CompanyProfile(
+        workspace_id=10,
+        buyer_company_url="https://4tpm.fr/platform/front-office",
+        generated_context_summary="",
+        reference_company_urls=[],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={},
+        context_pack_json={
+            "sites": [
+                {
+                    "url": "https://4tpm.fr/platform/front-office",
+                    "company_name": "4TPM",
+                    "summary": "",
+                    "signals": [],
+                    "customer_evidence": [],
+                    "pages": [
+                        {
+                            "url": "https://4tpm.fr/platform/front-office",
+                            "title": "4TPM - Plateforme Wealth Management",
+                            "page_type": "product",
+                            "blocks": [
+                                {"type": "paragraph", "content": "Plateforme / Front Office titres"},
+                                {"type": "heading", "content": "Front office titres pour gérants et desks de trading", "level": 1},
+                                {"type": "heading", "content": "Capacités clés", "level": 2},
+                                {"type": "heading", "content": "Préparation et modélisation des portefeuilles", "level": 3},
+                                {"type": "heading", "content": "Génération d'ordres blocs et routage full STP", "level": 3},
+                                {"type": "heading", "content": "Architecture & Intégration", "level": 2},
+                                {
+                                    "type": "paragraph",
+                                    "content": "FIX, fichiers, MQSeries, web services, APIs REST pour se connecter aux brokers et systèmes tiers.",
+                                },
+                                {"type": "heading", "content": "Fonctionnalités détaillées", "level": 2},
+                                {
+                                    "type": "list",
+                                    "content": (
+                                        "- Classification des clients par listes, contraintes et périmètre de gestion\n"
+                                        "- Modèles de répartition d'actifs adaptés aux profils d'investissement\n"
+                                        "- Le client alimente son compte espèces via un compte de dépôt appartenant à la banque"
+                                    ),
+                                },
+                            ],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": "Front office titres PMS OMS REST API",
+                        }
+                    ],
+                }
+            ]
+        },
+        product_pages_found=1,
+    )
+
+    payload = bootstrap_thesis_payload(profile)
+    taxonomy_by_layer: dict[str, list[str]] = {}
+    for node in payload["taxonomy_nodes"]:
+        taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
+
+    assert "Préparation et modélisation des portefeuilles" in taxonomy_by_layer["capability"]
+    assert "Génération d'ordres blocs et routage full STP" in taxonomy_by_layer["capability"]
+    assert "Le client alimente son compte espèces" not in taxonomy_by_layer["capability"]
+    assert "REST API" in taxonomy_by_layer["delivery_or_integration"]

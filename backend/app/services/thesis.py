@@ -167,6 +167,64 @@ DELIVERY_OR_INTEGRATION_CANONICALS = (
     ("hosted", "Hosted deployment"),
     ("infrastructure", "Infrastructure"),
 )
+GENERIC_CAPABILITY_HEADINGS = {
+    "capacités clés",
+    "fonctionnalités détaillées",
+    "bénéfices par audience",
+    "benefits by audience",
+    "capabilities",
+    "key capabilities",
+    "functionalities",
+    "detailed functionalities",
+}
+GENERIC_SUPPORT_HEADINGS = {
+    "architecture & intégration",
+    "architecture & integration",
+    "investisseurs",
+    "gérants",
+    "entités tiers",
+    "brokers",
+    "marchés",
+    "back office",
+    "systèmes d'information",
+    "systems of record",
+    "pour les gérants et équipes de trading",
+    "pour les équipes it",
+}
+SENTENCE_LIKE_CAPABILITY_PREFIXES = (
+    "le client ",
+    "la suite ",
+    "ce que ",
+    "our ",
+    "we ",
+    "clients can ",
+    "this ",
+    "these ",
+)
+CAPABILITY_QUALITY_KEYWORDS = (
+    "pms",
+    "oms",
+    "stp",
+    "portfolio",
+    "portefeuille",
+    "order",
+    "ordre",
+    "trade",
+    "trading",
+    "routing",
+    "routage",
+    "reporting",
+    "performance",
+    "compliance",
+    "contrôle",
+    "monitoring",
+    "allocation",
+    "benchmark",
+    "api",
+    "sepa",
+    "payment",
+    "paiement",
+)
 WORKFLOW_KEYWORDS = (
     "front office",
     "front office titres",
@@ -351,6 +409,47 @@ def _safe_phrase(value: Any, *, max_len: int = 80) -> str:
     return text[:max_len]
 
 
+def _split_list_block_items(value: Any, *, max_items: int = 12) -> list[str]:
+    items: list[str] = []
+    for raw in str(value or "").splitlines():
+        text = re.sub(r"^\s*[-*•]\s*", "", raw).strip()
+        if not text:
+            continue
+        items.append(text)
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def _block_heading_is_generic(value: Any) -> bool:
+    lowered = _safe_phrase(value, max_len=120).lower()
+    return lowered in GENERIC_CAPABILITY_HEADINGS or lowered in GENERIC_SUPPORT_HEADINGS
+
+
+def _capability_phrase_from_text(value: Any) -> str:
+    text = _safe_phrase(value, max_len=240)
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s*[:;].*$", "", text).strip()
+    text = re.sub(r"\s*\([^)]*\)\s*$", "", text).strip()
+    text = re.sub(r"^(?:our|we|this|these)\s+", "", text, flags=re.IGNORECASE)
+    parts = text.split()
+    if len(parts) > 6 and "," in text:
+        text = text.split(",", 1)[0].strip()
+    parts = text.split()
+    if len(parts) > 6:
+        keep = 6
+        trailing_acronym = next(
+            (idx for idx, token in enumerate(parts[:8]) if token.upper() == token and len(token) <= 5),
+            None,
+        )
+        if trailing_acronym is not None:
+            keep = min(max(keep, trailing_acronym + 1), len(parts))
+        text = " ".join(parts[:keep]).strip()
+    return text[:88]
+
+
 def _normalize_phrase_key(value: Any) -> str:
     text = re.sub(r"[^a-z0-9+/ ]+", " ", str(value or "").lower())
     text = re.sub(r"\s+", " ", text).strip()
@@ -475,6 +574,72 @@ def _keyword_phrases_from_text(text: Any) -> list[str]:
         if keyword in lowered:
             _append(keyword)
     return phrases
+
+
+def _taxonomy_signals_from_page_blocks(page: dict[str, Any]) -> list[tuple[str, str]]:
+    page_type = str(page.get("page_type") or "").strip().lower()
+    if page_type not in {"product", "solutions", "services", "docs"}:
+        return []
+
+    signals: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    last_heading = ""
+
+    def add(kind: str, value: Any) -> None:
+        phrase = _safe_phrase(value, max_len=180)
+        if not phrase:
+            return
+        key = (kind, _normalize_phrase_key(phrase))
+        if key in seen:
+            return
+        seen.add(key)
+        signals.append((kind, phrase))
+
+    for block in page.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "").strip().lower()
+        content = _safe_phrase(block.get("content"), max_len=320)
+        if not content:
+            continue
+
+        if block_type == "heading":
+            last_heading = content
+            lowered = content.lower()
+            if _block_heading_is_generic(content):
+                if "architecture" in lowered or "intégration" in lowered or "integration" in lowered:
+                    add("service", content)
+                continue
+            if any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
+                add("service", content)
+            elif any(keyword in lowered for keyword in WORKFLOW_KEYWORDS):
+                add("workflow", content)
+            else:
+                compact = _capability_phrase_from_text(content)
+                if compact:
+                    add("capability", compact)
+            continue
+
+        if block_type == "list":
+            for item in _split_list_block_items(content):
+                compact = _capability_phrase_from_text(item)
+                if not compact:
+                    continue
+                lowered = compact.lower()
+                if any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
+                    add("service", compact)
+                else:
+                    add("capability", compact)
+            continue
+
+        if block_type == "paragraph" and last_heading:
+            lowered_heading = last_heading.lower()
+            if "architecture" in lowered_heading or "intégration" in lowered_heading or "integration" in lowered_heading:
+                compact = _compact_phrase(content, max_words=7, max_len=88)
+                if compact:
+                    add("service", compact)
+
+    return signals
 
 
 def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
@@ -670,6 +835,21 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
             for phrase in _keyword_phrases_from_text(page.get("raw_content")):
                 raw_phrases.add(phrase)
                 aggregate_phrases.add(phrase)
+
+            for signal_kind, signal_value in _taxonomy_signals_from_page_blocks(page):
+                evidence_id = _register_evidence(
+                    source_url=page.get("url"),
+                    kind=f"page_signal:{signal_kind}",
+                    text=signal_value,
+                    snippet=f"Structured {signal_kind} extracted from rendered page blocks",
+                    page_type=page_type,
+                    page_title=page.get("title"),
+                    confidence=0.88 if signal_kind == "capability" else 0.82,
+                )
+                compact = _compact_phrase(signal_value, max_words=7, max_len=88)
+                if compact:
+                    raw_phrases.add(compact)
+                    aggregate_phrases.add(compact)
 
             for signal in page.get("signals") or []:
                 if not isinstance(signal, dict):
@@ -886,7 +1066,7 @@ def _canonicalize_taxonomy_phrase(layer: str, value: Any) -> str:
                 phrase = suffix
                 lowered = phrase.lower()
         for pattern, canonical in CAPABILITY_CANONICAL_PATTERNS:
-            if pattern in lowered:
+            if lowered == pattern:
                 return canonical
 
     if layer == "delivery_or_integration":
@@ -932,6 +1112,10 @@ def _is_valid_taxonomy_phrase(
         if any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
             return False
         if word_count < 2 and "/" not in normalized and not normalized.isupper():
+            return False
+        if any(lowered.startswith(prefix) for prefix in SENTENCE_LIKE_CAPABILITY_PREFIXES):
+            return False
+        if word_count > 8 and "/" not in normalized and not normalized.isupper():
             return False
         if lowered in {"platform", "software", "solution", "solutions"}:
             return False
@@ -1025,7 +1209,7 @@ def _taxonomy_phrase_candidates(
             kind = str(item.get("kind") or "").lower()
             if "signal:capability" not in kind and "page_signal:capability" not in kind:
                 continue
-            phrase = _canonicalize_taxonomy_phrase(layer, _compact_phrase(item.get("text"), max_words=6, max_len=72))
+            phrase = _canonicalize_taxonomy_phrase(layer, _capability_phrase_from_text(item.get("text")))
             if not _is_valid_taxonomy_phrase(
                 layer,
                 phrase,
@@ -1041,9 +1225,9 @@ def _taxonomy_phrase_candidates(
                     "confidence": 0.82,
                     "evidence_ids": [item.get("id")] if item.get("id") else [],
                 }
-            )
+                )
         for phrase in raw_phrases:
-            compact = _canonicalize_taxonomy_phrase(layer, _compact_phrase(phrase, max_words=6, max_len=72))
+            compact = _canonicalize_taxonomy_phrase(layer, _capability_phrase_from_text(phrase))
             if not compact:
                 continue
             lowered = compact.lower()
@@ -1210,6 +1394,23 @@ def normalize_taxonomy_nodes(nodes: Any) -> list[dict[str, Any]]:
         if record.get("scope_status") != "removed":
             record["scope_status"] = scope_status
     normalized = _suppress_redundant_taxonomy_nodes(normalized)
+    layer_order = {
+        "customer_archetype": 0,
+        "workflow": 1,
+        "capability": 2,
+        "delivery_or_integration": 3,
+    }
+    scored_nodes = {id(node): _taxonomy_node_quality_score(node) for node in normalized}
+    normalized.sort(
+        key=lambda node: (
+            layer_order.get(str(node.get("layer") or ""), 99),
+            -scored_nodes[id(node)][0],
+            -scored_nodes[id(node)][1],
+            -scored_nodes[id(node)][2],
+            scored_nodes[id(node)][3],
+            str(node.get("phrase") or ""),
+        )
+    )
     return normalized[:80]
 
 
@@ -1363,6 +1564,33 @@ def _build_taxonomy_map(
                 }
             )
     return nodes, normalize_taxonomy_edges(edges)
+
+
+def _taxonomy_node_quality_score(node: dict[str, Any]) -> tuple[float, int, int, int]:
+    phrase = _safe_phrase(node.get("phrase"), max_len=120)
+    lowered = phrase.lower()
+    evidence_count = len(node.get("evidence_ids") or [])
+    alias_count = len(node.get("aliases") or [])
+    word_count = _phrase_word_count(phrase)
+    quality = float(node.get("confidence") or 0.0)
+
+    if node.get("layer") == "capability":
+        if any(keyword in lowered for keyword in CAPABILITY_QUALITY_KEYWORDS):
+            quality += 0.18
+        if 2 <= word_count <= 6:
+            quality += 0.12
+        if "," in phrase or word_count > 6:
+            quality -= 0.12
+        if any(lowered.startswith(prefix) for prefix in SENTENCE_LIKE_CAPABILITY_PREFIXES):
+            quality -= 0.28
+    elif node.get("layer") == "workflow":
+        if 2 <= word_count <= 5:
+            quality += 0.1
+    elif node.get("layer") == "customer_archetype":
+        if 2 <= word_count <= 4:
+            quality += 0.08
+
+    return (round(quality, 4), evidence_count, alias_count, -word_count)
 
 
 def _generate_market_map_summary(
