@@ -143,6 +143,7 @@ CAPABILITY_KEYWORDS = (
 )
 WORKFLOW_KEYWORDS = (
     "front office",
+    "front office titres",
     "front-office",
     "portfolio management",
     "portfolio analytics",
@@ -158,6 +159,10 @@ WORKFLOW_KEYWORDS = (
     "integration",
     "workflow",
     "operations",
+    "back office titres",
+    "paiements & comptes espèces",
+    "documentation api",
+    "apis rest",
     "staffing",
     "shift replacement",
     "shift planning",
@@ -203,6 +208,10 @@ CUSTOMER_ARCHETYPE_PATTERNS = (
     ("finance team", "finance team"),
     ("compliance teams", "compliance team"),
     ("compliance team", "compliance team"),
+    ("banques privées", "private bank"),
+    ("bourse en ligne", "online brokerage"),
+    ("sociétés de gestion", "asset manager"),
+    ("épargne retraite et salariale", "employee savings provider"),
 )
 NOISY_CUSTOMER_TERMS = (
     "award",
@@ -751,6 +760,7 @@ def _taxonomy_phrase_candidates(
                 ][:6]
                 candidates.append(
                     {
+                        "layer": layer,
                         "phrase": _phrase_case(canonical),
                         "aliases": [pattern],
                         "confidence": 0.84 if evidence_ids else 0.68,
@@ -765,6 +775,7 @@ def _taxonomy_phrase_candidates(
                 if pattern in context:
                     candidates.append(
                         {
+                            "layer": layer,
                             "phrase": _phrase_case(canonical),
                             "aliases": [customer.get("name") or pattern],
                             "confidence": 0.78,
@@ -783,6 +794,7 @@ def _taxonomy_phrase_candidates(
             if phrase:
                 candidates.append(
                     {
+                        "layer": layer,
                         "phrase": _phrase_case(phrase),
                         "aliases": [item.get("text") or phrase],
                         "confidence": 0.82,
@@ -794,9 +806,13 @@ def _taxonomy_phrase_candidates(
             if not compact:
                 continue
             lowered = compact.lower()
-            if any(token in lowered for token in ("platform", "software", "management", "analytics", "planning", "replacement", "oms", "pms")):
+            if any(
+                token in lowered
+                for token in ("platform", "software", "management", "analytics", "planning", "replacement", "oms", "pms", "api", "stp")
+            ):
                 candidates.append(
                     {
+                        "layer": layer,
                         "phrase": _phrase_case(compact),
                         "aliases": [phrase],
                         "confidence": 0.58,
@@ -815,6 +831,7 @@ def _taxonomy_phrase_candidates(
                 ][:6]
                 candidates.append(
                     {
+                        "layer": layer,
                         "phrase": _phrase_case(keyword),
                         "aliases": [keyword],
                         "confidence": 0.8 if evidence_ids else 0.64,
@@ -832,6 +849,7 @@ def _taxonomy_phrase_candidates(
             if phrase:
                 candidates.append(
                     {
+                        "layer": layer,
                         "phrase": _phrase_case(phrase),
                         "aliases": [text],
                         "confidence": 0.76,

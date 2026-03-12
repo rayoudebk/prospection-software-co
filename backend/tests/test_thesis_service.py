@@ -318,3 +318,56 @@ def test_build_context_pack_v2_filters_noisy_customer_evidence_and_uses_raw_text
     assert [item["name"] for item in site["named_customers"]] == ["BNP Paribas"]
     assert "private bank" in [phrase.lower() for phrase in context_pack["extracted_raw_phrases"]]
     assert "portfolio reporting" in [phrase.lower() for phrase in context_pack["extracted_raw_phrases"]]
+
+
+def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
+    profile = CompanyProfile(
+        workspace_id=4,
+        buyer_company_url="https://4tpm.fr/",
+        generated_context_summary="4TPM supports wealth management workflows.",
+        reference_company_urls=[],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={"region": "EU+UK", "include_countries": [], "exclude_countries": []},
+        context_pack_json={
+            "version": "v2",
+            "generated_at": "2026-03-12T00:00:00Z",
+            "sites": [
+                {
+                    "url": "https://4tpm.fr/",
+                    "company_name": "4TPM",
+                    "website": "https://4tpm.fr/",
+                    "selected_pages": [],
+                }
+            ],
+            "evidence_items": [
+                {"id": "e1", "kind": "page_signal:customer_archetype", "text": "Banques privées"},
+                {"id": "e2", "kind": "page_signal:workflow", "text": "Front office titres"},
+                {"id": "e3", "kind": "page_signal:capability", "text": "Documentation API"},
+            ],
+            "named_customers": [
+                {"name": "Allianz Bank", "evidence_id": "cust1", "context": "Trusted by leading banques privées"}
+            ],
+            "integrations": [],
+            "partners": [],
+            "extracted_raw_phrases": [
+                "Banques privées",
+                "Bourse en ligne",
+                "Front office titres",
+                "Back office titres",
+                "Documentation API",
+            ],
+            "crawl_coverage": {"total_sites": 1, "total_pages": 4},
+        },
+        product_pages_found=4,
+    )
+
+    payload = bootstrap_thesis_payload(profile)
+    taxonomy_by_layer = {}
+    for node in payload["taxonomy_nodes"]:
+        taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
+
+    assert "Private bank" in taxonomy_by_layer["customer_archetype"]
+    assert "Online brokerage" in taxonomy_by_layer["customer_archetype"]
+    assert "Front office titres" in taxonomy_by_layer["workflow"]
+    assert "Documentation API" in taxonomy_by_layer["capability"]
