@@ -26,8 +26,8 @@ def _add_column_if_missing(conn, table_name: str, column_sql: str, column_name: 
     conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}"))
 
 
-def migrate_company_profile_reference_evidence_v1() -> None:
-    engine = create_engine(settings.database_url_sync, echo=True)
+def migrate_company_profile_reference_evidence_v1(database_url: str | None = None) -> None:
+    engine = create_engine(database_url or settings.database_url_sync, echo=True)
     with engine.begin() as conn:
         _add_column_if_missing(
             conn,

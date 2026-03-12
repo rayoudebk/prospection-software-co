@@ -5,12 +5,14 @@ from contextlib import asynccontextmanager
 from app.config import get_settings
 from app.models.base import init_db
 from app.api import workspaces
+from app.startup_migrations import run_startup_migrations
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: initialize database tables
     await init_db()
+    run_startup_migrations()
     yield
     # Shutdown: cleanup if needed
 
@@ -43,4 +45,3 @@ async def health_check():
 @app.get("/")
 async def root():
     return {"message": "M&A Due Diligence API", "docs": "/docs"}
-

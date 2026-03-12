@@ -41,8 +41,8 @@ def _ensure_postgres_enum_values(conn, enum_type_name: str, values: list[str]) -
         conn.execute(text(f"ALTER TYPE {enum_type_name} ADD VALUE IF NOT EXISTS '{value}'"))
 
 
-def migrate_workspace_policy_v1():
-    engine = create_engine(settings.database_url_sync, echo=True)
+def migrate_workspace_policy_v1(database_url: str | None = None):
+    engine = create_engine(database_url or settings.database_url_sync, echo=True)
     with engine.begin() as conn:
         inspector = inspect(conn)
         cols = {c["name"] for c in inspector.get_columns("workspaces")}

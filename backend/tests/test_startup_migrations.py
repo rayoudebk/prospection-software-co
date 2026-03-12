@@ -1,0 +1,54 @@
+from pathlib import Path
+
+from sqlalchemy import create_engine
+
+from app import startup_migrations
+from app.models.base import Base
+import app.models  # noqa: F401
+
+
+def test_run_startup_migrations_uses_sync_database_url(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class _Settings:
+        database_url_sync = "postgresql://example/test"
+
+    monkeypatch.setattr(startup_migrations, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(
+        startup_migrations,
+        "migrate_workspace_policy_v1",
+        lambda *, database_url: calls.append(("workspace_policy", database_url)),
+    )
+    monkeypatch.setattr(
+        startup_migrations,
+        "migrate_company_profile_reference_evidence_v1",
+        lambda *, database_url: calls.append(("reference_evidence", database_url)),
+    )
+    monkeypatch.setattr(
+        startup_migrations,
+        "migrate_company_profile_context_split_v1",
+        lambda *, database_url: calls.append(("context_split", database_url)),
+    )
+    monkeypatch.setattr(
+        startup_migrations,
+        "migrate_remove_legacy_buyer_context_summary_v1",
+        lambda *, database_url: calls.append(("remove_legacy_summary", database_url)),
+    )
+
+    startup_migrations.run_startup_migrations()
+
+    assert calls == [
+        ("workspace_policy", "postgresql://example/test"),
+        ("reference_evidence", "postgresql://example/test"),
+        ("context_split", "postgresql://example/test"),
+        ("remove_legacy_summary", "postgresql://example/test"),
+    ]
+
+
+def test_run_startup_migrations_accepts_current_schema_sqlite(tmp_path: Path):
+    db_path = tmp_path / "startup-migrations.sqlite3"
+    database_url = f"sqlite:///{db_path}"
+    engine = create_engine(database_url)
+    Base.metadata.create_all(bind=engine)
+
+    startup_migrations.run_startup_migrations(database_url=database_url)

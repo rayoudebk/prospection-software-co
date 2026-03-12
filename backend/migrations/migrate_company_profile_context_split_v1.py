@@ -17,8 +17,12 @@ from app.config import get_settings
 settings = get_settings()
 
 
+def _column_names(conn, table_name: str) -> set[str]:
+    return {column["name"] for column in inspect(conn).get_columns(table_name)}
+
+
 def _add_column_if_missing(conn, table_name: str, column_sql: str, column_name: str) -> None:
-    cols = {c["name"] for c in inspect(conn).get_columns(table_name)}
+    cols = _column_names(conn, table_name)
     if column_name in cols:
         print(f"Column already exists: {table_name}.{column_name}")
         return
@@ -27,6 +31,9 @@ def _add_column_if_missing(conn, table_name: str, column_sql: str, column_name: 
 
 
 def _backfill_context_fields(conn) -> None:
+    if "buyer_context_summary" not in _column_names(conn, "company_profiles"):
+        print("Legacy column absent: company_profiles.buyer_context_summary")
+        return
     conn.execute(
         text(
             """
