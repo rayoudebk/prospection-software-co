@@ -195,28 +195,68 @@ SENTENCE_LIKE_CAPABILITY_PREFIXES = (
     "le client ",
     "la suite ",
     "ce que ",
+    "pour les ",
+    "pour la ",
+    "pour le ",
     "our ",
     "we ",
     "clients can ",
     "this ",
     "these ",
 )
+CAPABILITY_DEMOTION_PREFIXES = (
+    "dépôt ",
+    "assignation ",
+    "cantonnement ",
+    "interface dédiée ",
+    "plan de déploiement ",
+    "pour les ",
+    "pour la ",
+    "pour le ",
+)
+TRAILING_CONNECTOR_WORDS = {
+    "and",
+    "or",
+    "ou",
+    "et",
+    "for",
+    "to",
+    "de",
+    "des",
+    "du",
+    "la",
+    "le",
+    "les",
+    "au",
+    "aux",
+    "with",
+}
 CAPABILITY_QUALITY_KEYWORDS = (
     "pms",
     "oms",
     "stp",
     "portfolio",
     "portefeuille",
+    "portefeuilles",
+    "génération",
     "order",
     "ordre",
     "trade",
+    "pré-trade",
+    "post-trade",
     "trading",
     "routing",
     "routage",
+    "modélisation",
+    "arbitrage",
+    "arbitrages",
+    "connectivité",
+    "structuration",
     "reporting",
     "performance",
     "compliance",
     "contrôle",
+    "réglementaire",
     "monitoring",
     "allocation",
     "benchmark",
@@ -431,6 +471,9 @@ def _capability_phrase_from_text(value: Any) -> str:
     if not text:
         return ""
     text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"([a-zà-ÿ])([A-Z]{2,})", r"\1 \2", text)
+    text = re.sub(r"\bPATIO\s+(?:PMS|OMS)\b.*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\bPATIO\b.*$", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"\s*[:;].*$", "", text).strip()
     text = re.sub(r"\s*\([^)]*\)\s*$", "", text).strip()
     text = re.sub(r"^(?:our|we|this|these)\s+", "", text, flags=re.IGNORECASE)
@@ -438,15 +481,19 @@ def _capability_phrase_from_text(value: Any) -> str:
     if len(parts) > 6 and "," in text:
         text = text.split(",", 1)[0].strip()
     parts = text.split()
-    if len(parts) > 6:
-        keep = 6
+    if len(parts) > 8:
+        keep = 8
         trailing_acronym = next(
-            (idx for idx, token in enumerate(parts[:8]) if token.upper() == token and len(token) <= 5),
+            (idx for idx, token in enumerate(parts[:10]) if token.upper() == token and len(token) <= 5),
             None,
         )
         if trailing_acronym is not None:
             keep = min(max(keep, trailing_acronym + 1), len(parts))
         text = " ".join(parts[:keep]).strip()
+    trimmed_parts = text.split()
+    while trimmed_parts and trimmed_parts[-1].lower() in TRAILING_CONNECTOR_WORDS:
+        trimmed_parts.pop()
+    text = " ".join(trimmed_parts).strip()
     return text[:88]
 
 
@@ -1119,6 +1166,8 @@ def _is_valid_taxonomy_phrase(
             return False
         if lowered in {"platform", "software", "solution", "solutions"}:
             return False
+        if lowered.split() and lowered.split()[-1] in TRAILING_CONNECTOR_WORDS:
+            return False
     elif layer == "delivery_or_integration":
         if phrase_key in integration_keys:
             return False
@@ -1577,9 +1626,13 @@ def _taxonomy_node_quality_score(node: dict[str, Any]) -> tuple[float, int, int,
     if node.get("layer") == "capability":
         if any(keyword in lowered for keyword in CAPABILITY_QUALITY_KEYWORDS):
             quality += 0.18
+        if any(lowered.startswith(prefix) for prefix in CAPABILITY_DEMOTION_PREFIXES):
+            quality -= 0.22
         if 2 <= word_count <= 6:
             quality += 0.12
-        if "," in phrase or word_count > 6:
+        if 2 <= word_count <= 5 and any(keyword in lowered for keyword in ("pms", "oms", "stp", "trading", "routage", "modélisation", "arbitrage", "benchmark", "compliance", "reporting")):
+            quality += 0.08
+        if "," in phrase or word_count > 8:
             quality -= 0.12
         if any(lowered.startswith(prefix) for prefix in SENTENCE_LIKE_CAPABILITY_PREFIXES):
             quality -= 0.28

@@ -532,8 +532,14 @@ def test_bootstrap_thesis_payload_promotes_rendered_product_features_into_cleane
     taxonomy_by_layer: dict[str, list[str]] = {}
     for node in payload["taxonomy_nodes"]:
         taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
+    surfaced_capabilities = [
+        node["phrase"] for node in (payload["market_map_brief"].get("capability_nodes") or [])
+    ]
 
     assert "Préparation et modélisation des portefeuilles" in taxonomy_by_layer["capability"]
     assert "Génération d'ordres blocs et routage full STP" in taxonomy_by_layer["capability"]
     assert "Le client alimente son compte espèces" not in taxonomy_by_layer["capability"]
     assert "REST API" in taxonomy_by_layer["delivery_or_integration"]
+    assert "Préparation et modélisation des portefeuilles" in surfaced_capabilities
+    assert "Génération d'ordres blocs et routage full STP" in surfaced_capabilities
+    assert "Le client alimente son compte espèces" not in surfaced_capabilities
