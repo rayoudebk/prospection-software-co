@@ -189,7 +189,12 @@ export interface BuyerEvidenceDiagnostics {
 
 export interface TaxonomyNode {
   id: string;
-  layer: "customer_archetype" | "workflow" | "capability" | string;
+  layer:
+    | "customer_archetype"
+    | "workflow"
+    | "capability"
+    | "delivery_or_integration"
+    | string;
   phrase: string;
   aliases: string[];
   confidence: number;
@@ -228,6 +233,7 @@ export interface MarketMapBrief {
   customer_nodes: TaxonomyNode[];
   workflow_nodes: TaxonomyNode[];
   capability_nodes: TaxonomyNode[];
+  delivery_or_integration_nodes: TaxonomyNode[];
   named_customer_proof: ContextPackNamedCustomer[];
   integration_partner_proof: ContextPackIntegration[];
   active_lenses: LensSeed[];

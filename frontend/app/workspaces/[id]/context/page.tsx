@@ -43,6 +43,7 @@ const LAYER_LABELS: Record<string, string> = {
   customer_archetype: "Customer Archetypes",
   workflow: "Workflow Taxonomy",
   capability: "Capabilities",
+  delivery_or_integration: "Delivery & Integration",
 };
 
 const LAYER_DESCRIPTIONS: Record<string, string> = {
@@ -52,6 +53,8 @@ const LAYER_DESCRIPTIONS: Record<string, string> = {
     "The workflow cluster that bounds the market box and keeps adjacency mapping from drifting into generic industry search.",
   capability:
     "The concrete solution or product phrases that anchor direct competitor and same-product views.",
+  delivery_or_integration:
+    "How the product is delivered or connected into the stack, such as APIs, documentation, or integration surfaces.",
 };
 
 type SourceDrawerItem = ThesisSourcePill & {
@@ -1044,7 +1047,7 @@ export default function MarketMapBriefPage() {
         </div>
 
         <div className="space-y-5">
-          {(["customer_archetype", "workflow", "capability"] as const).map((layer) => {
+          {(["customer_archetype", "workflow", "capability", "delivery_or_integration"] as const).map((layer) => {
             const nodes = taxonomyByLayer.get(layer) || [];
 
             return (

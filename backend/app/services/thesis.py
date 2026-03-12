@@ -98,7 +98,7 @@ NEGATIVE_CONSTRAINT_PATTERNS = (
     ("no consulting", "Exclude consulting-led businesses"),
 )
 
-TAXONOMY_LAYERS = {"customer_archetype", "workflow", "capability"}
+TAXONOMY_LAYERS = {"customer_archetype", "workflow", "capability", "delivery_or_integration"}
 TAXONOMY_SCOPE_STATUSES = {"in_scope", "out_of_scope", "removed"}
 LENS_TYPES = {
     "same_customer_different_product",
@@ -130,6 +130,8 @@ CAPABILITY_KEYWORDS = (
     "pms/oms",
     "pms",
     "oms",
+    "straight-through processing",
+    "stp",
     "portfolio management system",
     "order management system",
     "wealth management platform",
@@ -141,10 +143,25 @@ CAPABILITY_KEYWORDS = (
     "replacement planning",
     "shift replacement",
 )
+DELIVERY_OR_INTEGRATION_KEYWORDS = (
+    "apis rest",
+    "rest api",
+    "documentation api",
+    "api documentation",
+    "integration",
+    "integrations",
+    "partner ecosystem",
+    "modular platform",
+    "infrastructure",
+    "cloud",
+    "hosted",
+)
 WORKFLOW_KEYWORDS = (
     "front office",
     "front office titres",
     "front-office",
+    "trading operations",
+    "front-to-back office trading operations",
     "portfolio management",
     "portfolio analytics",
     "order management",
@@ -156,13 +173,10 @@ WORKFLOW_KEYWORDS = (
     "compliance",
     "risk management",
     "implementation",
-    "integration",
     "workflow",
     "operations",
     "back office titres",
     "paiements & comptes espèces",
-    "documentation api",
-    "apis rest",
     "staffing",
     "shift replacement",
     "shift planning",
@@ -421,6 +435,9 @@ def _keyword_phrases_from_text(text: Any) -> list[str]:
         if pattern in lowered:
             _append(canonical)
     for keyword in CAPABILITY_KEYWORDS:
+        if keyword in lowered:
+            _append(keyword)
+    for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS:
         if keyword in lowered:
             _append(keyword)
     return phrases
@@ -746,6 +763,16 @@ def _taxonomy_phrase_candidates(
     candidates: list[dict[str, Any]] = []
     evidence_items = context_pack_v2.get("evidence_items") or []
     raw_phrases = context_pack_v2.get("extracted_raw_phrases") or []
+    named_customer_keys = {
+        _normalize_phrase_key(item.get("name"))
+        for item in (context_pack_v2.get("named_customers") or [])
+        if isinstance(item, dict) and _normalize_phrase_key(item.get("name"))
+    }
+    integration_keys = {
+        _normalize_phrase_key(item.get("name"))
+        for item in (context_pack_v2.get("integrations") or [])
+        if isinstance(item, dict) and _normalize_phrase_key(item.get("name"))
+    }
     raw_joined = "\n".join(str(value or "") for value in raw_phrases)
     lower_blob = raw_joined.lower()
 
@@ -792,6 +819,9 @@ def _taxonomy_phrase_candidates(
                 continue
             phrase = _compact_phrase(item.get("text"), max_words=6, max_len=72)
             if phrase:
+                phrase_key = _normalize_phrase_key(phrase)
+                if phrase_key in named_customer_keys or phrase_key in integration_keys:
+                    continue
                 candidates.append(
                     {
                         "layer": layer,
@@ -806,9 +836,14 @@ def _taxonomy_phrase_candidates(
             if not compact:
                 continue
             lowered = compact.lower()
+            compact_key = _normalize_phrase_key(compact)
+            if compact_key in named_customer_keys or compact_key in integration_keys:
+                continue
+            if any(token in lowered for token in ("api", "documentation", "infrastructure")):
+                continue
             if any(
                 token in lowered
-                for token in ("platform", "software", "management", "analytics", "planning", "replacement", "oms", "pms", "api", "stp")
+                for token in ("platform", "software", "management", "analytics", "planning", "replacement", "oms", "pms", "stp")
             ):
                 candidates.append(
                     {
@@ -843,7 +878,8 @@ def _taxonomy_phrase_candidates(
                 continue
             text = str(item.get("text") or "")
             lowered = text.lower()
-            if "workflow" not in lowered and not any(token in lowered for token in ("planning", "reporting", "operations", "replacement", "portfolio management", "voting rights")):
+            kind = str(item.get("kind") or "").lower()
+            if "signal:workflow" not in kind and "page_signal:workflow" not in kind:
                 continue
             phrase = _compact_phrase(text, max_words=7, max_len=72)
             if phrase:
@@ -856,6 +892,49 @@ def _taxonomy_phrase_candidates(
                         "evidence_ids": [item.get("id")] if item.get("id") else [],
                     }
                 )
+
+    if layer == "delivery_or_integration":
+        for item in evidence_items:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "").lower()
+            text = str(item.get("text") or "")
+            lowered = text.lower()
+            if "integration" not in kind and "signal:service" not in kind and "page_signal:service" not in kind:
+                if not any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
+                    continue
+            phrase = _compact_phrase(text, max_words=6, max_len=72)
+            if not phrase:
+                continue
+            phrase_key = _normalize_phrase_key(phrase)
+            if phrase_key in named_customer_keys:
+                continue
+            candidates.append(
+                {
+                    "layer": layer,
+                    "phrase": _phrase_case(phrase),
+                    "aliases": [text],
+                    "confidence": 0.78 if item.get("id") else 0.62,
+                    "evidence_ids": [item.get("id")] if item.get("id") else [],
+                }
+            )
+        for phrase in raw_phrases:
+            compact = _compact_phrase(phrase, max_words=6, max_len=72)
+            lowered = compact.lower()
+            if not compact or not any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
+                continue
+            compact_key = _normalize_phrase_key(compact)
+            if compact_key in named_customer_keys:
+                continue
+            candidates.append(
+                {
+                    "layer": layer,
+                    "phrase": _phrase_case(compact),
+                    "aliases": [phrase],
+                    "confidence": 0.58,
+                    "evidence_ids": [],
+                }
+            )
 
     return candidates
 
@@ -898,7 +977,30 @@ def normalize_taxonomy_nodes(nodes: Any) -> list[dict[str, Any]]:
         record["confidence"] = _clamp_confidence(max(float(record.get("confidence") or 0.0), float(item.get("confidence") or 0.0)), default=0.68)
         if record.get("scope_status") != "removed":
             record["scope_status"] = scope_status
+    normalized = _suppress_redundant_taxonomy_nodes(normalized)
     return normalized[:80]
+
+
+def _suppress_redundant_taxonomy_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    phrases_by_layer = {
+        layer: {_normalize_phrase_key(node.get("phrase")) for node in nodes if node.get("layer") == layer}
+        for layer in TAXONOMY_LAYERS
+    }
+    suppressed_customer_phrases = set()
+    customer_phrases = phrases_by_layer.get("customer_archetype", set())
+    if "private bank" in customer_phrases:
+        suppressed_customer_phrases.add("bank")
+    if "asset manager" in customer_phrases:
+        suppressed_customer_phrases.add("wealth manager")
+
+    filtered: list[dict[str, Any]] = []
+    for node in nodes:
+        layer = node.get("layer")
+        phrase_key = _normalize_phrase_key(node.get("phrase"))
+        if layer == "customer_archetype" and phrase_key in suppressed_customer_phrases:
+            continue
+        filtered.append(node)
+    return filtered
 
 
 def normalize_taxonomy_edges(edges: Any) -> list[dict[str, Any]]:
@@ -962,6 +1064,7 @@ def _build_taxonomy_map(
         _taxonomy_phrase_candidates(context_pack_v2, layer="customer_archetype")
         + _taxonomy_phrase_candidates(context_pack_v2, layer="workflow")
         + _taxonomy_phrase_candidates(context_pack_v2, layer="capability")
+        + _taxonomy_phrase_candidates(context_pack_v2, layer="delivery_or_integration")
     )
     nodes_by_layer: dict[str, list[dict[str, Any]]] = {
         layer: [node for node in nodes if node.get("layer") == layer and node.get("scope_status") != "removed"]
@@ -1066,6 +1169,7 @@ def _build_market_map_artifacts(
     customers = [node for node in active_nodes if node.get("layer") == "customer_archetype"]
     workflows = [node for node in active_nodes if node.get("layer") == "workflow"]
     capabilities = [node for node in active_nodes if node.get("layer") == "capability"]
+    delivery_nodes = [node for node in active_nodes if node.get("layer") == "delivery_or_integration"]
     named_customers = [
         item for item in (context_pack_v2.get("named_customers") or []) if isinstance(item, dict)
     ][:8]
@@ -1207,6 +1311,7 @@ def _build_market_map_artifacts(
         "customer_nodes": customers[:8],
         "workflow_nodes": workflows[:8],
         "capability_nodes": capabilities[:8],
+        "delivery_or_integration_nodes": delivery_nodes[:8],
         "named_customer_proof": named_customers,
         "integration_partner_proof": integrations,
         "active_lenses": lens_seeds,
@@ -1216,6 +1321,7 @@ def _build_market_map_artifacts(
             {"label": "Customer archetypes", "count": len(customers)},
             {"label": "Capabilities", "count": len(capabilities)},
             {"label": "Workflows", "count": len(workflows)},
+            {"label": "Delivery / Integration", "count": len(delivery_nodes)},
             {"label": "Integrations", "count": len(integrations)},
         ],
         "confidence_gaps": confidence_gaps[:6],

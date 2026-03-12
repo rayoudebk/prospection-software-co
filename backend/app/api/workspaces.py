@@ -226,6 +226,7 @@ class MarketMapBriefResponse(BaseModel):
     customer_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
     workflow_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
     capability_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
+    delivery_or_integration_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
     named_customer_proof: List[Dict[str, Any]] = Field(default_factory=list)
     integration_partner_proof: List[Dict[str, Any]] = Field(default_factory=list)
     active_lenses: List[LensSeedResponse] = Field(default_factory=list)

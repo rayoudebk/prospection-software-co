@@ -324,7 +324,7 @@ def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
     profile = CompanyProfile(
         workspace_id=4,
         buyer_company_url="https://4tpm.fr/",
-        generated_context_summary="4TPM supports wealth management workflows.",
+        generated_context_summary="4TPM supports wealth management workflows and API integrations.",
         reference_company_urls=[],
         reference_evidence_urls=[],
         reference_summaries={},
@@ -340,25 +340,28 @@ def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
                     "selected_pages": [],
                 }
             ],
-            "evidence_items": [
-                {"id": "e1", "kind": "page_signal:customer_archetype", "text": "Banques privées"},
-                {"id": "e2", "kind": "page_signal:workflow", "text": "Front office titres"},
-                {"id": "e3", "kind": "page_signal:capability", "text": "Documentation API"},
-            ],
+                "evidence_items": [
+                    {"id": "e1", "kind": "page_signal:customer_archetype", "text": "Banques privées"},
+                    {"id": "e2", "kind": "page_signal:workflow", "text": "Front office titres"},
+                    {"id": "e3", "kind": "page_signal:service", "text": "Documentation API"},
+                    {"id": "e4", "kind": "page_customer:bundle_logo_manifest", "text": "Procapital"},
+                ],
             "named_customers": [
                 {"name": "Allianz Bank", "evidence_id": "cust1", "context": "Trusted by leading banques privées"}
             ],
             "integrations": [],
             "partners": [],
-            "extracted_raw_phrases": [
-                "Banques privées",
-                "Bourse en ligne",
-                "Front office titres",
-                "Back office titres",
-                "Documentation API",
-            ],
-            "crawl_coverage": {"total_sites": 1, "total_pages": 4},
-        },
+                "extracted_raw_phrases": [
+                    "Banques privées",
+                    "Bourse en ligne",
+                    "Front office titres",
+                    "Back office titres",
+                    "Documentation API",
+                    "APIs REST",
+                    "Procapital",
+                ],
+                "crawl_coverage": {"total_sites": 1, "total_pages": 4},
+            },
         product_pages_found=4,
     )
 
@@ -370,4 +373,7 @@ def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
     assert "Private bank" in taxonomy_by_layer["customer_archetype"]
     assert "Online brokerage" in taxonomy_by_layer["customer_archetype"]
     assert "Front office titres" in taxonomy_by_layer["workflow"]
-    assert "Documentation API" in taxonomy_by_layer["capability"]
+    assert "Documentation API" in taxonomy_by_layer["delivery_or_integration"]
+    assert "APIs REST" in taxonomy_by_layer["delivery_or_integration"]
+    assert "Procapital" not in taxonomy_by_layer.get("capability", [])
+    assert "Bank" not in taxonomy_by_layer["customer_archetype"]
