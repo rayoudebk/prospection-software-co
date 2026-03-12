@@ -67,6 +67,8 @@ def test_bootstrap_thesis_payload_generates_claims_and_source_pills():
 
     assert payload["summary"].startswith("Acme is a SaaS portfolio analytics platform")
     assert payload["source_pills"]
+    assert payload["buyer_evidence"]["status"] == "sufficient"
+    assert payload["buyer_evidence"]["used_for_inference"] is True
     sections = {claim["section"] for claim in payload["claims"]}
     assert "core_capability" in sections
     assert "adjacent_capability" in sections
@@ -145,3 +147,79 @@ def test_bootstrap_thesis_payload_supports_investment_thesis_only():
     core_lane = next(lane for lane in lanes if lane["lane_type"] == "core")
     assert "Software for healthcare actors" in core_lane["capabilities"]
     assert core_lane["title"].startswith("Core: ")
+
+
+def test_bootstrap_thesis_payload_ignores_comparator_context_for_empty_buyer_site():
+    profile = CompanyProfile(
+        workspace_id=3,
+        buyer_company_url="https://4tpm.fr/",
+        generated_context_summary=(
+            "CWAN targets asset managers and wealth managers with a cloud-native SaaS platform "
+            "and managed services."
+        ),
+        reference_company_urls=["https://cwan.com/"],
+        reference_evidence_urls=[],
+        reference_summaries={
+            "https://cwan.com/": (
+                "CWAN serves institutional investors with cloud deployment, integrations, "
+                "and implementation services."
+            )
+        },
+        geo_scope={"region": "EU+UK", "include_countries": [], "exclude_countries": []},
+        context_pack_markdown="# 4TPM\n\n**Website:** https://4tpm.fr\n\n---\n\n# CWAN\n\nCloud-native SaaS for asset managers.",
+        context_pack_json={
+            "sites": [
+                {
+                    "url": "https://4tpm.fr/",
+                    "company_name": "4TPM",
+                    "summary": "",
+                    "signals": [],
+                    "customer_evidence": [],
+                    "pages": [
+                        {
+                            "url": "https://4tpm.fr/",
+                            "title": "4TPM - Plateforme Wealth Management",
+                            "blocks": [],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": "",
+                        }
+                    ],
+                },
+                {
+                    "url": "https://cwan.com/",
+                    "company_name": "CWAN",
+                    "summary": "Cloud-native SaaS for institutional investors.",
+                    "signals": [
+                        {
+                            "type": "capability",
+                            "value": "Portfolio analytics",
+                            "source_url": "https://cwan.com/platform",
+                        }
+                    ],
+                    "customer_evidence": [
+                        {
+                            "name": "Asset managers",
+                            "source_url": "https://cwan.com/customers",
+                        }
+                    ],
+                    "pages": [],
+                },
+            ]
+        },
+        product_pages_found=0,
+    )
+
+    payload = bootstrap_thesis_payload(profile)
+
+    assert payload["buyer_evidence"]["status"] == "insufficient"
+    assert payload["buyer_evidence"]["used_for_inference"] is False
+    assert payload["summary"].startswith("Buyer website crawled, but no first-party product or customer evidence was extracted yet.")
+    assert not any(claim["section"] == "customer_profile" for claim in payload["claims"])
+    assert not any(claim["section"] == "business_model" for claim in payload["claims"])
+    assert not any(claim["section"] == "deployment_model" for claim in payload["claims"])
+    assert not any(claim["section"] == "core_capability" for claim in payload["claims"])
+    assert any(
+        claim["section"] == "geography" and claim["value"] == "Primary sourcing region: EU+UK"
+        for claim in payload["claims"]
+    )

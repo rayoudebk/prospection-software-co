@@ -103,6 +103,21 @@ export interface ThesisSourcePill {
   url: string;
 }
 
+export interface BuyerEvidenceDiagnostics {
+  mode: string;
+  status: string;
+  score: number;
+  used_for_inference: boolean;
+  warning?: string | null;
+  metrics: {
+    pages_crawled: number;
+    content_pages: number;
+    signal_count: number;
+    customer_evidence_count: number;
+    summary_chars: number;
+  };
+}
+
 export interface BuyerThesisPack {
   id: number;
   workspace_id: number;
@@ -110,6 +125,7 @@ export interface BuyerThesisPack {
   claims: ThesisClaim[];
   source_pills: ThesisSourcePill[];
   open_questions: string[];
+  buyer_evidence?: BuyerEvidenceDiagnostics | null;
   generated_at: string | null;
   confirmed_at: string | null;
 }

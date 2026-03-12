@@ -39,6 +39,8 @@ DEFAULT_OPEN_QUESTIONS = [
     "What size window should the system optimize for?",
 ]
 
+BUYER_EVIDENCE_MIN_SCORE = 3
+
 CUSTOMER_KEYWORDS = (
     "asset manager",
     "wealth manager",
@@ -265,6 +267,237 @@ def _extract_context_text(profile: CompanyProfile) -> str:
         if text:
             parts.append(text)
     return "\n".join(parts)
+
+
+def _site_has_meaningful_content(site: Any) -> bool:
+    if not isinstance(site, dict):
+        return False
+    if str(site.get("summary") or "").strip():
+        return True
+    if any(isinstance(signal, dict) and str(signal.get("value") or "").strip() for signal in site.get("signals") or []):
+        return True
+    if any(
+        isinstance(customer, dict)
+        and (str(customer.get("name") or "").strip() or str(customer.get("context") or "").strip())
+        for customer in site.get("customer_evidence") or []
+    ):
+        return True
+    for page in site.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        if str(page.get("raw_content") or "").strip():
+            return True
+        if any(isinstance(block, dict) and str(block.get("content") or "").strip() for block in page.get("blocks") or []):
+            return True
+        if any(isinstance(signal, dict) and str(signal.get("value") or "").strip() for signal in page.get("signals") or []):
+            return True
+        if any(
+            isinstance(customer, dict)
+            and (str(customer.get("name") or "").strip() or str(customer.get("context") or "").strip())
+            for customer in page.get("customer_evidence") or []
+        ):
+            return True
+    return False
+
+
+def _extract_site_context_text(site: Any, *, max_chars: int = 12000) -> str:
+    if not isinstance(site, dict):
+        return ""
+
+    parts: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text:
+            parts.append(text)
+
+    add(site.get("company_name"))
+    add(site.get("summary"))
+
+    for signal in site.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        add(signal.get("value"))
+        add(signal.get("snippet"))
+
+    for customer in site.get("customer_evidence") or []:
+        if not isinstance(customer, dict):
+            continue
+        name = str(customer.get("name") or "").strip()
+        context = str(customer.get("context") or "").strip()
+        if name and context:
+            add(f"{name}: {context}")
+        else:
+            add(name or context)
+
+    for page in site.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        add(page.get("title"))
+        add(page.get("raw_content"))
+        for block in page.get("blocks") or []:
+            if isinstance(block, dict):
+                add(block.get("content"))
+        for signal in page.get("signals") or []:
+            if not isinstance(signal, dict):
+                continue
+            add(signal.get("value"))
+            add(signal.get("snippet"))
+        for customer in page.get("customer_evidence") or []:
+            if not isinstance(customer, dict):
+                continue
+            name = str(customer.get("name") or "").strip()
+            context = str(customer.get("context") or "").strip()
+            if name and context:
+                add(f"{name}: {context}")
+            else:
+                add(name or context)
+
+    return "\n".join(parts)[:max_chars]
+
+
+def _identity_tokens_from_url(url: Any) -> set[str]:
+    normalized = normalize_domain(normalize_url(url))
+    if not normalized:
+        return set()
+    tokens = {normalized.lower()}
+    first_label = normalized.split(".")[0].strip().lower()
+    if first_label:
+        tokens.add(first_label)
+    return {token for token in tokens if token}
+
+
+def _identity_tokens_from_name(value: Any) -> set[str]:
+    cleaned = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+    if not cleaned:
+        return set()
+    tokens = {part for part in cleaned.split() if len(part) >= 3}
+    if cleaned.replace(" ", ""):
+        tokens.add(cleaned.replace(" ", ""))
+    return tokens
+
+
+def _generated_summary_for_buyer(profile: CompanyProfile, buyer_site: dict[str, Any]) -> str:
+    summary = str(get_generated_context_summary(profile) or "").strip()
+    if not summary:
+        return ""
+
+    lowered = summary.lower()
+    buyer_tokens = _identity_tokens_from_url(profile.buyer_company_url)
+    buyer_tokens.update(_identity_tokens_from_name(buyer_site.get("company_name")))
+    reference_tokens: set[str] = set()
+    for url in profile.reference_company_urls or []:
+        reference_tokens.update(_identity_tokens_from_url(url))
+
+    mentions_buyer = any(token in lowered for token in buyer_tokens if token)
+    mentions_reference = any(token in lowered for token in reference_tokens if token)
+    if mentions_reference and not mentions_buyer:
+        return ""
+    return summary
+
+
+def _resolve_buyer_site(profile: CompanyProfile) -> dict[str, Any]:
+    buyer_url = normalize_url(profile.buyer_company_url)
+    buyer_domain = normalize_domain(buyer_url)
+    context_pack = profile.context_pack_json if isinstance(profile.context_pack_json, dict) else {}
+    for site in context_pack.get("sites") or []:
+        if not isinstance(site, dict):
+            continue
+        site_domain = normalize_domain(site.get("url"))
+        if buyer_domain and site_domain == buyer_domain:
+            return site
+    if isinstance(context_pack.get("sites"), list) and context_pack.get("sites"):
+        first_site = context_pack.get("sites")[0]
+        if isinstance(first_site, dict):
+            return first_site
+    return {}
+
+
+def assess_buyer_evidence(profile: CompanyProfile) -> dict[str, Any]:
+    buyer_url = normalize_url(profile.buyer_company_url)
+    if not buyer_url:
+        return {
+            "mode": "thesis_only",
+            "status": "not_applicable",
+            "score": 0,
+            "used_for_inference": True,
+            "warning": None,
+            "metrics": {
+                "pages_crawled": 0,
+                "content_pages": 0,
+                "signal_count": 0,
+                "customer_evidence_count": 0,
+                "summary_chars": 0,
+            },
+        }
+
+    buyer_site = _resolve_buyer_site(profile)
+    pages = buyer_site.get("pages") or []
+    pages_crawled = len([page for page in pages if isinstance(page, dict)])
+    content_pages = 0
+    page_signal_count = 0
+    page_customer_count = 0
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        has_page_content = bool(
+            str(page.get("raw_content") or "").strip()
+            or any(
+                isinstance(block, dict) and str(block.get("content") or "").strip()
+                for block in page.get("blocks") or []
+            )
+            or any(
+                isinstance(signal, dict) and str(signal.get("value") or "").strip()
+                for signal in page.get("signals") or []
+            )
+            or any(
+                isinstance(customer, dict)
+                and (str(customer.get("name") or "").strip() or str(customer.get("context") or "").strip())
+                for customer in page.get("customer_evidence") or []
+            )
+        )
+        if has_page_content:
+            content_pages += 1
+        page_signal_count += len([signal for signal in page.get("signals") or [] if isinstance(signal, dict)])
+        page_customer_count += len([customer for customer in page.get("customer_evidence") or [] if isinstance(customer, dict)])
+
+    top_level_signal_count = len([signal for signal in buyer_site.get("signals") or [] if isinstance(signal, dict)])
+    top_level_customer_count = len([customer for customer in buyer_site.get("customer_evidence") or [] if isinstance(customer, dict)])
+    signal_count = top_level_signal_count + page_signal_count
+    customer_evidence_count = top_level_customer_count + page_customer_count
+    summary_chars = len(str(buyer_site.get("summary") or "").strip())
+
+    score = 0
+    if summary_chars >= 120:
+        score += 2
+    elif summary_chars >= 40:
+        score += 1
+    score += min(content_pages, 2)
+    score += min(signal_count, 2)
+    score += min(customer_evidence_count, 2)
+
+    sufficient = score >= BUYER_EVIDENCE_MIN_SCORE
+    return {
+        "mode": "buyer_website",
+        "status": "sufficient" if sufficient else "insufficient",
+        "score": score,
+        "used_for_inference": sufficient,
+        "warning": (
+            None
+            if sufficient
+            else (
+                "Buyer evidence is too weak for reliable inference. Add first-party product pages, PDFs, "
+                "case studies, or supporting evidence before trusting customer, capability, and deployment claims."
+            )
+        ),
+        "metrics": {
+            "pages_crawled": pages_crawled,
+            "content_pages": content_pages,
+            "signal_count": signal_count,
+            "customer_evidence_count": customer_evidence_count,
+            "summary_chars": summary_chars,
+        },
+    }
 
 
 def _extract_employee_signal(text: str) -> Optional[str]:
@@ -532,23 +765,24 @@ def bootstrap_thesis_payload(
     source_pills = _derive_source_pills_from_profile(profile)
     pill_id_by_url = _site_source_pill_ids_by_url(profile, source_pills)
     claims: list[dict[str, Any]] = []
-    context_text = _extract_context_text(profile)
     buyer_url = normalize_url(profile.buyer_company_url)
-    buyer_domain = normalize_domain(buyer_url)
-    context_pack = profile.context_pack_json if isinstance(profile.context_pack_json, dict) else {}
-    buyer_site: dict[str, Any] = {}
-    for site in context_pack.get("sites") or []:
-        if not isinstance(site, dict):
-            continue
-        site_domain = normalize_domain(site.get("url"))
-        if buyer_domain and site_domain == buyer_domain:
-            buyer_site = site
-            break
-    if not buyer_site and isinstance(context_pack.get("sites"), list) and context_pack.get("sites"):
-        first_site = context_pack.get("sites")[0]
-        if isinstance(first_site, dict):
-            buyer_site = first_site
+    buyer_site = _resolve_buyer_site(profile)
+    buyer_evidence = assess_buyer_evidence(profile)
 
+    buyer_site_has_content = _site_has_meaningful_content(buyer_site)
+    buyer_site_context_text = _extract_site_context_text(buyer_site) if buyer_site_has_content else ""
+    buyer_generated_summary = (
+        _generated_summary_for_buyer(profile, buyer_site)
+        if buyer_url and isinstance(buyer_site, dict) and buyer_site_has_content
+        else ""
+    )
+    if buyer_url:
+        buyer_only_context_text = "\n".join(
+            part for part in [buyer_generated_summary, buyer_site_context_text] if str(part or "").strip()
+        )
+        context_text = buyer_only_context_text if bool(buyer_evidence.get("used_for_inference")) else ""
+    else:
+        context_text = _extract_context_text(profile)
     buyer_site_url = normalize_url(buyer_site.get("url")) if isinstance(buyer_site, dict) else buyer_url
     buyer_site_pill = pill_id_by_url.get(buyer_site_url or "") if buyer_site_url else None
 
@@ -724,6 +958,8 @@ def bootstrap_thesis_payload(
 
     active_claims = [claim for claim in normalized_claims if claim["user_status"] != "removed"]
     open_questions: list[str] = []
+    if buyer_evidence.get("status") == "insufficient" and buyer_evidence.get("warning"):
+        open_questions.append(str(buyer_evidence.get("warning")))
     if not any(claim["section"] == "business_model" for claim in active_claims):
         open_questions.append("Confirm the dominant revenue model (SaaS, license, services, or mixed).")
     if not any(claim["section"] == "core_capability" for claim in active_claims):
@@ -735,12 +971,20 @@ def bootstrap_thesis_payload(
     if not active_claims:
         open_questions.extend(DEFAULT_OPEN_QUESTIONS)
 
+    buyer_site_summary = str(buyer_site.get("summary") or "").strip() if isinstance(buyer_site, dict) else ""
     summary = str(
         get_manual_brief_text(profile)
-        or get_generated_context_summary(profile)
-        or buyer_site.get("summary")
+        or buyer_generated_summary
+        or (buyer_site_summary if buyer_url else "")
+        or (buyer_site_context_text[:1200] if buyer_url and buyer_site_context_text else "")
+        or (get_generated_context_summary(profile) if not buyer_url else "")
         or context_text[:1200]
-        or "System-generated sourcing thesis pending confirmation."
+        or (
+            "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
+            "Add supporting evidence or regenerate after improving the crawl target."
+            if buyer_url
+            else "System-generated sourcing thesis pending confirmation."
+        )
     ).strip()[:8000]
 
     return {
@@ -748,6 +992,7 @@ def bootstrap_thesis_payload(
         "claims": normalized_claims,
         "source_pills": source_pills,
         "open_questions": normalize_open_questions(open_questions),
+        "buyer_evidence": buyer_evidence,
         "generated_at": datetime.utcnow(),
         "confirmed_at": None,
     }
@@ -1002,7 +1247,10 @@ def infer_adjustment_operations_from_message(
     return operations[:24]
 
 
-def thesis_pack_to_payload(thesis_pack: BuyerThesisPack) -> dict[str, Any]:
+def thesis_pack_to_payload(
+    thesis_pack: BuyerThesisPack,
+    profile: CompanyProfile | None = None,
+) -> dict[str, Any]:
     source_pills = normalize_source_pills(thesis_pack.source_pills_json or [])
     return {
         "id": thesis_pack.id,
@@ -1014,6 +1262,7 @@ def thesis_pack_to_payload(thesis_pack: BuyerThesisPack) -> dict[str, Any]:
         ),
         "source_pills": source_pills,
         "open_questions": normalize_open_questions(thesis_pack.open_questions_json or []),
+        "buyer_evidence": assess_buyer_evidence(profile) if profile else None,
         "generated_at": thesis_pack.generated_at,
         "confirmed_at": thesis_pack.confirmed_at,
     }

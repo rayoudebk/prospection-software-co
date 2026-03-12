@@ -110,6 +110,7 @@ def test_thesis_pack_bootstrap_update_and_adjustment_contract(tmp_path: Path):
     thesis_payload = thesis_response.json()
     assert thesis_payload["summary"]
     assert thesis_payload["source_pills"]
+    assert thesis_payload["buyer_evidence"]["status"] == "sufficient"
     assert any(claim["section"] == "core_capability" for claim in thesis_payload["claims"])
 
     first_claim = thesis_payload["claims"][0]

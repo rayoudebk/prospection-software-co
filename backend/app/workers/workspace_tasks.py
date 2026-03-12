@@ -6321,6 +6321,7 @@ def generate_context_pack_v2(job_id: int):
             product_pages_total = 0
             reference_summaries = {}
             all_context_packs = []  # Store full context packs for JSON export
+            buyer_context_pack = None
 
             def update_progress(message: str, site_start: float, site_end: float):
                 """Update job progress message."""
@@ -6358,6 +6359,8 @@ def generate_context_pack_v2(job_id: int):
                     combined_markdown.append(context_pack.raw_markdown)
                     product_pages_total += context_pack.product_pages_count
                     all_context_packs.append((url, context_pack))  # Store for later
+                    if url == profile.buyer_company_url:
+                        buyer_context_pack = context_pack
                     
                     # #region agent log
                     import json
@@ -6387,6 +6390,11 @@ def generate_context_pack_v2(job_id: int):
             loop.close()
             
             raw_markdown = "\n\n---\n\n".join(combined_markdown)
+            buyer_raw_markdown = (
+                buyer_context_pack.raw_markdown
+                if buyer_context_pack is not None and str(getattr(buyer_context_pack, "raw_markdown", "") or "").strip()
+                else ""
+            )
             
             # Build combined context pack JSON for export from stored data
             combined_context_pack_json = {
@@ -6444,33 +6452,56 @@ def generate_context_pack_v2(job_id: int):
             db.commit()
             
             try:
-                summary_prompt = (
-                    "Summarize the buyer context in <= 250 words.\n"
-                    "Focus on ICP, product capabilities, distribution, and constraints.\n"
-                    "Return plain text only.\n\n"
-                    f"Buyer URL: {profile.buyer_company_url or ''}\n\n"
-                    f"Context:\n{raw_markdown[:14000]}"
-                )
-                summary_response = LLMOrchestrator().run_stage(
-                    LLMRequest(
-                        stage=LLMStage.context_summary,
-                        prompt=summary_prompt,
-                        timeout_seconds=60,
-                        use_web_search=False,
-                        expect_json=False,
-                        metadata={"workspace_id": workspace.id, "job_id": job.id},
+                if buyer_context_pack is not None and _context_pack_has_meaningful_content(buyer_context_pack):
+                    summary_prompt = (
+                        "Summarize the buyer context in <= 250 words.\n"
+                        "Focus on ICP, product capabilities, distribution, and constraints.\n"
+                        "Use only buyer first-party evidence.\n"
+                        "Return plain text only.\n\n"
+                        f"Buyer URL: {profile.buyer_company_url or ''}\n\n"
+                        f"Context:\n{buyer_raw_markdown[:14000]}"
                     )
-                )
-                profile.generated_context_summary = str(summary_response.text or "").strip()[:8000]
+                    summary_response = LLMOrchestrator().run_stage(
+                        LLMRequest(
+                            stage=LLMStage.context_summary,
+                            prompt=summary_prompt,
+                            timeout_seconds=60,
+                            use_web_search=False,
+                            expect_json=False,
+                            metadata={"workspace_id": workspace.id, "job_id": job.id},
+                        )
+                    )
+                    profile.generated_context_summary = str(summary_response.text or "").strip()[:8000]
+                else:
+                    profile.generated_context_summary = (
+                        "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
+                        "Add supporting evidence or regenerate after improving the crawl target."
+                    )
             except Exception as e:
                 print(f"Error generating orchestrated summary: {e}")
                 try:
-                    gemini = GeminiWorkspaceClient()
-                    summary = gemini.summarize_context_pack(raw_markdown, profile.buyer_company_url or "")
-                    profile.generated_context_summary = summary
+                    if buyer_context_pack is not None and _context_pack_has_meaningful_content(buyer_context_pack):
+                        gemini = GeminiWorkspaceClient()
+                        summary = gemini.summarize_context_pack(
+                            buyer_raw_markdown,
+                            profile.buyer_company_url or "",
+                        )
+                        profile.generated_context_summary = summary
+                    else:
+                        profile.generated_context_summary = (
+                            "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
+                            "Add supporting evidence or regenerate after improving the crawl target."
+                        )
                 except Exception as legacy_exc:
                     print(f"Error generating summary: {legacy_exc}")
-                    profile.generated_context_summary = raw_markdown[:2000]
+                    profile.generated_context_summary = (
+                        buyer_raw_markdown[:2000]
+                        if buyer_raw_markdown
+                        else (
+                            "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
+                            "Add supporting evidence or regenerate after improving the crawl target."
+                        )
+                    )
             
             # Update profile
             profile.context_pack_markdown = raw_markdown
@@ -9402,6 +9433,27 @@ def _extract_reference_tokens(profile: CompanyProfile | None) -> set[str]:
         if first_label:
             tokens.add(first_label)
     return tokens
+
+
+def _context_pack_has_meaningful_content(context_pack: Any) -> bool:
+    if context_pack is None:
+        return False
+    if str(getattr(context_pack, "summary", "") or "").strip():
+        return True
+    if any(getattr(context_pack, "signals", None) or []):
+        return True
+    if any(getattr(context_pack, "customer_evidence", None) or []):
+        return True
+    for page in getattr(context_pack, "pages", None) or []:
+        if str(getattr(page, "raw_content", "") or "").strip():
+            return True
+        if any(getattr(page, "blocks", None) or []):
+            return True
+        if any(getattr(page, "signals", None) or []):
+            return True
+        if any(getattr(page, "customer_evidence", None) or []):
+            return True
+    return False
 
 
 @celery_app.task(name="app.workers.workspace_tasks.generate_static_report")

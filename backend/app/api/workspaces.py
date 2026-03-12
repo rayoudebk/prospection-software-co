@@ -170,6 +170,15 @@ class ThesisSourcePillResponse(BaseModel):
     url: str
 
 
+class BuyerEvidenceDiagnosticsResponse(BaseModel):
+    mode: str
+    status: str
+    score: int
+    used_for_inference: bool
+    warning: Optional[str] = None
+    metrics: Dict[str, int] = Field(default_factory=dict)
+
+
 class BuyerThesisPackResponse(BaseModel):
     id: int
     workspace_id: int
@@ -177,6 +186,7 @@ class BuyerThesisPackResponse(BaseModel):
     claims: List[ThesisClaimResponse] = Field(default_factory=list)
     source_pills: List[ThesisSourcePillResponse] = Field(default_factory=list)
     open_questions: List[str] = Field(default_factory=list)
+    buyer_evidence: Optional[BuyerEvidenceDiagnosticsResponse] = None
     generated_at: Optional[datetime]
     confirmed_at: Optional[datetime]
 
@@ -862,6 +872,11 @@ def _buyer_thesis_response_from_payload(payload: Dict[str, Any]) -> BuyerThesisP
             if isinstance(item, dict)
         ],
         open_questions=normalize_open_questions(payload.get("open_questions") or []),
+        buyer_evidence=(
+            BuyerEvidenceDiagnosticsResponse.model_validate(payload.get("buyer_evidence"))
+            if isinstance(payload.get("buyer_evidence"), dict)
+            else None
+        ),
         generated_at=payload.get("generated_at"),
         confirmed_at=payload.get("confirmed_at"),
     )
@@ -1847,7 +1862,7 @@ async def get_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_db))
     )
     await db.commit()
     await db.refresh(thesis_pack)
-    payload = thesis_pack_to_payload(thesis_pack)
+    payload = thesis_pack_to_payload(thesis_pack, profile=profile)
     payload["workspace_id"] = workspace_id
     payload["id"] = thesis_pack.id
     return _buyer_thesis_response_from_payload(payload)
@@ -1890,7 +1905,7 @@ async def update_thesis_pack(
     thesis_pack.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(thesis_pack)
-    payload = thesis_pack_to_payload(thesis_pack)
+    payload = thesis_pack_to_payload(thesis_pack, profile=profile)
     payload["workspace_id"] = workspace_id
     payload["id"] = thesis_pack.id
     return _buyer_thesis_response_from_payload(payload)
@@ -1943,7 +1958,7 @@ async def refresh_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_
 
     await db.commit()
     await db.refresh(thesis_pack)
-    payload = thesis_pack_to_payload(thesis_pack)
+    payload = thesis_pack_to_payload(thesis_pack, profile=profile)
     payload["workspace_id"] = workspace_id
     payload["id"] = thesis_pack.id
     return _buyer_thesis_response_from_payload(payload)
@@ -2014,7 +2029,7 @@ async def apply_thesis_adjustment(
 
     await db.commit()
     await db.refresh(thesis_pack)
-    payload = thesis_pack_to_payload(thesis_pack)
+    payload = thesis_pack_to_payload(thesis_pack, profile=profile)
     payload["workspace_id"] = workspace_id
     payload["id"] = thesis_pack.id
     return ThesisAdjustmentResponse(
@@ -4435,7 +4450,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         )
         thesis_pack = thesis_result.scalar_one_or_none()
         thesis_payload = (
-            thesis_pack_to_payload(thesis_pack)
+            thesis_pack_to_payload(thesis_pack, profile=profile)
             if thesis_pack
             else bootstrap_thesis_payload(profile)
         )

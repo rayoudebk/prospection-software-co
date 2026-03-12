@@ -13,7 +13,7 @@ import {
   useWorkspaceJobs,
   useWorkspaceJobWithPolling,
 } from "@/lib/hooks";
-import { workspaceApi, ThesisClaim } from "@/lib/api";
+import { workspaceApi, ThesisClaim, ThesisSourcePill } from "@/lib/api";
 import {
   AlertCircle,
   Bot,
@@ -44,6 +44,272 @@ const SECTION_LABELS: Record<string, string> = {
   include_constraint: "Include Constraints",
   exclude_constraint: "Exclude Constraints",
 };
+
+const CLAIM_SECTION_ORDER = [
+  "customer_profile",
+  "core_capability",
+  "adjacent_capability",
+  "business_model",
+  "deployment_model",
+  "size_signal",
+  "geography",
+  "include_constraint",
+  "exclude_constraint",
+] as const;
+
+const PILL_EDITOR_SECTIONS = new Set<string>([
+  "customer_profile",
+  "core_capability",
+  "adjacent_capability",
+  "business_model",
+  "deployment_model",
+  "geography",
+]);
+
+const PILL_INPUT_PLACEHOLDERS: Record<string, string> = {
+  customer_profile: "Add customer profile",
+  core_capability: "Add core capability",
+  adjacent_capability: "Add adjacent capability",
+  business_model: "Add business model",
+  deployment_model: "Add deployment model",
+  geography: "Add geography",
+};
+
+type SourceDrawerItem = ThesisSourcePill & {
+  hostname: string;
+  displayUrl: string;
+  badge: string | null;
+};
+
+function getSourceHostname(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+function getSourceDisplayUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.replace(/^www\./, "");
+    const path = `${parsed.pathname}${parsed.search}`.replace(/\/$/, "");
+    return `${hostname}${path === "" || path === "/" ? "" : path}`;
+  } catch {
+    return url;
+  }
+}
+
+function getSourceBadge(label: string): string | null {
+  if (label === "Buyer website") return "Buyer";
+  if (label.startsWith("Comparator seed:")) return "Comparator";
+  if (label.startsWith("Evidence source:")) return "Evidence";
+  return null;
+}
+
+function SourcesDrawer({
+  isOpen,
+  onClose,
+  sources,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  sources: SourceDrawerItem[];
+}) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50">
+      <button
+        type="button"
+        aria-label="Close sources panel"
+        onClick={onClose}
+        className="absolute inset-0 bg-oxford/20 backdrop-blur-[2px]"
+      />
+
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="sources-panel-title"
+        className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col border-l border-white/10 bg-[#111315] text-white shadow-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-white/45">
+              Sources
+            </p>
+            <h4 id="sources-panel-title" className="mt-1 text-2xl font-semibold">
+              {sources.length} source{sources.length === 1 ? "" : "s"}
+            </h4>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-white/70 transition-colors hover:border-white/20 hover:bg-white/5 hover:text-white"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-4">
+          <div className="space-y-3">
+            {sources.map((source) => (
+              <a
+                key={source.id}
+                href={source.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group block rounded-2xl border border-white/10 bg-white/[0.03] p-4 transition-colors hover:border-white/20 hover:bg-white/[0.06]"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/[0.06] text-white/65">
+                    <Globe className="h-4 w-4" />
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      {source.badge ? (
+                        <span className="rounded-full border border-white/10 bg-white/[0.06] px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.18em] text-white/70">
+                          {source.badge}
+                        </span>
+                      ) : null}
+                      <span className="text-[11px] uppercase tracking-[0.22em] text-white/45">
+                        {source.hostname}
+                      </span>
+                    </div>
+
+                    <div className="text-base font-semibold leading-snug text-white">
+                      {source.label}
+                    </div>
+                    <div className="mt-1 break-all text-sm text-white/58">
+                      {source.displayUrl}
+                    </div>
+                  </div>
+
+                  <ExternalLink className="mt-1 h-4 w-4 shrink-0 text-white/40 transition-colors group-hover:text-white/75" />
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function EditableClaimPillsSection({
+  section,
+  claims,
+  sourcePillById,
+  draftValue,
+  error,
+  isPending,
+  onDraftChange,
+  onAdd,
+  onRemove,
+}: {
+  section: string;
+  claims: ThesisClaim[];
+  sourcePillById: Map<string, ThesisSourcePill>;
+  draftValue: string;
+  error?: string | null;
+  isPending: boolean;
+  onDraftChange: (value: string) => void;
+  onAdd: () => void;
+  onRemove: (claimId: string) => void;
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-2">
+        <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400 shrink-0">
+          {SECTION_LABELS[section] || section}
+        </span>
+        <div className="flex-1 border-t border-steel-200" />
+      </div>
+
+      <div className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+        <div className="flex flex-wrap gap-2">
+          {claims.length > 0 ? (
+            claims.map((claim) => {
+              const linkedSources = claim.source_pill_ids
+                .map((pillId) => sourcePillById.get(pillId))
+                .filter((pill): pill is ThesisSourcePill => Boolean(pill));
+              const sourceLink = linkedSources[0];
+              const sourceLabel =
+                linkedSources.length > 1 ? `${linkedSources.length} src` : "src";
+
+              return (
+                <div
+                  key={claim.id}
+                  className={clsx(
+                    "inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-2 text-sm leading-tight",
+                    claim.user_status === "confirmed"
+                      ? "border-success/30 bg-success/10 text-success"
+                      : claim.rendering === "hypothesis"
+                      ? "border-warning/30 bg-warning/10 text-amber-900"
+                      : "border-oxford/15 bg-white text-steel-800"
+                  )}
+                >
+                  <span className="max-w-[28rem] whitespace-normal break-words">
+                    {claim.value}
+                  </span>
+                  {sourceLink ? (
+                    <a
+                      href={sourceLink.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 text-[11px] font-medium uppercase tracking-[0.16em] text-info hover:underline"
+                      title={sourceLink.label}
+                    >
+                      {sourceLabel}
+                    </a>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => onRemove(claim.id)}
+                    disabled={isPending}
+                    className="shrink-0 text-steel-400 transition-colors hover:text-danger disabled:opacity-50"
+                    aria-label={`Remove ${claim.value}`}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })
+          ) : (
+            <p className="text-sm text-steel-400">No items added yet.</p>
+          )}
+        </div>
+
+        <div className="mt-3 flex gap-2">
+          <input
+            type="text"
+            value={draftValue}
+            onChange={(e) => onDraftChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onAdd();
+              }
+            }}
+            placeholder={PILL_INPUT_PLACEHOLDERS[section] || "Add item"}
+            className="input text-sm"
+          />
+          <button
+            type="button"
+            onClick={onAdd}
+            disabled={isPending || !draftValue.trim()}
+            className="btn-secondary px-3 shrink-0 disabled:opacity-50"
+            aria-label={`Add ${SECTION_LABELS[section] || section}`}
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+        </div>
+        {error ? <p className="mt-1 text-xs text-danger">{error}</p> : null}
+      </div>
+    </div>
+  );
+}
 
 function normalizeUrlInput(raw: string): string | null {
   const trimmed = raw.trim();
@@ -88,8 +354,11 @@ export default function ThesisPackPage() {
   const [evidenceUrlError, setEvidenceUrlError] = useState<string | null>(null);
   const [editingClaimId, setEditingClaimId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
+  const [claimDraftValues, setClaimDraftValues] = useState<Record<string, string>>({});
+  const [claimDraftErrors, setClaimDraftErrors] = useState<Record<string, string>>({});
   const [adjustmentMessage, setAdjustmentMessage] = useState("");
   const [draftSummary, setDraftSummary] = useState("");
+  const [isSourcesDrawerOpen, setIsSourcesDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (profile) {
@@ -112,6 +381,40 @@ export default function ThesisPackPage() {
   useEffect(() => {
     setDraftSummary(thesisPack?.summary || "");
   }, [thesisPack?.summary]);
+
+  const sourceDrawerItems = useMemo(
+    () =>
+      (thesisPack?.source_pills || []).map((pill) => ({
+        ...pill,
+        hostname: getSourceHostname(pill.url),
+        displayUrl: getSourceDisplayUrl(pill.url),
+        badge: getSourceBadge(pill.label),
+      })),
+    [thesisPack?.source_pills]
+  );
+
+  const buyerEvidence = thesisPack?.buyer_evidence || null;
+  const showBuyerEvidenceWarning =
+    entryMode === "company" && buyerEvidence?.status === "insufficient";
+
+  useEffect(() => {
+    if (!isSourcesDrawerOpen) return;
+
+    const { overflow } = document.body.style;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsSourcesDrawerOpen(false);
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = overflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isSourcesDrawerOpen]);
 
   const jobRunner = useWorkspaceJobWithPolling(
     workspaceId,
@@ -140,6 +443,15 @@ export default function ThesisPackPage() {
     }
     return groups;
   }, [thesisPack]);
+
+  const displaySections = useMemo(
+    () =>
+      CLAIM_SECTION_ORDER.filter(
+        (section) =>
+          groupedClaims.has(section) || PILL_EDITOR_SECTIONS.has(section)
+      ).map((section) => [section, groupedClaims.get(section) || []] as const),
+    [groupedClaims]
+  );
 
   const latestCompletedContextJob = useMemo(
     () => contextJobs?.find((job) => job.state === "completed") ?? null,
@@ -199,6 +511,49 @@ export default function ThesisPackPage() {
       claim.id === claimId ? { ...claim, ...patch } : claim
     );
     await updateThesisPack.mutateAsync({ claims });
+  };
+
+  const setClaimDraftValue = (section: string, value: string) => {
+    setClaimDraftValues((current) => ({ ...current, [section]: value }));
+    setClaimDraftErrors((current) => ({ ...current, [section]: "" }));
+  };
+
+  const handleAddSectionClaim = async (section: string) => {
+    if (!thesisPack) return;
+    const value = (claimDraftValues[section] || "").trim();
+    if (!value) return;
+
+    const duplicateExists = thesisPack.claims.some(
+      (claim) =>
+        claim.section === section &&
+        claim.user_status !== "removed" &&
+        claim.value.trim().toLowerCase() === value.toLowerCase()
+    );
+    if (duplicateExists) {
+      setClaimDraftErrors((current) => ({
+        ...current,
+        [section]: "That item is already present.",
+      }));
+      return;
+    }
+
+    await updateThesisPack.mutateAsync({
+      claims: [
+        ...thesisPack.claims,
+        {
+          id: `manual_${section}_${Date.now()}`,
+          section,
+          value,
+          rendering: "hypothesis",
+          confidence: 0.9,
+          source_pill_ids: [],
+          user_status: "edited",
+        },
+      ],
+    });
+
+    setClaimDraftValues((current) => ({ ...current, [section]: "" }));
+    setClaimDraftErrors((current) => ({ ...current, [section]: "" }));
   };
 
   const handleAddReference = () => {
@@ -597,20 +952,58 @@ export default function ThesisPackPage() {
         </div>
 
         {/* Source pills */}
-        {thesisPack?.source_pills?.length ? (
-          <div className="flex flex-wrap gap-1.5">
-            {thesisPack.source_pills.map((pill) => (
-              <a
-                key={pill.id}
-                href={pill.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] border border-steel-200 bg-steel-50 text-steel-500 hover:border-oxford hover:text-oxford transition-colors"
-              >
-                {pill.label}
-                <ExternalLink className="w-2.5 h-2.5" />
-              </a>
-            ))}
+        {sourceDrawerItems.length ? (
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={() => setIsSourcesDrawerOpen(true)}
+              className="inline-flex items-center gap-2 rounded-full border border-steel-200 bg-steel-50 px-3 py-1.5 text-sm font-medium text-steel-700 transition-colors hover:border-oxford hover:text-oxford"
+            >
+              <span>
+                {sourceDrawerItems.length} source
+                {sourceDrawerItems.length === 1 ? "" : "s"}
+              </span>
+              <span className="rounded-full border border-steel-200 bg-white px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-steel-500">
+                Web links
+              </span>
+            </button>
+          </div>
+        ) : null}
+
+        {showBuyerEvidenceWarning ? (
+          <div className="rounded-2xl border border-warning/30 bg-warning/10 p-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-warning">
+                  Buyer evidence is too weak for reliable inference
+                </div>
+                <p className="mt-1 text-sm text-steel-700">
+                  {buyerEvidence?.warning ||
+                    "Add first-party product pages, PDFs, case studies, or supporting evidence before trusting buyer claims."}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs text-steel-600">
+                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
+                    Pages crawled: {buyerEvidence?.metrics.pages_crawled ?? 0}
+                  </span>
+                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
+                    Content pages: {buyerEvidence?.metrics.content_pages ?? 0}
+                  </span>
+                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
+                    Signals: {buyerEvidence?.metrics.signal_count ?? 0}
+                  </span>
+                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
+                    Customer proof: {buyerEvidence?.metrics.customer_evidence_count ?? 0}
+                  </span>
+                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
+                    Summary chars: {buyerEvidence?.metrics.summary_chars ?? 0}
+                  </span>
+                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
+                    Score: {buyerEvidence?.score ?? 0}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         ) : null}
 
@@ -638,156 +1031,171 @@ export default function ThesisPackPage() {
 
         {/* Claims by section */}
         <div className="space-y-5">
-          {Array.from(groupedClaims.entries()).map(([section, claims]) => (
-            <div key={section}>
-              <div className="flex items-center gap-3 mb-2">
-                <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400 shrink-0">
-                  {SECTION_LABELS[section] || section}
-                </span>
-                <div className="flex-1 border-t border-steel-200" />
-              </div>
+          {displaySections.map(([section, claims]) =>
+            PILL_EDITOR_SECTIONS.has(section) ? (
+              <EditableClaimPillsSection
+                key={section}
+                section={section}
+                claims={claims}
+                sourcePillById={sourcePillById}
+                draftValue={claimDraftValues[section] || ""}
+                error={claimDraftErrors[section] || null}
+                isPending={updateThesisPack.isPending}
+                onDraftChange={(value) => setClaimDraftValue(section, value)}
+                onAdd={() => handleAddSectionClaim(section)}
+                onRemove={(claimId) =>
+                  updateClaim(claimId, { user_status: "removed" })
+                }
+              />
+            ) : (
+              <div key={section}>
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400 shrink-0">
+                    {SECTION_LABELS[section] || section}
+                  </span>
+                  <div className="flex-1 border-t border-steel-200" />
+                </div>
 
-              <div className="space-y-1.5">
-                {claims.map((claim: ThesisClaim) => {
-                  const isEditing = editingClaimId === claim.id;
-                  const isConfirmed = claim.user_status === "confirmed";
-                  const isHypothesis = claim.rendering === "hypothesis";
+                <div className="space-y-1.5">
+                  {claims.map((claim: ThesisClaim) => {
+                    const isEditing = editingClaimId === claim.id;
+                    const isConfirmed = claim.user_status === "confirmed";
+                    const isHypothesis = claim.rendering === "hypothesis";
 
-                  return (
-                    <div
-                      key={claim.id}
-                      className={clsx(
-                        "bg-steel-50 border border-steel-200 border-l-2 px-3 py-2.5 group transition-all hover:bg-white hover:shadow-sm",
-                        isConfirmed
-                          ? "border-l-success"
-                          : isHypothesis
-                          ? "border-l-warning"
-                          : "border-l-oxford"
-                      )}
-                    >
-                      {/* Claim value */}
-                      {isEditing ? (
-                        <div className="flex gap-2 mb-2">
-                          <input
-                            value={editingValue}
-                            onChange={(e) => setEditingValue(e.target.value)}
-                            className="flex-1 border border-steel-200 bg-white px-2 py-1.5 text-sm text-steel-900 font-mono focus:outline-none focus:border-oxford"
-                            autoFocus
-                            onKeyDown={(e) => {
-                              if (e.key === "Escape") setEditingClaimId(null);
-                            }}
-                          />
-                          <button
-                            onClick={async () => {
-                              await updateClaim(claim.id, {
-                                value: editingValue,
-                                user_status: "edited",
-                              });
-                              setEditingClaimId(null);
-                              setEditingValue("");
-                            }}
-                            className="btn-primary text-xs px-3 py-1.5"
-                          >
-                            Save
-                          </button>
-                          <button
-                            onClick={() => setEditingClaimId(null)}
-                            className="btn-secondary text-xs px-2 py-1.5"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ) : (
-                        <p className="text-sm font-mono text-steel-800 mb-2 leading-relaxed">
-                          {claim.value}
-                        </p>
-                      )}
+                    return (
+                      <div
+                        key={claim.id}
+                        className={clsx(
+                          "bg-steel-50 border border-steel-200 border-l-2 px-3 py-2.5 group transition-all hover:bg-white hover:shadow-sm",
+                          isConfirmed
+                            ? "border-l-success"
+                            : isHypothesis
+                            ? "border-l-warning"
+                            : "border-l-oxford"
+                        )}
+                      >
+                        {isEditing ? (
+                          <div className="flex gap-2 mb-2">
+                            <input
+                              value={editingValue}
+                              onChange={(e) => setEditingValue(e.target.value)}
+                              className="flex-1 border border-steel-200 bg-white px-2 py-1.5 text-sm text-steel-900 font-mono focus:outline-none focus:border-oxford"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === "Escape") setEditingClaimId(null);
+                              }}
+                            />
+                            <button
+                              onClick={async () => {
+                                await updateClaim(claim.id, {
+                                  value: editingValue,
+                                  user_status: "edited",
+                                });
+                                setEditingClaimId(null);
+                                setEditingValue("");
+                              }}
+                              className="btn-primary text-xs px-3 py-1.5"
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => setEditingClaimId(null)}
+                              className="btn-secondary text-xs px-2 py-1.5"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="text-sm font-mono text-steel-800 mb-2 leading-relaxed">
+                            {claim.value}
+                          </p>
+                        )}
 
-                      {/* Meta + inline actions */}
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-[11px] text-steel-400">
-                          <span className={isHypothesis ? "text-warning" : ""}>
-                            {isHypothesis ? "Hypothesis" : "Fact"}
-                          </span>
-                          <span>·</span>
-                          <span>{Math.round((claim.confidence || 0) * 100)}%</span>
-                          {claim.source_pill_ids.length > 0 && (
-                            <>
-                              <span>·</span>
-                              <div className="flex gap-1">
-                                {claim.source_pill_ids
-                                  .slice(0, 3)
-                                  .map((pillId: string) => {
-                                    const pill = sourcePillById.get(pillId);
-                                    if (!pill) return null;
-                                    return (
-                                      <a
-                                        key={pillId}
-                                        href={pill.url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-info hover:underline"
-                                        title={pill.label}
-                                      >
-                                        [src]
-                                      </a>
-                                    );
-                                  })}
-                              </div>
-                            </>
-                          )}
-                        </div>
-
-                        {/* Hover actions */}
-                        <div className="flex items-center gap-3 text-xs opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={() =>
-                              updateClaim(claim.id, { user_status: "confirmed" })
-                            }
-                            disabled={updateThesisPack.isPending || isConfirmed}
-                            className={clsx(
-                              "font-medium transition-colors",
-                              isConfirmed
-                                ? "text-success cursor-default"
-                                : "text-steel-500 hover:text-success"
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-[11px] text-steel-400">
+                            <span className={isHypothesis ? "text-warning" : ""}>
+                              {isHypothesis ? "Hypothesis" : "Fact"}
+                            </span>
+                            <span>·</span>
+                            <span>{Math.round((claim.confidence || 0) * 100)}%</span>
+                            {claim.source_pill_ids.length > 0 && (
+                              <>
+                                <span>·</span>
+                                <div className="flex gap-1">
+                                  {claim.source_pill_ids
+                                    .slice(0, 3)
+                                    .map((pillId: string) => {
+                                      const pill = sourcePillById.get(pillId);
+                                      if (!pill) return null;
+                                      return (
+                                        <a
+                                          key={pillId}
+                                          href={pill.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-info hover:underline"
+                                          title={pill.label}
+                                        >
+                                          [src]
+                                        </a>
+                                      );
+                                    })}
+                                </div>
+                              </>
                             )}
-                          >
-                            {isConfirmed ? (
-                              <span className="flex items-center gap-1">
-                                <Check className="w-3 h-3" /> Accepted
-                              </span>
-                            ) : (
-                              "Accept"
-                            )}
-                          </button>
-                          <button
-                            onClick={() => {
-                              setEditingClaimId(claim.id);
-                              setEditingValue(claim.value);
-                            }}
-                            className="text-steel-400 hover:text-oxford transition-colors"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() =>
-                              updateClaim(claim.id, { user_status: "removed" })
-                            }
-                            disabled={updateThesisPack.isPending}
-                            className="text-steel-400 hover:text-danger transition-colors"
-                          >
-                            Remove
-                          </button>
+                          </div>
+
+                          <div className="flex items-center gap-3 text-xs opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() =>
+                                updateClaim(claim.id, { user_status: "confirmed" })
+                              }
+                              disabled={updateThesisPack.isPending || isConfirmed}
+                              className={clsx(
+                                "font-medium transition-colors",
+                                isConfirmed
+                                  ? "text-success cursor-default"
+                                  : "text-steel-500 hover:text-success"
+                              )}
+                            >
+                              {isConfirmed ? (
+                                <span className="flex items-center gap-1">
+                                  <Check className="w-3 h-3" /> Accepted
+                                </span>
+                              ) : (
+                                "Accept"
+                              )}
+                            </button>
+                            <button
+                              onClick={() => {
+                                setEditingClaimId(claim.id);
+                                setEditingValue(claim.value);
+                              }}
+                              className="text-steel-400 hover:text-oxford transition-colors"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() =>
+                                updateClaim(claim.id, { user_status: "removed" })
+                              }
+                              disabled={updateThesisPack.isPending}
+                              className="text-steel-400 hover:text-danger transition-colors"
+                            >
+                              Remove
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          )}
 
-          {groupedClaims.size === 0 && (
+          {displaySections.every(([, claims]) => claims.length === 0) &&
+            !thesisPack?.generated_at && (
             <div className="flex flex-col items-center justify-center py-14 border border-dashed border-steel-300 bg-steel-50">
               <FileText className="w-8 h-8 text-steel-300 mb-3" />
               <p className="text-sm text-steel-400">No claims generated yet</p>
@@ -865,6 +1273,12 @@ export default function ThesisPackPage() {
           </div>
         )}
       </details>
+
+      <SourcesDrawer
+        isOpen={isSourcesDrawerOpen}
+        onClose={() => setIsSourcesDrawerOpen(false)}
+        sources={sourceDrawerItems}
+      />
     </div>
   );
 }
