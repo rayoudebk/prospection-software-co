@@ -151,6 +151,30 @@ class ContentExtractor:
             return False
         return True
 
+    def _should_attempt_render_enrichment(
+        self,
+        *,
+        preview: PagePreview,
+        page_type: str,
+        raw_content: str,
+    ) -> bool:
+        url_lower = str(preview.url or "").lower()
+        if page_type not in {"product", "solutions", "docs", "services"}:
+            return False
+        if not any(token in url_lower for token in ("/platform/", "/solutions/", "/technology", "/documentation", "/docs/", "/api/")):
+            return False
+        normalized = " ".join(str(raw_content or "").split()).lower()
+        if len(normalized) < 240:
+            return True
+        interactive_markers = (
+            "fonctionnalites detaillees",
+            "functionalities",
+            "detailed features",
+            "accordion",
+            "expand",
+        )
+        return any(marker in normalized for marker in interactive_markers)
+
     def _bundle_candidate_urls(self, tree: HTMLParser, source_url: str) -> List[str]:
         parsed = urlparse(source_url)
         domain = parsed.netloc
@@ -416,22 +440,29 @@ class ContentExtractor:
                     if not blocks:
                         blocks = self._rendered_blocks(preview, "\n\n".join(additions))
 
-            if self._needs_render_fallback(
+            interactive_enrichment = self._should_attempt_render_enrichment(
+                preview=preview,
+                page_type=page_type,
+                raw_content=raw_content,
+            )
+            should_render = self._needs_render_fallback(
                 blocks=blocks,
                 customer_evidence=customer_evidence,
                 raw_content=raw_content,
                 title=title,
-            ):
+            ) or interactive_enrichment
+
+            if should_render:
                 rendered = await asyncio.to_thread(
                     render_page_via_chrome_devtools_mcp,
                     preview.url,
                     timeout_seconds=20,
                 )
                 rendered_text = " ".join(str(rendered.get("content") or "").split())
-                if len(rendered_text) > len(" ".join(raw_content.split())) + 120:
+                min_gain = 40 if interactive_enrichment else 120
+                if len(rendered_text) > len(" ".join(raw_content.split())) + min_gain:
                     raw_content = rendered_text
-                    if not blocks:
-                        blocks = self._rendered_blocks(preview, rendered_text)
+                    blocks = self._rendered_blocks(preview, rendered_text)
             
             return CrawledPage(
                 url=preview.url,

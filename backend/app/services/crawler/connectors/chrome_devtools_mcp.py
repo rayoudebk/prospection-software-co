@@ -36,7 +36,7 @@ def _render_via_endpoint(url: str, timeout_seconds: int, endpoint: str) -> Dict[
     with httpx.Client(timeout=max(5, timeout_seconds + 5)) as client:
         response = client.post(
             endpoint,
-            json={"url": url, "timeout_seconds": timeout_seconds},
+            json={"url": url, "timeout_seconds": timeout_seconds, "expand_interactive": True},
             headers={"Content-Type": "application/json"},
         )
         response.raise_for_status()
@@ -78,6 +78,7 @@ def _render_via_playwright(url: str, timeout_seconds: int) -> Dict[str, Any]:
             page = browser.new_page()
             page.goto(url, wait_until="networkidle", timeout=max(5000, timeout_seconds * 1000))
             page.wait_for_timeout(500)
+            _expand_interactive_sections(page)
             final_url = str(page.url or url)
             html = page.content()
             text: Optional[str] = None
@@ -102,6 +103,61 @@ def _render_via_playwright(url: str, timeout_seconds: int) -> Dict[str, Any]:
             "content": "",
             "error": f"playwright_render_failed:{exc}",
         }
+
+
+def _expand_interactive_sections(page: Any) -> None:
+    """Best-effort expansion of accordions/disclosures on product-style pages."""
+    try:
+        page.locator("details").evaluate_all(
+            """(nodes) => {
+                for (const node of nodes) {
+                    try { node.open = true; } catch (e) {}
+                }
+            }"""
+        )
+    except Exception:
+        pass
+
+    candidate_selector = ",".join(
+        [
+            "summary",
+            "button[aria-expanded='false']",
+            "[role='button'][aria-expanded='false']",
+            "[data-state='closed'] button",
+            ".accordion button",
+            "[class*='accordion'] button",
+            "[class*='collapse'] button",
+            "[class*='disclosure'] button",
+        ]
+    )
+    keyword_pattern = (
+        "fonction|detail|feature|functionality|capability|module|workflow|"
+        "portfolio|order|trade|compliance|reporting|risk|data|integration"
+    )
+
+    try:
+        candidates = page.locator(candidate_selector)
+        count = min(candidates.count(), 40)
+    except Exception:
+        return
+
+    for idx in range(count):
+        try:
+            handle = candidates.nth(idx)
+            if not handle.is_visible(timeout=250):
+                continue
+            text = " ".join(str(handle.inner_text(timeout=400) or "").split())[:160]
+            aria_controls = str(handle.get_attribute("aria-controls") or "")
+            class_name = str(handle.get_attribute("class") or "")
+            lowered = f"{text} {aria_controls} {class_name}".lower()
+            if text and not __import__("re").search(keyword_pattern, lowered):
+                expanded = str(handle.get_attribute("aria-expanded") or "").lower()
+                if expanded != "false":
+                    continue
+            handle.click(timeout=800, force=True)
+            page.wait_for_timeout(120)
+        except Exception:
+            continue
 
 
 def render_page_via_chrome_devtools_mcp(
@@ -150,4 +206,3 @@ def render_page_via_chrome_devtools_mcp(
         result["content"] = content[:max_chars]
     result["content_length"] = len(str(result.get("content") or ""))
     return result
-

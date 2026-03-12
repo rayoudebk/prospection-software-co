@@ -2,6 +2,7 @@ import asyncio
 
 import httpx
 
+from app.services.crawler import extraction as extraction_module
 from app.services.crawler.extraction import ContentExtractor
 from app.services.crawler.models import PagePreview
 
@@ -66,3 +67,63 @@ def test_content_extractor_recovers_spa_bundle_logos_and_route_labels():
     assert any(signal.type == "workflow" and signal.value == "Front office titres" for signal in page.signals)
     assert "Front-to-back office trading operations. Fully automated STP." in page.raw_content
     assert "Bourse en ligne" in page.raw_content
+
+
+def test_content_extractor_renders_product_pages_for_interactive_enrichment(monkeypatch):
+    html = """
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <title>Front Office</title>
+        <meta name="description" content="Fonctionnalites detaillees available below." />
+      </head>
+      <body>
+        <main>
+          <h1>Front Office</h1>
+          <p>Portfolio management system for wealth managers.</p>
+        </main>
+      </body>
+    </html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://4tpm.fr/platform/front-office":
+            return httpx.Response(200, text=html)
+        return httpx.Response(404, text="")
+
+    monkeypatch.setattr(
+        extraction_module,
+        "render_page_via_chrome_devtools_mcp",
+        lambda url, timeout_seconds=20: {
+            "url": url,
+            "final_url": url,
+            "provider": "test",
+            "content": (
+                "Front Office Portfolio management system for wealth managers. "
+                "Fonctionnalites detaillees Order management Compliance controls "
+                "Portfolio analytics Trade capture Reporting."
+            ),
+            "error": None,
+        },
+    )
+
+    async def run_test():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            extractor = ContentExtractor(client)
+            preview = PagePreview(
+                url="https://4tpm.fr/platform/front-office",
+                title="Front Office",
+                meta_description="Fonctionnalites detaillees available below.",
+                h1="Front Office",
+                headings=["Fonctionnalites detaillees"],
+                path_depth=2,
+            )
+            return await extractor._extract_page(preview)
+
+    page = asyncio.run(run_test())
+
+    assert page is not None
+    assert "Order management" in page.raw_content
+    assert "Compliance controls" in page.raw_content
+    assert any(block.type == "paragraph" and "Order management" in block.content for block in page.blocks)
