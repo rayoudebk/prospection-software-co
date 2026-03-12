@@ -7,6 +7,11 @@ from urllib.parse import urlparse
 import httpx
 
 from .models import ContextPack, CrawledPage, PagePreview
+from .career_priority import (
+    career_excluded_keyword_hits,
+    career_target_keyword_hits,
+    is_career_page_url,
+)
 from .discovery import URLDiscovery
 from .preview import PreviewFetcher, PageScorer, filter_and_score_urls
 from .triage import LLMTriage
@@ -104,6 +109,14 @@ class UnifiedCrawler:
         for token in high_signal_tokens:
             if token in lowered:
                 score += 8
+        if is_career_page_url(lowered):
+            score += 5
+            career_target_hits = career_target_keyword_hits(lowered)
+            career_excluded_hits = career_excluded_keyword_hits(lowered)
+            if career_target_hits:
+                score += 18 + min(24, len(career_target_hits) * 4)
+            elif career_excluded_hits:
+                score -= 24 + min(18, len(career_excluded_hits) * 4)
         if lowered.endswith((".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".pdf", ".zip", ".mp4")):
             score -= 100
         if "?" in lowered:

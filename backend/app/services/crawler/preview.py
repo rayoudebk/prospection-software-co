@@ -9,6 +9,11 @@ import httpx
 from selectolax.parser import HTMLParser
 
 from .models import PagePreview
+from .career_priority import (
+    career_excluded_keyword_hits,
+    career_target_keyword_hits,
+    is_career_page_url,
+)
 from .constants import (
     CAPABILITY_KEYWORDS,
     SERVICE_KEYWORDS,
@@ -19,24 +24,6 @@ from .constants import (
     MAX_PAGES_TO_PREVIEW,
     BATCH_SIZE,
     REQUEST_DELAY,
-)
-
-CAREER_SIGNAL_KEYWORDS = (
-    "product",
-    "workflow",
-    "customer",
-    "client",
-    "integration",
-    "implementation",
-    "data",
-    "ai",
-    "compliance",
-    "operations",
-    "platform",
-    "api",
-    "scheduling",
-    "staffing",
-    "planning",
 )
 
 
@@ -208,8 +195,9 @@ class PageScorer:
         score = 0.0
         combined_text = preview.combined_text.lower()
         url_lower = preview.url.lower()
-        is_career_page = any(token in url_lower for token in ("/careers", "/career", "/jobs", "/job-", "/job/", "/apply"))
-        has_career_signal = any(token in combined_text for token in CAREER_SIGNAL_KEYWORDS)
+        is_career_page = is_career_page_url(url_lower)
+        career_target_hits = career_target_keyword_hits(combined_text)
+        career_excluded_hits = career_excluded_keyword_hits(combined_text)
         
         # 1. Capability keyword hits
         for keyword in CAPABILITY_KEYWORDS:
@@ -244,11 +232,14 @@ class PageScorer:
             # But promote back if it has proof signals (case study in press release)
             if proof_count > 0:
                 score += 20  # Net +10 for proof in blog/press
-            if is_career_page and has_career_signal:
-                score += 12
-
-        if is_career_page and not has_career_signal:
+        if is_career_page and career_target_hits:
+            score += 14 + min(18, len(career_target_hits) * 4)
+        elif is_career_page:
             score -= 12
+        if is_career_page and career_excluded_hits and not career_target_hits:
+            score -= 18 + min(18, len(career_excluded_hits) * 4)
+        elif is_career_page and career_excluded_hits:
+            score -= min(8, len(career_excluded_hits) * 2)
         
         # 7. Gentle depth penalty only if score is low
         if score < 15:

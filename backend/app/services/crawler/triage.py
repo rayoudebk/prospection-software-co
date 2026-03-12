@@ -115,17 +115,26 @@ For each page, determine:
 2. contains_tags: which topics it likely covers from [capabilities, services, customers, integrations, pricing, security, docs]
 3. priority: 1-10 (10 = highest value for understanding the company)
 
+When evaluating careers pages, prefer hiring pages or role pages tied to:
+- product
+- implementation, onboarding, customer success, or client services
+- data, operations, workflow backbone
+- sales, solutions, or revops
+- engineering
+
+Deprioritize careers pages dominated by finance, accounting, controller, legal, recruiting, HR, payroll, workplace, or facilities roles.
+
 ## Priority Guidelines
 - 10: Core product/platform pages with feature lists
 - 9: Customer case studies with named clients
 - 8: Solutions/use-cases showing value proposition
 - 7: Integrations/API/ecosystem pages
-- 6: Services/implementation pages
+- 6: Services/implementation pages or high-signal careers pages in the preferred functions above
 - 5: About/company overview
 - 4: Pricing pages
 - 3: Security/compliance pages
-- 2: Documentation/resources or high-signal careers pages
-- 1: Generic or low-value pages
+- 2: Documentation/resources or generic careers hubs
+- 1: Generic or low-value pages, including finance/accounting/controller-heavy careers pages
 
 ## Output
 Return ONLY a JSON array:

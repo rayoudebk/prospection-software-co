@@ -68,7 +68,7 @@ COVERAGE_QUOTAS = {
     "services": (0, 2),
     "docs": (0, 3),
     "integrations": (1, 3),
-    "careers": (0, 2),
+    "careers": (0, 4),
     "other": (0, 2),
 }
 

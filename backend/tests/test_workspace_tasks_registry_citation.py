@@ -265,6 +265,17 @@ def test_discover_adaptive_hint_urls_for_domain_combines_homepage_and_sitemap(mo
     assert all(not hint.endswith(".png") for hint in hints)
 
 
+def test_hint_url_score_prefers_target_career_paths_over_finance_roles():
+    engineering_score = workspace_tasks._hint_url_score(
+        "https://example.com/jobs/senior-solutions-engineer"
+    )
+    finance_score = workspace_tasks._hint_url_score(
+        "https://example.com/jobs/financial-controller"
+    )
+
+    assert engineering_score > finance_score
+
+
 def test_extract_first_party_signals_from_crawl_uses_hint_urls(monkeypatch):
     captured: dict[str, list[str]] = {}
 
