@@ -32,6 +32,75 @@ def _extract_visible_text(html: str) -> str:
     return " ".join(str(text or "").split())
 
 
+def _should_capture_structured_main(url: str) -> bool:
+    lowered = str(url or "").lower()
+    return any(token in lowered for token in ("/platform/", "/solutions/"))
+
+
+def _wait_for_meaningful_dom(page: Any, url: str) -> None:
+    try:
+        page.wait_for_selector("main", timeout=5000)
+    except Exception:
+        return
+
+    try:
+        page.wait_for_selector("main h1, main h2", timeout=5000)
+    except Exception:
+        pass
+
+    if not _should_capture_structured_main(url):
+        try:
+            page.wait_for_timeout(800)
+        except Exception:
+            pass
+        return
+
+    try:
+        page.wait_for_function(
+            """() => {
+                const main = document.querySelector('main');
+                if (!main) return false;
+                const text = (main.innerText || '').trim();
+                const headings = main.querySelectorAll('h2, h3').length;
+                const buttons = main.querySelectorAll('button, [role="button"]').length;
+                const lists = main.querySelectorAll('li').length;
+                return text.length > 1200 || headings >= 3 || buttons >= 6 || lists >= 4;
+            }""",
+            timeout=8000,
+        )
+    except Exception:
+        try:
+            page.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+
+def _capture_live_dom(page: Any, url: str) -> tuple[str, str]:
+    selector = "main" if _should_capture_structured_main(url) else "body"
+    try:
+        payload = page.evaluate(
+            """(selector) => {
+                const root = document.querySelector(selector) || document.body || document.documentElement;
+                if (!root) {
+                    return { html: "", text: "" };
+                }
+                return {
+                    html: root.outerHTML || "",
+                    text: (root.innerText || root.textContent || "").replace(/\\s+/g, " ").trim(),
+                };
+            }""",
+            selector,
+        )
+    except Exception:
+        return "", ""
+
+    if not isinstance(payload, dict):
+        return "", ""
+    html = str(payload.get("html") or "")
+    text = str(payload.get("text") or "")
+    return html, text
+
+
 def _render_via_endpoint(url: str, timeout_seconds: int, endpoint: str) -> Dict[str, Any]:
     with httpx.Client(timeout=max(5, timeout_seconds + 5)) as client:
         response = client.post(
@@ -77,18 +146,21 @@ def _render_via_playwright(url: str, timeout_seconds: int) -> Dict[str, Any]:
                 args=["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox"],
             )
             page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=max(5000, timeout_seconds * 1000))
-            page.wait_for_timeout(500)
+            page.goto(url, wait_until="domcontentloaded", timeout=max(5000, timeout_seconds * 1000))
+            _wait_for_meaningful_dom(page, url)
             _expand_interactive_sections(page)
+            page.wait_for_timeout(250)
             final_url = str(page.url or url)
-            html = page.content()
-            text: Optional[str] = None
+            html, text = _capture_live_dom(page, final_url)
+            if not html:
+                html = page.content()
+            inner_text: Optional[str] = None
             try:
-                text = page.locator("body").inner_text(timeout=3000)
+                inner_text = page.locator("main" if _should_capture_structured_main(final_url) else "body").inner_text(timeout=3000)
             except Exception:
-                text = None
+                inner_text = None
             browser.close()
-        content = " ".join(str(text or _extract_visible_text(html)).split())
+        content = " ".join(str(inner_text or text or _extract_visible_text(html)).split())
         return {
             "url": url,
             "final_url": final_url,
