@@ -116,6 +116,30 @@ PRE_SCORE_UNIVERSE_CAP = 500
 DIRECT_IDENTITY_RESOLUTION_TIMEOUT_SECONDS = 3
 
 FIRST_PARTY_AUTO_HINT_PATHS = (
+    "/platform/",
+    "/platform/front-office",
+    "/platform/back-office",
+    "/platform/front-digital",
+    "/platform/payments",
+    "/solutions/",
+    "/solution/",
+    "/solutions/front-office",
+    "/solutions/online-brokerage",
+    "/solutions/private-banks",
+    "/solutions/asset-managers",
+    "/offers/",
+    "/product/",
+    "/products/",
+    "/technology-services/",
+    "/technology-services/services/",
+    "/technology-services/technology/",
+    "/technology-services/documentation-api/",
+    "/integrations/",
+    "/integration/",
+    "/api/",
+    "/documentation/",
+    "/docs/",
+    "/resources/",
     "/client-stories/",
     "/customers/",
     "/case-studies/",
@@ -128,6 +152,29 @@ FIRST_PARTY_AUTO_HINT_PATHS = (
 )
 
 FIRST_PARTY_HINT_URL_TOKENS = (
+    "platform",
+    "front-office",
+    "back-office",
+    "front-digital",
+    "payments",
+    "solution",
+    "solutions",
+    "product",
+    "products",
+    "offer",
+    "offers",
+    "technology-services",
+    "technology",
+    "services",
+    "integrations",
+    "integration",
+    "api",
+    "documentation",
+    "docs",
+    "features",
+    "fonctionalites",
+    "functionalities",
+    "capabilities",
     "client-stories",
     "customer-story",
     "customers",
@@ -5763,10 +5810,15 @@ def _context_pack_start_urls_for_site(profile: CompanyProfile | None, site_url: 
     if not site_domain or not profile:
         return []
 
-    start_urls: list[str] = []
+    buyer_url = normalize_url(profile.buyer_company_url or "")
+    is_buyer_site = bool(buyer_url and normalized_site_url == buyer_url)
+    max_hint_urls = 18 if is_buyer_site else 12
+
+    manual_urls: list[str] = []
+    adaptive_urls: list[str] = []
     seen: set[str] = set()
 
-    def register(raw_url: str | None) -> None:
+    def register(raw_url: str | None, *, source: str = "manual") -> None:
         normalized = normalize_url(raw_url or "")
         if not normalized:
             return
@@ -5778,14 +5830,34 @@ def _context_pack_start_urls_for_site(profile: CompanyProfile | None, site_url: 
         if key in seen:
             return
         seen.add(key)
-        start_urls.append(normalized)
+        if source == "adaptive":
+            adaptive_urls.append(normalized)
+        else:
+            manual_urls.append(normalized)
 
-    if normalized_site_url == normalize_url(profile.buyer_company_url or ""):
+    if is_buyer_site:
         for url in profile.reference_evidence_urls or []:
             register(url)
     for url in profile.reference_company_urls or []:
         register(url)
-    return start_urls[:12]
+
+    adaptive_hint_urls = _discover_adaptive_hint_urls_for_domain(
+        site_domain,
+        timeout_seconds=5,
+        max_urls=max_hint_urls,
+    )
+    for url in adaptive_hint_urls:
+        register(url, source="adaptive")
+
+    ranked_manual_urls = sorted(
+        manual_urls,
+        key=lambda value: (-_hint_url_score(value), len(value)),
+    )
+    ranked_adaptive_urls = sorted(
+        adaptive_urls,
+        key=lambda value: (-_hint_url_score(value), len(value)),
+    )
+    return (ranked_manual_urls + ranked_adaptive_urls)[:max_hint_urls]
 
 
 def _auto_first_party_hint_urls_for_domains(domains: list[str]) -> list[str]:
