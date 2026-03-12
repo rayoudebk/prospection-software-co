@@ -9,7 +9,7 @@ import {
   ThesisSourcePill,
   SearchLane,
 } from "./api";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // ============================================================================
 // Workspace Hooks
@@ -468,12 +468,18 @@ export function useWorkspaceJobWithPolling(
   const [jobId, setJobId] = useState<number | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const handledTerminalJobId = useRef<number | null>(null);
   const queryClient = useQueryClient();
 
   const jobQuery = useWorkspaceJob(workspaceId, jobId);
 
   useEffect(() => {
+    if (!jobId) return;
+
     if (jobQuery.data?.state === "completed" || jobQuery.data?.state === "failed") {
+      if (handledTerminalJobId.current === jobId) return;
+
+      handledTerminalJobId.current = jobId;
       setIsRunning(false);
       if (jobQuery.data?.state === "completed") {
         queryClient.invalidateQueries({ queryKey: ["context-pack", workspaceId] });
@@ -484,10 +490,11 @@ export function useWorkspaceJobWithPolling(
         onComplete?.();
       }
     }
-  }, [jobQuery.data?.state, onComplete, queryClient, workspaceId]);
+  }, [jobId, jobQuery.data?.state, onComplete, queryClient, workspaceId]);
 
   const run = async () => {
     setIsRunning(true);
+    handledTerminalJobId.current = null;
     try {
       const result = await runMutation();
       setJobId(result.id);
