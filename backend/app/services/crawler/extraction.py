@@ -163,6 +163,8 @@ class ContentExtractor:
             return False
         if not any(token in url_lower for token in ("/platform/", "/solutions/", "/technology", "/documentation", "/docs/", "/api/")):
             return False
+        if page_type in {"product", "solutions"} and any(token in url_lower for token in ("/platform/", "/solutions/")):
+            return True
         normalized = " ".join(str(raw_content or "").split()).lower()
         if len(normalized) < 240:
             return True

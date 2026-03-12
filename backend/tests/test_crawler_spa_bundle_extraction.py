@@ -198,3 +198,33 @@ def test_content_extractor_prefers_playwright_for_interactive_enrichment(monkeyp
 
     assert page is not None
     assert captured["prefer_playwright"] is True
+
+
+def test_render_enrichment_always_runs_for_platform_and_solution_pages():
+    extractor = ContentExtractor(client=None)  # type: ignore[arg-type]
+
+    assert extractor._should_attempt_render_enrichment(
+        preview=PagePreview(
+            url="https://4tpm.fr/platform/front-office",
+            title="Front Office",
+            meta_description="",
+            h1="",
+            headings=[],
+            path_depth=2,
+        ),
+        page_type="product",
+        raw_content="Front-to-back office trading operations. Procapital Allianz Bank AXA Banque SwissLife Deutsche Bank Monte Paschi Banque Uptevia Milleis Banque Privée",
+    ) is True
+
+    assert extractor._should_attempt_render_enrichment(
+        preview=PagePreview(
+            url="https://4tpm.fr/solutions/private-banks",
+            title="Private banks",
+            meta_description="",
+            h1="",
+            headings=[],
+            path_depth=2,
+        ),
+        page_type="solutions",
+        raw_content="Banques privées Bourse en ligne Sociétés de gestion Épargne retraite et salariale",
+    ) is True
