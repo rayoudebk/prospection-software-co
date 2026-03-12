@@ -396,3 +396,79 @@ def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
     assert "Wealth management platform" in taxonomy_by_layer["capability"]
     assert "Procapital" not in taxonomy_by_layer.get("capability", [])
     assert "Bank" not in taxonomy_by_layer["customer_archetype"]
+
+
+def test_bootstrap_thesis_payload_scopes_market_map_to_buyer_site():
+    profile = CompanyProfile(
+        workspace_id=9,
+        buyer_company_url="https://4tpm.fr/",
+        generated_context_summary="",
+        reference_company_urls=["https://wealth-dynamix.com/"],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={"region": "EU+UK", "include_countries": [], "exclude_countries": []},
+        context_pack_json={
+            "version": "v2",
+            "generated_at": "2026-03-12T00:00:00Z",
+            "sites": [
+                {
+                    "url": "https://4tpm.fr/",
+                    "company_name": "4TPM",
+                    "website": "https://4tpm.fr/",
+                    "selected_pages": [],
+                    "evidence_items": [
+                        {"id": "s1", "kind": "page_signal:customer_archetype", "text": "Banques privées"},
+                        {"id": "s2", "kind": "page_signal:workflow", "text": "Front office titres"},
+                        {"id": "s3", "kind": "page_signal:service", "text": "Documentation API"},
+                    ],
+                    "named_customers": [
+                        {"name": "Allianz Bank", "evidence_id": "cust1", "context": "Trusted by leading banques privées"}
+                    ],
+                    "integrations": [{"name": "BPCE", "evidence_id": "int1"}],
+                    "partners": [{"name": "BPCE", "evidence_id": "int1"}],
+                    "extracted_raw_phrases": [
+                        "Banques privées",
+                        "Front office titres",
+                        "Documentation API",
+                        "4TPM - Plateforme Wealth Management",
+                    ],
+                    "crawl_coverage": {"total_pages": 4, "page_type_counts": {"other": 4}, "pages_with_signals": 4, "pages_with_customer_evidence": 1, "career_pages_selected": 0},
+                },
+                {
+                    "url": "https://wealth-dynamix.com/",
+                    "company_name": "Wealth Dynamix",
+                    "website": "https://wealth-dynamix.com/",
+                    "selected_pages": [],
+                    "evidence_items": [
+                        {"id": "c1", "kind": "page_signal:workflow", "text": "Portfolio management"},
+                        {"id": "c2", "kind": "page_signal:capability", "text": "Integrate data from all sources with a unified data model"},
+                    ],
+                    "named_customers": [{"name": "Salesforce", "evidence_id": "cust2"}],
+                    "integrations": [],
+                    "partners": [],
+                    "extracted_raw_phrases": [
+                        "Portfolio management",
+                        "Integrate data from all sources with a unified data model",
+                    ],
+                    "crawl_coverage": {"total_pages": 10, "page_type_counts": {"product": 10}, "pages_with_signals": 10, "pages_with_customer_evidence": 1, "career_pages_selected": 0},
+                },
+            ],
+            "evidence_items": [],
+            "named_customers": [],
+            "integrations": [],
+            "partners": [],
+            "extracted_raw_phrases": [],
+            "crawl_coverage": {"total_sites": 2, "total_pages": 14},
+        },
+        product_pages_found=4,
+    )
+
+    payload = bootstrap_thesis_payload(profile)
+    taxonomy_by_layer = {}
+    for node in payload["taxonomy_nodes"]:
+        taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
+
+    assert "Front office titres" in taxonomy_by_layer["workflow"]
+    assert "Wealth management platform" in taxonomy_by_layer["capability"]
+    assert "Portfolio management" not in taxonomy_by_layer["workflow"]
+    assert "Integrate data from all sources with" not in taxonomy_by_layer["capability"]

@@ -778,6 +778,84 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
     }
 
 
+def _source_scoped_context_pack(context_pack_v2: dict[str, Any], *, buyer_url: Any) -> dict[str, Any]:
+    buyer_domain = normalize_domain(buyer_url)
+    if not buyer_domain or not isinstance(context_pack_v2, dict):
+        return context_pack_v2
+
+    selected_sites: list[dict[str, Any]] = []
+    for site in context_pack_v2.get("sites") or []:
+        if not isinstance(site, dict):
+            continue
+        site_domain = normalize_domain(site.get("website") or site.get("url"))
+        if not site_domain:
+            continue
+        if site_domain == buyer_domain or site_domain.endswith(f".{buyer_domain}") or buyer_domain.endswith(f".{site_domain}"):
+            selected_sites.append(site)
+
+    if not selected_sites:
+        return context_pack_v2
+
+    has_site_level_artifacts = any(
+        (site.get("evidence_items") or site.get("named_customers") or site.get("integrations") or site.get("extracted_raw_phrases"))
+        for site in selected_sites
+        if isinstance(site, dict)
+    )
+    if not has_site_level_artifacts:
+        return {
+            **context_pack_v2,
+            "sites": selected_sites,
+        }
+
+    evidence_items: dict[str, dict[str, Any]] = {}
+    named_customers: dict[str, dict[str, Any]] = {}
+    integrations: dict[str, dict[str, Any]] = {}
+    raw_phrases: set[str] = set()
+    page_type_counts: dict[str, int] = {}
+    coverage = {
+        "total_sites": len(selected_sites),
+        "total_pages": 0,
+        "page_type_counts": page_type_counts,
+        "pages_with_signals": 0,
+        "pages_with_customer_evidence": 0,
+        "career_pages_selected": 0,
+    }
+
+    for site in selected_sites:
+        for item in site.get("evidence_items") or []:
+            if isinstance(item, dict) and item.get("id"):
+                evidence_items[str(item["id"])] = item
+        for item in site.get("named_customers") or []:
+            if isinstance(item, dict) and item.get("name"):
+                named_customers[_normalize_phrase_key(item.get("name"))] = item
+        for item in site.get("integrations") or []:
+            if isinstance(item, dict) and item.get("name"):
+                integrations[_normalize_phrase_key(item.get("name"))] = item
+        for phrase in site.get("extracted_raw_phrases") or []:
+            compact = _safe_phrase(phrase, max_len=80)
+            if compact:
+                raw_phrases.add(compact)
+        site_coverage = site.get("crawl_coverage") if isinstance(site.get("crawl_coverage"), dict) else {}
+        coverage["total_pages"] += int(site_coverage.get("total_pages") or 0)
+        coverage["pages_with_signals"] += int(site_coverage.get("pages_with_signals") or 0)
+        coverage["pages_with_customer_evidence"] += int(site_coverage.get("pages_with_customer_evidence") or 0)
+        coverage["career_pages_selected"] += int(site_coverage.get("career_pages_selected") or 0)
+        for page_type, count in (site_coverage.get("page_type_counts") or {}).items():
+            key = str(page_type or "").strip() or "other"
+            page_type_counts[key] = page_type_counts.get(key, 0) + int(count or 0)
+
+    return {
+        **context_pack_v2,
+        "sites": selected_sites,
+        "evidence_items": list(evidence_items.values()),
+        "named_customers": list(named_customers.values()),
+        "integrations": list(integrations.values()),
+        "partners": list(integrations.values()),
+        "extracted_raw_phrases": sorted(raw_phrases)[:160],
+        "crawl_coverage": coverage,
+    }
+
+
 def _phrase_case(value: str) -> str:
     if not value:
         return ""
@@ -1327,7 +1405,11 @@ def _build_market_map_artifacts(
     source_pills: list[dict[str, Any]],
     override_nodes: Any = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[str], list[dict[str, Any]]]:
-    context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
+    full_context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
+    context_pack_v2 = _source_scoped_context_pack(
+        full_context_pack_v2,
+        buyer_url=profile.buyer_company_url,
+    )
     nodes, edges = _build_taxonomy_map(context_pack_v2)
     if override_nodes is not None:
         nodes = normalize_taxonomy_nodes(override_nodes)
@@ -1355,7 +1437,7 @@ def _build_market_map_artifacts(
         max_len=96,
     )
     company_name = (
-        str((profile.context_pack_json or {}).get("sites", [{}])[0].get("company_name") or "").strip()
+        str((((context_pack_v2 or {}).get("sites") or [{}])[0].get("company_name") or "")).strip()
         or normalize_domain(profile.buyer_company_url)
         or "Source company"
     )
