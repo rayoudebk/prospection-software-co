@@ -270,3 +270,51 @@ def test_build_context_pack_v2_keeps_high_signal_job_pages():
     selected_urls = {page["url"] for page in selected_pages}
     assert "https://careers.hublo.com/jobs/7331974-head-of-data-ai-f-h-n" in selected_urls
     assert "https://careers.hublo.com/jobs/talent-partner" not in selected_urls
+
+
+def test_build_context_pack_v2_filters_noisy_customer_evidence_and_uses_raw_text_for_phrases():
+    context_pack = build_context_pack_v2(
+        {
+            "generated_at": "2026-03-12T00:00:00Z",
+            "sites": [
+                {
+                    "url": "https://wealth.example.com",
+                    "company_name": "WealthCo",
+                    "summary": "Client lifecycle management software for private banks and wealth managers.",
+                    "customer_evidence": [
+                        {
+                            "name": "Why first impressions matter: Rethinking onboarding in wealth management",
+                            "source_url": "https://wealth.example.com/insights",
+                            "evidence_type": "logo_alt",
+                            "context": "Recent insights",
+                        },
+                        {
+                            "name": "BNP Paribas",
+                            "source_url": "https://wealth.example.com/customers",
+                            "evidence_type": "logo_alt",
+                            "context": "Trusted by leading private banks",
+                        },
+                    ],
+                    "pages": [
+                        {
+                            "url": "https://wealth.example.com/solutions/clm",
+                            "title": "Client lifecycle management for private banks",
+                            "page_type": "solutions",
+                            "blocks": [],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": (
+                                "Our client lifecycle management platform helps private banks streamline "
+                                "onboarding and portfolio reporting workflows."
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    site = context_pack["sites"][0]
+    assert [item["name"] for item in site["named_customers"]] == ["BNP Paribas"]
+    assert "private bank" in [phrase.lower() for phrase in context_pack["extracted_raw_phrases"]]
+    assert "portfolio reporting" in [phrase.lower() for phrase in context_pack["extracted_raw_phrases"]]

@@ -9,6 +9,7 @@ import httpx
 import trafilatura
 from selectolax.parser import HTMLParser, Node
 
+from .connectors.chrome_devtools_mcp import render_page_via_chrome_devtools_mcp
 from .models import (
     PagePreview,
     CrawledPage,
@@ -61,6 +62,82 @@ class ContentExtractor:
         if raw is None:
             return ""
         return str(raw).strip()
+
+    def _looks_like_customer_entity(self, name: str, evidence_type: str) -> bool:
+        text = str(name or "").strip()
+        if not text or not any(ch.isalpha() for ch in text):
+            return False
+        if re.search(r"[.!?]", text):
+            return False
+
+        lowered = text.lower()
+        words = [word for word in re.split(r"\s+", text) if word]
+        noisy_terms = (
+            "award",
+            "provider",
+            "software",
+            "solution",
+            "solutions",
+            "consultancy",
+            "consulting",
+            "architecture",
+            "onboarding",
+            "cross device",
+            "omnichannel",
+            "intelligent",
+            "checklist",
+            "logo",
+            "colour",
+            "color",
+            "png",
+            "jpg",
+            "jpeg",
+            "svg",
+        )
+        if any(token in lowered for token in noisy_terms):
+            return False
+        if any(lowered.startswith(prefix) for prefix in ("how ", "why ", "our ", "with ", "secure ")):
+            return False
+
+        if evidence_type in {"logo_alt", "aria_label"}:
+            if len(words) > 6:
+                return False
+            if not any(ch.isupper() or ch.isdigit() for ch in text):
+                return False
+        elif len(words) > 10:
+            return False
+        return True
+
+    def _needs_render_fallback(
+        self,
+        *,
+        blocks: List[ContentBlock],
+        customer_evidence: List[CustomerEvidence],
+        raw_content: str,
+        title: str,
+    ) -> bool:
+        normalized_text = " ".join(str(raw_content or "").split())
+        if customer_evidence or len(blocks) >= 3:
+            return False
+        if len(normalized_text) >= 240:
+            return False
+        if len((title or "").strip()) > 40 and len(normalized_text) >= 80:
+            return False
+        return True
+
+    def _rendered_blocks(self, preview: PagePreview, rendered_text: str) -> List[ContentBlock]:
+        blocks: List[ContentBlock] = []
+        heading = str(preview.h1 or preview.title or "").strip()
+        if heading:
+            blocks.append(ContentBlock(type="heading", content=heading[:180], level=1))
+        for paragraph in re.split(r"\n{2,}", rendered_text):
+            normalized = " ".join(paragraph.split())
+            if len(normalized) < 40:
+                continue
+            blocks.append(ContentBlock(type="paragraph", content=normalized[:1200], level=0))
+            if len(blocks) >= 5:
+                break
+        return blocks
     
     async def extract_pages(
         self,
@@ -132,6 +209,23 @@ class ContentExtractor:
                 title_node = tree.css_first('title')
                 if title_node:
                     title = self._safe_node_text(title_node, strip=True)
+
+            if self._needs_render_fallback(
+                blocks=blocks,
+                customer_evidence=customer_evidence,
+                raw_content=raw_content,
+                title=title,
+            ):
+                rendered = await asyncio.to_thread(
+                    render_page_via_chrome_devtools_mcp,
+                    preview.url,
+                    timeout_seconds=20,
+                )
+                rendered_text = " ".join(str(rendered.get("content") or "").split())
+                if len(rendered_text) > len(" ".join(raw_content.split())) + 120:
+                    raw_content = rendered_text
+                    if not blocks:
+                        blocks = self._rendered_blocks(preview, rendered_text)
             
             return CrawledPage(
                 url=preview.url,
@@ -283,6 +377,8 @@ class ContentExtractor:
                 if alt and len(alt) > 2 and len(alt) < 100:
                     # Filter out generic alt texts
                     if not self._is_generic_alt(alt):
+                        if not self._looks_like_customer_entity(alt, "logo_alt"):
+                            continue
                         evidence.append(CustomerEvidence(
                             name=alt,
                             source_url=source_url,
@@ -295,6 +391,8 @@ class ContentExtractor:
             for svg in section.css('svg[aria-label]'):
                 label = self._safe_attr_text(svg, "aria-label")
                 if label and len(label) > 2 and len(label) < 100:
+                    if not self._looks_like_customer_entity(label, "aria_label"):
+                        continue
                     evidence.append(CustomerEvidence(
                         name=label,
                         source_url=source_url,
@@ -308,6 +406,8 @@ class ContentExtractor:
                 label = self._safe_attr_text(elem, "aria-label")
                 if label and len(label) > 2 and len(label) < 100:
                     if not self._is_generic_alt(label):
+                        if not self._looks_like_customer_entity(label, "aria_label"):
+                            continue
                         evidence.append(CustomerEvidence(
                             name=label,
                             source_url=source_url,
@@ -438,6 +538,8 @@ class ContentExtractor:
             for match in re.finditer(pattern, text):
                 name = match.group(1).strip()
                 if name and len(name) > 3 and len(name) < 50:
+                    if not self._looks_like_customer_entity(name, "text_mention"):
+                        continue
                     evidence.append(CustomerEvidence(
                         name=name,
                         source_url=source_url,

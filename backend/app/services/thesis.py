@@ -126,6 +126,21 @@ JOB_PAGE_KEYWORDS = (
     "api",
     "platform",
 )
+CAPABILITY_KEYWORDS = (
+    "pms/oms",
+    "pms",
+    "oms",
+    "portfolio management system",
+    "order management system",
+    "wealth management platform",
+    "client lifecycle management",
+    "clm",
+    "onboarding platform",
+    "staffing platform",
+    "workforce management platform",
+    "replacement planning",
+    "shift replacement",
+)
 WORKFLOW_KEYWORDS = (
     "front office",
     "front-office",
@@ -188,6 +203,40 @@ CUSTOMER_ARCHETYPE_PATTERNS = (
     ("finance team", "finance team"),
     ("compliance teams", "compliance team"),
     ("compliance team", "compliance team"),
+)
+NOISY_CUSTOMER_TERMS = (
+    "award",
+    "provider",
+    "software",
+    "solution",
+    "solutions",
+    "platform",
+    "portal",
+    "consultancy",
+    "consulting",
+    "architecture",
+    "process redesign",
+    "onboarding",
+    "registration",
+    "cross device",
+    "omnichannel",
+    "intelligent",
+    "checklist",
+    "logo",
+    "colour",
+    "color",
+    "png",
+    "jpg",
+    "jpeg",
+    "svg",
+)
+NOISY_CUSTOMER_PREFIXES = (
+    "how ",
+    "why ",
+    "our ",
+    "with ",
+    "secure ",
+    "redeveloping ",
 )
 
 
@@ -289,6 +338,85 @@ def _job_page_is_relevant(page: dict[str, Any]) -> bool:
     return any(token in combined for token in JOB_PAGE_KEYWORDS)
 
 
+def _is_plausible_named_customer(
+    name: Any,
+    *,
+    evidence_type: Any = None,
+    context: Any = None,
+    source_url: Any = None,
+) -> bool:
+    text = _safe_phrase(name, max_len=120)
+    if not text:
+        return False
+    if not any(ch.isalpha() for ch in text):
+        return False
+
+    lowered = text.lower()
+    words = [word for word in re.split(r"\s+", text) if word]
+    if not words:
+        return False
+    if any(lowered.startswith(prefix) for prefix in NOISY_CUSTOMER_PREFIXES):
+        return False
+    if any(token in lowered for token in NOISY_CUSTOMER_TERMS):
+        return False
+    if re.search(r"[.!?]", text):
+        return False
+
+    evidence_kind = str(evidence_type or "").strip().lower()
+    context_lower = str(context or "").strip().lower()
+    source_lower = str(source_url or "").strip().lower()
+
+    if evidence_kind in {"logo_alt", "aria_label"}:
+        if len(words) > 6:
+            return False
+        if (
+            any(token in lowered for token in ("private bank", "wealth management firm", "management solution"))
+            and not any(suffix in lowered for suffix in ("bank", "capital", "partners", "group", "holdings"))
+        ):
+            return False
+        if not any(ch.isupper() or ch.isdigit() for ch in text):
+            return False
+    else:
+        if len(words) > 10:
+            return False
+
+    if source_lower and any(token in source_lower for token in ("/awards", "/insights", "/capabilities")):
+        if evidence_kind in {"logo_alt", "aria_label"} and len(words) > 4:
+            return False
+    if context_lower and "trusted by" not in context_lower and evidence_kind in {"logo_alt", "aria_label"}:
+        if any(token in context_lower for token in ("latest", "results", "recent", "ability to", "designed to help")):
+            return False
+    return True
+
+
+def _keyword_phrases_from_text(text: Any) -> list[str]:
+    lowered = str(text or "").lower()
+    if not lowered:
+        return []
+
+    phrases: list[str] = []
+    seen: set[str] = set()
+
+    def _append(value: str) -> None:
+        phrase = _safe_phrase(value, max_len=80)
+        key = _normalize_phrase_key(phrase)
+        if not phrase or not key or key in seen:
+            return
+        seen.add(key)
+        phrases.append(phrase)
+
+    for keyword in WORKFLOW_KEYWORDS:
+        if keyword in lowered:
+            _append(keyword)
+    for pattern, canonical in CUSTOMER_ARCHETYPE_PATTERNS:
+        if pattern in lowered:
+            _append(canonical)
+    for keyword in CAPABILITY_KEYWORDS:
+        if keyword in lowered:
+            _append(keyword)
+    return phrases
+
+
 def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
     if not isinstance(context_pack_json, dict):
         return {
@@ -365,6 +493,12 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
             aggregate_evidence.setdefault(evidence_id, payload)
             return evidence_id
 
+        site_summary = _safe_phrase(site.get("summary"), max_len=240)
+        if site_summary:
+            for phrase in _keyword_phrases_from_text(site_summary):
+                raw_phrases.add(phrase)
+                aggregate_phrases.add(phrase)
+
         for signal in site.get("signals") or []:
             if not isinstance(signal, dict):
                 continue
@@ -394,6 +528,13 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
         for customer in site.get("customer_evidence") or []:
             if not isinstance(customer, dict):
                 continue
+            if not _is_plausible_named_customer(
+                customer.get("name"),
+                evidence_type=customer.get("evidence_type"),
+                context=customer.get("context"),
+                source_url=customer.get("source_url"),
+            ):
+                continue
             evidence_id = _register_evidence(
                 source_url=customer.get("source_url"),
                 kind=f"site_customer:{customer.get('evidence_type') or 'unknown'}",
@@ -420,8 +561,19 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
         for page in pages:
             page_type = str(page.get("page_type") or "other").strip() or "other"
             headings = _extract_page_headings(page)
+            page_customers = [
+                customer
+                for customer in (page.get("customer_evidence") or [])
+                if isinstance(customer, dict)
+                and _is_plausible_named_customer(
+                    customer.get("name"),
+                    evidence_type=customer.get("evidence_type"),
+                    context=customer.get("context"),
+                    source_url=customer.get("source_url") or page.get("url"),
+                )
+            ]
             has_signals = bool(page.get("signals"))
-            has_customers = bool(page.get("customer_evidence"))
+            has_customers = bool(page_customers)
             site_page_type_counts[page_type] = site_page_type_counts.get(page_type, 0) + 1
             page_type_counts[page_type] = page_type_counts.get(page_type, 0) + 1
             total_pages += 1
@@ -451,6 +603,13 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
                 if phrase:
                     raw_phrases.add(phrase)
                     aggregate_phrases.add(phrase)
+            page_title = _compact_phrase(page.get("title"), max_words=8, max_len=80)
+            if page_title:
+                raw_phrases.add(page_title)
+                aggregate_phrases.add(page_title)
+            for phrase in _keyword_phrases_from_text(page.get("raw_content")):
+                raw_phrases.add(phrase)
+                aggregate_phrases.add(phrase)
 
             for signal in page.get("signals") or []:
                 if not isinstance(signal, dict):
@@ -478,9 +637,7 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
                         }
                         aggregate_integrations.setdefault(key, integrations[key])
 
-            for customer in page.get("customer_evidence") or []:
-                if not isinstance(customer, dict):
-                    continue
+            for customer in page_customers:
                 evidence_id = _register_evidence(
                     source_url=customer.get("source_url") or page.get("url"),
                     kind=f"page_customer:{customer.get('evidence_type') or 'unknown'}",
@@ -518,7 +675,22 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
                     "page_type_counts": site_page_type_counts,
                     "selected_pages": len(selected_pages),
                     "pages_with_signals": len([page for page in pages if page.get("signals")]),
-                    "pages_with_customer_evidence": len([page for page in pages if page.get("customer_evidence")]),
+                    "pages_with_customer_evidence": len(
+                        [
+                            page
+                            for page in pages
+                            if any(
+                                isinstance(customer, dict)
+                                and _is_plausible_named_customer(
+                                    customer.get("name"),
+                                    evidence_type=customer.get("evidence_type"),
+                                    context=customer.get("context"),
+                                    source_url=customer.get("source_url") or page.get("url"),
+                                )
+                                for customer in (page.get("customer_evidence") or [])
+                            )
+                        ]
+                    ),
                     "career_pages_selected": len(
                         [page for page in selected_pages if str(page.get("page_type") or "") == "careers"]
                     ),

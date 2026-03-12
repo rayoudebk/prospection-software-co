@@ -77,6 +77,11 @@ from app.services.retrieval.search_orchestrator import run_external_search_queri
 from app.services.retrieval.url_normalization import normalize_url
 from app.services.retrieval.cache import RetrievalCache
 from app.services.crawler.connectors.chrome_devtools_mcp import render_page_via_chrome_devtools_mcp
+from app.services.crawler.career_priority import (
+    career_excluded_keyword_hits,
+    career_target_keyword_hits,
+    is_career_page_url,
+)
 from app.services.quality_audit import (
     build_quality_audit_v1,
     normalize_quality_audit_v1,
@@ -116,6 +121,10 @@ FIRST_PARTY_AUTO_HINT_PATHS = (
     "/case-studies/",
     "/resources/case-studies/",
     "/success-stories/",
+    "/careers/",
+    "/jobs/",
+    "/jobs/search/",
+    "/careers/open-positions/",
 )
 
 FIRST_PARTY_HINT_URL_TOKENS = (
@@ -5532,6 +5541,14 @@ def _hint_url_score(url: str) -> int:
     for token in FIRST_PARTY_HINT_URL_TOKENS:
         if token in path:
             score += 7
+    if is_career_page_url(normalized):
+        score += 5
+        career_target_hits = career_target_keyword_hits(normalized)
+        career_excluded_hits = career_excluded_keyword_hits(normalized)
+        if career_target_hits:
+            score += 18 + min(24, len(career_target_hits) * 4)
+        elif career_excluded_hits:
+            score -= 24 + min(18, len(career_excluded_hits) * 4)
     if "/blog/" in path or "/news/" in path or "/press/" in path:
         score += 6
     if "/customer" in path or "/client" in path or "/case" in path:
@@ -5738,6 +5755,37 @@ def _collect_hint_urls_for_domains(
             seen.add(key)
             collected.append(normalized)
     return collected
+
+
+def _context_pack_start_urls_for_site(profile: CompanyProfile | None, site_url: str | None) -> list[str]:
+    normalized_site_url = normalize_url(site_url or "")
+    site_domain = normalize_domain(normalized_site_url)
+    if not site_domain or not profile:
+        return []
+
+    start_urls: list[str] = []
+    seen: set[str] = set()
+
+    def register(raw_url: str | None) -> None:
+        normalized = normalize_url(raw_url or "")
+        if not normalized:
+            return
+        if normalize_domain(normalized) != site_domain:
+            return
+        if normalized.lower() == normalized_site_url.lower():
+            return
+        key = normalized.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        start_urls.append(normalized)
+
+    if normalized_site_url == normalize_url(profile.buyer_company_url or ""):
+        for url in profile.reference_evidence_urls or []:
+            register(url)
+    for url in profile.reference_company_urls or []:
+        register(url)
+    return start_urls[:12]
 
 
 def _auto_first_party_hint_urls_for_domains(domains: list[str]) -> list[str]:
@@ -6350,13 +6398,19 @@ def generate_context_pack_v2(job_id: int):
                         max_pages=30,
                         progress_callback=lambda msg, d=domain, start=site_start, end=site_end: update_progress(f"[{d}] {msg}", start, end)
                     )
+                    start_urls = _context_pack_start_urls_for_site(profile, url)
                     
                     job.progress = site_start
                     job.progress_message = f"Starting crawl of {domain}..."
                     _append_job_live_event(job, f"[{domain}] Starting crawl")
                     db.commit()
                     
-                    context_pack = loop.run_until_complete(crawler.crawl_for_context(url))
+                    context_pack = loop.run_until_complete(
+                        crawler.crawl_for_context(
+                            url,
+                            start_urls=start_urls,
+                        )
+                    )
                     combined_markdown.append(context_pack.raw_markdown)
                     product_pages_total += context_pack.product_pages_count
                     all_context_packs.append((url, context_pack))  # Store for later
