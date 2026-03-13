@@ -1944,6 +1944,16 @@ def _extract_json_object(blob: Any) -> Optional[dict[str, Any]]:
     return None
 
 
+def _truncate_words(value: Any, *, max_words: int, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    words = text.split()
+    if len(words) > max_words:
+        text = " ".join(words[:max_words]).strip()
+    return text[:max_chars].strip()
+
+
 def _compact_market_map_payload(
     *,
     company_name: str,
@@ -2169,7 +2179,11 @@ def _merge_reasoned_market_map_brief(
 
     merged = {
         **fallback_brief,
-        "source_summary": _safe_phrase(parsed.get("source_summary"), max_len=800)
+        "source_summary": _truncate_words(
+            _safe_phrase(parsed.get("source_summary"), max_len=1200) or fallback_brief.get("source_summary"),
+            max_words=120,
+            max_chars=800,
+        )
         or fallback_brief.get("source_summary"),
         "reasoning_status": "success",
         "reasoning_warning": None,
@@ -3142,10 +3156,13 @@ def bootstrap_thesis_payload(
         )
     ).strip()[:8000]
 
-    final_open_questions = normalize_open_questions(market_map_brief.get("open_questions"))
-    for question in normalize_open_questions(open_questions):
-        if question not in final_open_questions:
-            final_open_questions.append(question)
+    final_open_questions = normalize_open_questions(market_map_brief.get("open_questions"))[:4]
+    if market_map_brief.get("reasoning_status") != "success":
+        for question in normalize_open_questions(open_questions):
+            if question not in final_open_questions:
+                final_open_questions.append(question)
+            if len(final_open_questions) >= 4:
+                break
 
     return {
         "summary": summary,

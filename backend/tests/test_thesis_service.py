@@ -659,6 +659,7 @@ def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monke
     assert payload["market_map_brief"]["open_questions"][0] == (
         "Which buyer segment should the first adjacency map prioritize?"
     )
+    assert len(payload["market_map_brief"]["open_questions"]) == 1
 
 
 def test_bootstrap_thesis_payload_builds_hublo_style_market_map_layers():
@@ -852,3 +853,86 @@ def test_bootstrap_thesis_payload_marks_degraded_reasoning_when_llm_fails(monkey
 
     assert payload["market_map_brief"]["reasoning_status"] == "degraded"
     assert "deterministic fallback" in str(payload["market_map_brief"]["reasoning_warning"] or "").lower()
+
+
+def test_bootstrap_thesis_payload_keeps_reasoned_questions_capped(monkeypatch):
+    profile = CompanyProfile(
+        workspace_id=14,
+        buyer_company_url="https://4tpm.fr/platform/front-office",
+        generated_context_summary="",
+        reference_company_urls=[],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={},
+        context_pack_json={
+            "sites": [
+                {
+                    "url": "https://4tpm.fr/platform/front-office",
+                    "company_name": "4TPM",
+                    "summary": "",
+                    "signals": [],
+                    "customer_evidence": [],
+                    "pages": [
+                        {
+                            "url": "https://4tpm.fr/platform/front-office",
+                            "title": "4TPM - Plateforme Wealth Management",
+                            "page_type": "product",
+                            "blocks": [
+                                {"type": "heading", "content": "Front office titres pour gérants et desks de trading", "level": 1},
+                                {"type": "heading", "content": "Préparation et modélisation des portefeuilles", "level": 3},
+                            ],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": "Front office titres PMS OMS",
+                        }
+                    ],
+                }
+            ]
+        },
+        product_pages_found=1,
+    )
+
+    class _FakeResponse:
+        def __init__(self, text: str):
+            self.text = text
+            self.provider = "openai"
+            self.model = "gpt-4.1-mini"
+
+    class _FakeOrchestrator:
+        def run_stage(self, request):
+            import json
+
+            prompt = request.prompt
+            input_idx = prompt.index("Input:\n") + len("Input:\n")
+            payload = json.loads(prompt[input_idx:])
+            capability_id = next(
+                node["id"] for node in payload["taxonomy_nodes"] if node["phrase"] == "Préparation et modélisation des portefeuilles"
+            )
+            return _FakeResponse(
+                json.dumps(
+                    {
+                        "source_summary": "4TPM sells front-office wealth capabilities for trading desks and portfolio teams.",
+                        "customer_node_ids": [],
+                        "workflow_node_ids": [],
+                        "capability_node_ids": [capability_id],
+                        "delivery_or_integration_node_ids": [],
+                        "active_lens_ids": [],
+                        "adjacency_hypotheses": [],
+                        "confidence_gaps": ["Need better named customer proof."],
+                        "open_questions": [
+                            "Which customer segment is strongest?",
+                            "What adjacent workflow should be mapped next?",
+                        ],
+                    }
+                )
+            )
+
+    monkeypatch.setattr("app.services.thesis.LLMOrchestrator", _FakeOrchestrator)
+
+    payload = bootstrap_thesis_payload(profile)
+
+    assert payload["market_map_brief"]["reasoning_status"] == "success"
+    assert payload["market_map_brief"]["open_questions"] == [
+        "Which customer segment is strongest?",
+        "What adjacent workflow should be mapped next?",
+    ]
