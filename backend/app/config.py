@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     llm_stage_structured_models: str = "openai:gpt-4.1-mini,anthropic:claude-3-5-haiku-latest,gemini:gemini-2.0-flash"
     llm_stage_summary_models: str = "anthropic:claude-3-7-sonnet-latest,gemini:gemini-2.0-flash,openai:gpt-4.1-mini"
     llm_stage_crawler_triage_models: str = "gemini:gemini-2.0-flash,openai:gpt-4.1-mini,anthropic:claude-3-5-haiku-latest"
+    llm_stage_market_map_models: str = "anthropic:claude-3-7-sonnet-latest,openai:gpt-4.1-mini,gemini:gemini-2.0-flash"
 
     # Stage budgets and retry policy
     stage_seed_ingest_timeout_seconds: int = 240
@@ -121,6 +122,7 @@ class Settings(BaseSettings):
             "structured_normalization": self.llm_stage_structured_models,
             "context_summary": self.llm_stage_summary_models,
             "crawler_triage": self.llm_stage_crawler_triage_models,
+            "market_map_reasoning": self.llm_stage_market_map_models,
         }
         return self._parse_provider_models(mapping.get(stage_name, self.llm_stage_discovery_models))
 

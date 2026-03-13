@@ -14,6 +14,7 @@ class LLMStage(str, Enum):
     structured_normalization = "structured_normalization"
     context_summary = "context_summary"
     crawler_triage = "crawler_triage"
+    market_map_reasoning = "market_map_reasoning"
 
 
 @dataclass

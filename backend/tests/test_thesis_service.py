@@ -543,3 +543,108 @@ def test_bootstrap_thesis_payload_promotes_rendered_product_features_into_cleane
     assert "Préparation et modélisation des portefeuilles" in surfaced_capabilities
     assert "Génération d'ordres blocs et routage full STP" in surfaced_capabilities
     assert "Le client alimente son compte espèces" not in surfaced_capabilities
+
+
+def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monkeypatch):
+    profile = CompanyProfile(
+        workspace_id=11,
+        buyer_company_url="https://4tpm.fr/platform/front-office",
+        generated_context_summary="",
+        reference_company_urls=[],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={},
+        context_pack_json={
+            "sites": [
+                {
+                    "url": "https://4tpm.fr/platform/front-office",
+                    "company_name": "4TPM",
+                    "summary": "",
+                    "signals": [],
+                    "customer_evidence": [],
+                    "pages": [
+                        {
+                            "url": "https://4tpm.fr/platform/front-office",
+                            "title": "4TPM - Plateforme Wealth Management",
+                            "page_type": "product",
+                            "blocks": [
+                                {"type": "heading", "content": "Front office titres pour gérants et desks de trading", "level": 1},
+                                {"type": "heading", "content": "Préparation et modélisation des portefeuilles", "level": 3},
+                                {"type": "heading", "content": "Génération d'ordres blocs et routage full STP", "level": 3},
+                                {"type": "heading", "content": "Architecture & Intégration", "level": 2},
+                                {"type": "paragraph", "content": "APIs REST et documentation API."},
+                            ],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": "Front office titres PMS OMS REST API",
+                        }
+                    ],
+                }
+            ]
+        },
+        product_pages_found=1,
+    )
+
+    class _FakeResponse:
+        def __init__(self, text: str):
+            self.text = text
+
+    class _FakeOrchestrator:
+        def run_stage(self, request):
+            import json
+
+            assert request.stage.value == "market_map_reasoning"
+            prompt = request.prompt
+            input_idx = prompt.index("Input:\n") + len("Input:\n")
+            payload = json.loads(prompt[input_idx:])
+            node_by_phrase = {
+                node["phrase"]: node["id"]
+                for node in payload["taxonomy_nodes"]
+            }
+            return _FakeResponse(
+                json.dumps(
+                    {
+                        "source_summary": "4TPM appears to sell front-office wealth management capabilities to private-bank and brokerage buyers.",
+                        "customer_node_ids": [],
+                        "workflow_node_ids": [],
+                        "capability_node_ids": [
+                            node_by_phrase["Préparation et modélisation des portefeuilles"],
+                            node_by_phrase["Génération d'ordres blocs et routage full STP"],
+                        ],
+                        "delivery_or_integration_node_ids": [
+                            node_by_phrase["REST API"],
+                        ],
+                        "active_lens_ids": [],
+                        "adjacency_hypotheses": [
+                            {
+                                "text": "Private-bank buyers using front-office tooling may evaluate adjacent compliance and routing capabilities.",
+                                "supporting_node_ids": [
+                                    node_by_phrase["Préparation et modélisation des portefeuilles"],
+                                    node_by_phrase["Génération d'ordres blocs et routage full STP"],
+                                ],
+                                "confidence": 0.77,
+                            }
+                        ],
+                        "confidence_gaps": ["Named customer proof is still thin."],
+                        "open_questions": ["Which buyer segment should the first adjacency map prioritize?"],
+                    }
+                )
+            )
+
+    monkeypatch.setattr("app.services.thesis.LLMOrchestrator", _FakeOrchestrator)
+
+    payload = bootstrap_thesis_payload(profile)
+
+    assert payload["market_map_brief"]["source_summary"].startswith("4TPM appears to sell front-office wealth management capabilities")
+    assert [
+        node["phrase"] for node in payload["market_map_brief"]["capability_nodes"]
+    ] == [
+        "Préparation et modélisation des portefeuilles",
+        "Génération d'ordres blocs et routage full STP",
+    ]
+    assert [
+        node["phrase"] for node in payload["market_map_brief"]["delivery_or_integration_nodes"]
+    ] == ["REST API"]
+    assert payload["market_map_brief"]["open_questions"][0] == (
+        "Which buyer segment should the first adjacency map prioritize?"
+    )
