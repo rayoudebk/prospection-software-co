@@ -6378,8 +6378,7 @@ def _estimate_context_pack_site_progress(message: str) -> Optional[float]:
 def generate_context_pack_v2(job_id: int):
     """Generate context pack by crawling buyer and reference URLs."""
     from app.services.crawler import UnifiedCrawler
-    from app.services.gemini_workspace import GeminiWorkspaceClient
-    from app.services.thesis import build_context_pack_v2
+    from app.services.thesis import bootstrap_thesis_payload, build_context_pack_v2
     
     db = SessionLocal()
     try:
@@ -6573,69 +6572,39 @@ def generate_context_pack_v2(job_id: int):
                 except Exception as e:
                     print(f"Error building JSON for {url}: {e}")
             
-            # Summarize with Gemini
-            job.progress = 0.8
-            job.progress_message = "Generating summary..."
-            db.commit()
-            
-            try:
-                if buyer_context_pack is not None and _context_pack_has_meaningful_content(buyer_context_pack):
-                    summary_prompt = (
-                        "Summarize the buyer context in <= 250 words.\n"
-                        "Focus on ICP, product capabilities, distribution, and constraints.\n"
-                        "Use only buyer first-party evidence.\n"
-                        "Return plain text only.\n\n"
-                        f"Buyer URL: {profile.buyer_company_url or ''}\n\n"
-                        f"Context:\n{buyer_raw_markdown[:14000]}"
-                    )
-                    summary_response = LLMOrchestrator().run_stage(
-                        LLMRequest(
-                            stage=LLMStage.context_summary,
-                            prompt=summary_prompt,
-                            timeout_seconds=60,
-                            use_web_search=False,
-                            expect_json=False,
-                            metadata={"workspace_id": workspace.id, "job_id": job.id},
-                        )
-                    )
-                    profile.generated_context_summary = str(summary_response.text or "").strip()[:8000]
-                else:
-                    profile.generated_context_summary = (
-                        "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
-                        "Add supporting evidence or regenerate after improving the crawl target."
-                    )
-            except Exception as e:
-                print(f"Error generating orchestrated summary: {e}")
-                try:
-                    if buyer_context_pack is not None and _context_pack_has_meaningful_content(buyer_context_pack):
-                        gemini = GeminiWorkspaceClient()
-                        summary = gemini.summarize_context_pack(
-                            buyer_raw_markdown,
-                            profile.buyer_company_url or "",
-                        )
-                        profile.generated_context_summary = summary
-                    else:
-                        profile.generated_context_summary = (
-                            "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
-                            "Add supporting evidence or regenerate after improving the crawl target."
-                        )
-                except Exception as legacy_exc:
-                    print(f"Error generating summary: {legacy_exc}")
-                    profile.generated_context_summary = (
-                        buyer_raw_markdown[:2000]
-                        if buyer_raw_markdown
-                        else (
-                            "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
-                            "Add supporting evidence or regenerate after improving the crawl target."
-                        )
-                    )
-            
             # Update profile
             profile.context_pack_markdown = raw_markdown
             profile.context_pack_json = build_context_pack_v2(combined_context_pack_json)
             profile.context_pack_generated_at = datetime.utcnow()
             profile.product_pages_found = product_pages_total
             profile.reference_summaries = reference_summaries
+
+            # Generate the source summary from the same phase-1 market-map reasoning path
+            job.progress = 0.8
+            job.progress_message = "Generating summary..."
+            db.commit()
+
+            try:
+                if buyer_context_pack is not None and _context_pack_has_meaningful_content(buyer_context_pack):
+                    profile.generated_context_summary = None
+                    bootstrap_payload = bootstrap_thesis_payload(profile)
+                    generated_summary = str(
+                        ((bootstrap_payload.get("market_map_brief") or {}).get("source_summary"))
+                        or bootstrap_payload.get("summary")
+                        or ""
+                    ).strip()
+                    profile.generated_context_summary = generated_summary[:8000] if generated_summary else None
+                else:
+                    profile.generated_context_summary = (
+                        "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
+                        "Add supporting evidence or regenerate after improving the crawl target."
+                    )
+            except Exception as e:
+                print(f"Error generating phase-1 summary: {e}")
+                profile.generated_context_summary = (
+                    "Unable to generate the market map summary from the current source evidence. "
+                    "Review the crawl coverage and add stronger first-party product, customer, or integration pages."
+                )
             
             # #region agent log
             import json
