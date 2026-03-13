@@ -19,6 +19,15 @@
 - When working with third-party platforms or hosted services, check for a CLI workflow first and prefer it over browser or dashboard debugging when it offers equivalent control.
 - Use CLI tools as much as possible when debugging or operating Railway, Vercel, and Chrome-related workflows because they are faster, more reproducible, and easier to inspect.
 
+## Railway Deployment Discipline
+
+- Do not stack Railway deploys for the same service.
+- Before triggering a new Railway deploy, check the current service status/queue first.
+- If a Railway deployment for that service is already `QUEUED` or `BUILDING`, do not start another deploy.
+- Prefer one in-flight deploy per service at a time, then verify whether it reaches `SUCCESS` before retrying.
+- When a deployment backlog exists, stop creating new deployments and wait for the queue to drain unless there is a clear way to cancel older ones.
+- Treat repeated manual `railway deployment up` calls as a last resort because they can create a deploy queue that hides whether the latest code is actually serving traffic.
+
 ## Git Workflow
 
 - Do not introduce a PR-based workflow for this project right now.
