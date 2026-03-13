@@ -2062,6 +2062,7 @@ def _market_map_reasoning_prompt(payload: dict[str, Any]) -> str:
         "Select from the provided node IDs and lens IDs only.\n"
         "Keep workflow, capability, and delivery/integration separate.\n"
         "Prefer source-company rendered product and solution evidence over generic summaries.\n"
+        "Use the source company's own vocabulary from the provided nodes and proof, not fixed industry or product examples.\n"
         "If evidence is thin, keep fields sparse rather than generic.\n\n"
         "Selection rules:\n"
         "- Keep the source summary under 120 words and make it specific.\n"

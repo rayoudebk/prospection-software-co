@@ -1,6 +1,7 @@
 from app.models.workspace import CompanyProfile
 from app.services.llm.types import LLMOrchestrationError, ModelAttemptTrace
 from app.services.thesis import (
+    _market_map_reasoning_prompt,
     apply_thesis_adjustment_operations,
     bootstrap_thesis_payload,
     build_context_pack_v2,
@@ -936,3 +937,49 @@ def test_bootstrap_thesis_payload_keeps_reasoned_questions_capped(monkeypatch):
         "Which customer segment is strongest?",
         "What adjacent workflow should be mapped next?",
     ]
+
+
+def test_market_map_reasoning_prompt_stays_domain_agnostic():
+    prompt = _market_map_reasoning_prompt(
+        {
+            "prompt_version": "v2",
+            "source_company": {"name": "ExampleCo", "website": "https://example.com"},
+            "crawl_coverage": {"total_pages": 4},
+            "taxonomy_nodes": [],
+            "ranked_nodes_by_layer": {
+                "customer_archetype": [],
+                "workflow": [],
+                "capability": [],
+                "delivery_or_integration": [],
+            },
+            "lens_seeds": [],
+            "named_customer_proof": [],
+            "integration_partner_proof": [],
+            "evidence_highlights": {
+                "named_customer_names": [],
+                "integration_partner_names": [],
+                "top_capability_phrases": [],
+                "top_workflow_phrases": [],
+                "top_customer_phrases": [],
+                "top_delivery_phrases": [],
+            },
+            "selection_rules": {"summary_max_words": 120},
+            "fallback_brief": {
+                "source_summary": "",
+                "customer_node_ids": [],
+                "workflow_node_ids": [],
+                "capability_node_ids": [],
+                "delivery_or_integration_node_ids": [],
+                "active_lens_ids": [],
+                "confidence_gaps": [],
+                "open_questions": [],
+            },
+        }
+    )
+
+    lowered = prompt.lower()
+    assert "use the source company's own vocabulary" in lowered
+    assert "4tpm" not in lowered
+    assert "hublo" not in lowered
+    assert "private bank" not in lowered
+    assert "hospital" not in lowered
