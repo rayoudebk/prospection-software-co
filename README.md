@@ -1,12 +1,12 @@
-# Static SME M&A Target Radar
+# Evidence-Backed M&A Sourcing Intelligence
 
-Evidence-first acquisition target discovery for software markets. The product is optimized for **static snapshot analysis** (not live monitoring) and prioritizes **precision + source traceability** over broad recall.
+Evidence-first acquisition target discovery for software markets. The product is optimized for **source-grounded market mapping and static snapshot analysis** rather than live monitoring, and prioritizes **precision + source traceability** over broad recall.
 
 ## V1 Product Flow
 
-`Company Thesis -> Search Lanes -> Universe -> Cards`
+`Market Map Brief -> Search Lanes -> Universe -> Cards`
 
-1. `Company Thesis`: Start from your company website, add comparable companies or proof links, crawl the relevant sources, and generate a draft thesis.
+1. `Market Map Brief`: Start from a source company website, add comparable companies or supporting proof links, crawl the relevant sources, and generate a source-scoped market map brief.
 2. `Search Lanes`: Review the derived core and adjacent lanes that will steer sourcing.
 3. `Universe`: Build and curate a candidate longlist with evidence-backed fit rationale.
 4. `Cards`: Generate immutable snapshot cards with:
@@ -16,18 +16,67 @@ Evidence-first acquisition target discovery for software markets. The product is
 
 ## Current UX Behavior
 
-- `buyer` in the data model means **your company**, not a target.
-- The company-thesis step is now company-first in the UI:
-  - `Your company website`
+- `buyer` in the data model means the **source company / anchor company** for the market map, not a target.
+- Phase 1 is now brief-first in the UI:
+  - `Source company website`
   - optional comparable companies
-  - optional proof links
-  - `Generate Draft Thesis`, `Recrawl And Update Draft`, and `Regenerate Draft Only`
+  - optional proof links / supporting evidence URLs
+  - `Generate Market Map Brief`, `Recrawl And Update Brief`, and `Regenerate Brief Only`
 - Long-running jobs expose:
   - step-based progress
   - a stop control
   - rolling source activity from the crawl/search worker
   - a compact completed-run summary after the phase finishes
-- Context-pack routes still exist, but the product language and workflow are thesis-first.
+- Context-pack routes still exist, but the product language and workflow are market-map-first.
+
+## Phase 1 Artifacts
+
+Phase 1 now produces four generic artifacts that stay reusable across different source companies:
+
+1. `Source Company Context Pack`
+   - selected first-party pages
+   - evidence items
+   - named customers
+   - integrations / partners
+   - extracted raw phrases
+   - crawl coverage stats
+2. `Taxonomy Map`
+   - `customer_archetype`
+   - `workflow`
+   - `capability`
+   - `delivery_or_integration`
+3. `Market Map Brief`
+   - source summary
+   - top customer/workflow/capability nodes
+   - named customer proof
+   - integration proof
+   - active lens recommendations
+   - adjacency hypotheses
+   - open questions / evidence gaps
+4. `Lens Seeds`
+   - `same_customer_different_product`
+   - `same_product_different_customer`
+   - `different_product_different_customer_within_market_box`
+
+## Crawl And Extraction Strategy
+
+- Buyer/source sites are crawled more deeply than comparator sites.
+- High-signal first-party routes are prioritized:
+  - product / platform / solution pages
+  - customer / reference / case-study pages
+  - integration / docs / API pages
+  - selected careers pages when they add product or workflow context
+- Thin SPA sites are supported through:
+  - JS bundle extraction for route labels, logos, and embedded signals
+  - rendered page fallback for interactive product pages
+  - accordion/disclosure expansion on selected product and solution routes
+- Context packs are source-preserving:
+  - page type
+  - URL
+  - headings
+  - extracted evidence blocks/snippets
+  - captured timestamps
+  - confidence metadata
 
 ## Scope (V1)
 
@@ -42,7 +91,7 @@ Evidence-first acquisition target discovery for software markets. The product is
 - Backend: FastAPI + SQLAlchemy (async)
 - Workers: Celery + Redis
 - Database: PostgreSQL
-- Research/enrichment: OpenAI/Gemini orchestration + lightweight web fetching (no browser agents)
+- Research/enrichment: OpenAI/Gemini orchestration + structured first-party crawling + Playwright-backed rendering for interactive pages
 
 ## Quick Start
 
@@ -98,7 +147,7 @@ Services:
 - `POST /workspaces/{workspace_id}/context-pack:refresh`
 - `POST /workspaces/{workspace_id}/context-pack:export`
 
-### Thesis + Search Lanes
+### Market Map Brief + Search Lanes
 
 - `GET /workspaces/{workspace_id}/thesis-pack`
 - `PATCH /workspaces/{workspace_id}/thesis-pack`
@@ -148,8 +197,16 @@ Services:
 - Context-pack jobs now:
   - batch the LLM triage phase instead of classifying up to 100 preview pages in one call
   - emit rolling live events so the UI can show recent source activity
-  - supersede older company-thesis jobs when a new thesis run starts
+  - supersede older phase-1 jobs when a new brief run starts
+  - prioritize buyer/source high-signal first-party routes over comparator depth
+  - selectively include relevant careers pages
+  - render interactive product/solution pages when static extraction is too thin
 - Claims without source are rendered as `hypothesis`.
 - Source-backed claims/metrics include source pill metadata (`label`, `url`, `captured_at`, optional `document_id`).
 - Export APIs return payloads only; arbitrary server-side file path writes are not allowed.
 - `rich_json` export includes both `kept` and `rejected` screening decisions with auditable reasons, ICP/product/customer evidence, numeric ranges, and source pills.
+
+## Phase 1 Design Docs
+
+- [Phase 1 Market Map Brief](/Users/rayaneachich/Desktop/prospection-software-co/docs/phase1-market-map-brief.md)
+- [Phase 1 Market Map Reasoning](/Users/rayaneachich/Desktop/prospection-software-co/docs/phase1-market-map-reasoning.md)
