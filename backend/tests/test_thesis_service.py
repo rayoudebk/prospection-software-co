@@ -547,6 +547,58 @@ def test_bootstrap_thesis_payload_promotes_rendered_product_features_into_cleane
     assert "Le client alimente son compte espèces" not in surfaced_capabilities
 
 
+def test_taxonomy_ranking_prefers_broader_capability_clusters():
+    profile = CompanyProfile(
+        workspace_id=16,
+        buyer_company_url="https://4tpm.fr/platform/front-office",
+        generated_context_summary="",
+        reference_company_urls=[],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={},
+        context_pack_json={
+            "sites": [
+                {
+                    "url": "https://4tpm.fr/platform/front-office",
+                    "company_name": "4TPM",
+                    "summary": "",
+                    "signals": [],
+                    "customer_evidence": [],
+                    "pages": [
+                        {
+                            "url": "https://4tpm.fr/platform/front-office",
+                            "title": "4TPM - Plateforme Wealth Management",
+                            "page_type": "product",
+                            "blocks": [
+                                {"type": "heading", "content": "Pré-trade, trading et post-trade", "level": 3},
+                                {"type": "heading", "content": "Préparation, modélisation et structuration", "level": 3},
+                                {"type": "heading", "content": "Portefeuilles modèles pour le stock picking", "level": 3},
+                                {"type": "heading", "content": "Contrôles de sécurité sur les retraits", "level": 3},
+                            ],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": "PMS OMS trading routing compliance",
+                        }
+                    ],
+                }
+            ]
+        },
+        product_pages_found=1,
+    )
+
+    payload = bootstrap_thesis_payload(profile)
+    capability_phrases = [
+        node["phrase"] for node in payload["taxonomy_nodes"] if node["layer"] == "capability"
+    ]
+
+    assert capability_phrases.index("Pré-trade, trading et post-trade") < capability_phrases.index(
+        "Portefeuilles modèles pour le stock picking"
+    )
+    assert capability_phrases.index("Préparation, modélisation et structuration") < capability_phrases.index(
+        "Contrôles de sécurité sur les retraits"
+    )
+
+
 def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monkeypatch):
     profile = CompanyProfile(
         workspace_id=11,
@@ -936,6 +988,87 @@ def test_bootstrap_thesis_payload_keeps_reasoned_questions_capped(monkeypatch):
     assert payload["market_map_brief"]["open_questions"] == [
         "Which customer segment is strongest?",
         "What adjacent workflow should be mapped next?",
+    ]
+
+
+def test_bootstrap_thesis_payload_filters_strategy_style_reasoned_questions(monkeypatch):
+    profile = CompanyProfile(
+        workspace_id=15,
+        buyer_company_url="https://4tpm.fr/platform/front-office",
+        generated_context_summary="",
+        reference_company_urls=[],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={},
+        context_pack_json={
+            "sites": [
+                {
+                    "url": "https://4tpm.fr/platform/front-office",
+                    "company_name": "4TPM",
+                    "summary": "",
+                    "signals": [],
+                    "customer_evidence": [],
+                    "pages": [
+                        {
+                            "url": "https://4tpm.fr/platform/front-office",
+                            "title": "4TPM - Plateforme Wealth Management",
+                            "page_type": "product",
+                            "blocks": [
+                                {"type": "heading", "content": "Préparation et modélisation des portefeuilles", "level": 3},
+                            ],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": "Front office titres PMS OMS",
+                        }
+                    ],
+                }
+            ]
+        },
+        product_pages_found=1,
+    )
+
+    class _FakeResponse:
+        def __init__(self, text: str):
+            self.text = text
+            self.provider = "openai"
+            self.model = "gpt-4.1-mini"
+
+    class _FakeOrchestrator:
+        def run_stage(self, request):
+            import json
+
+            prompt = request.prompt
+            input_idx = prompt.index("Input:\n") + len("Input:\n")
+            payload = json.loads(prompt[input_idx:])
+            capability_id = next(
+                node["id"] for node in payload["taxonomy_nodes"] if node["phrase"] == "Préparation et modélisation des portefeuilles"
+            )
+            return _FakeResponse(
+                json.dumps(
+                    {
+                        "source_summary": "4TPM sells front-office wealth capabilities.",
+                        "customer_node_ids": [],
+                        "workflow_node_ids": [],
+                        "capability_node_ids": [capability_id],
+                        "delivery_or_integration_node_ids": [],
+                        "active_lens_ids": [],
+                        "adjacency_hypotheses": [],
+                        "confidence_gaps": [],
+                        "open_questions": [
+                            "Which customer segment is prioritized for growth?",
+                            "What evidence clarifies workflow depth across front-office operations?",
+                        ],
+                    }
+                )
+            )
+
+    monkeypatch.setattr("app.services.thesis.LLMOrchestrator", _FakeOrchestrator)
+
+    payload = bootstrap_thesis_payload(profile)
+
+    assert payload["market_map_brief"]["reasoning_status"] == "success"
+    assert payload["market_map_brief"]["open_questions"] == [
+        "What evidence clarifies workflow depth across front-office operations?"
     ]
 
 

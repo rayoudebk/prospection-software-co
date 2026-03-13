@@ -252,6 +252,17 @@ TRAILING_CONNECTOR_WORDS = {
     "aux",
     "with",
 }
+OPEN_QUESTION_BLOCKLIST_TERMS = (
+    "roadmap",
+    "growth",
+    "go-to-market",
+    "go to market",
+    "commercial expansion",
+    "strategic focus",
+    "strategic priority",
+    "prioritized for growth",
+    "prioritised for growth",
+)
 CAPABILITY_QUALITY_KEYWORDS = (
     "pms",
     "oms",
@@ -1643,17 +1654,27 @@ def _taxonomy_node_quality_score(node: dict[str, Any]) -> tuple[float, int, int,
     alias_count = len(node.get("aliases") or [])
     word_count = _phrase_word_count(phrase)
     quality = float(node.get("confidence") or 0.0)
+    capability_keyword_hits = sum(1 for keyword in CAPABILITY_QUALITY_KEYWORDS if keyword in lowered)
+    is_broad_cluster_phrase = (
+        capability_keyword_hits >= 2
+        and word_count >= 3
+        and any(token in lowered for token in (",", " et ", " and ", " / "))
+    )
 
     if node.get("layer") == "capability":
-        if any(keyword in lowered for keyword in CAPABILITY_QUALITY_KEYWORDS):
+        if capability_keyword_hits:
             quality += 0.18
+        if capability_keyword_hits >= 2:
+            quality += 0.08
         if any(lowered.startswith(prefix) for prefix in CAPABILITY_DEMOTION_PREFIXES):
             quality -= 0.22
         if 2 <= word_count <= 6:
             quality += 0.12
         if 2 <= word_count <= 5 and any(keyword in lowered for keyword in ("pms", "oms", "stp", "trading", "routage", "modélisation", "arbitrage", "benchmark", "compliance", "reporting")):
             quality += 0.08
-        if "," in phrase or word_count > 8:
+        if is_broad_cluster_phrase:
+            quality += 0.12
+        if ("," in phrase and not is_broad_cluster_phrase) or word_count > 8:
             quality -= 0.12
         if any(lowered.startswith(prefix) for prefix in SENTENCE_LIKE_CAPABILITY_PREFIXES):
             quality -= 0.28
@@ -2070,9 +2091,13 @@ def _market_map_reasoning_prompt(payload: dict[str, Any]) -> str:
         "- Customer nodes must be buyer/operator archetypes, never named accounts.\n"
         "- Workflow nodes must be operating jobs or workflow clusters.\n"
         "- Capability nodes must be feature clusters or product functions, not delivery traits.\n"
+        "- When capability candidates mix core workflow-enabling functions with secondary controls, analytics, or client-service details, prefer the core workflow-enabling functions.\n"
+        "- Prefer broader platform capability clusters over narrow leaf features or isolated safeguard checks when both are available.\n"
+        "- Do not simply take the first ranked nodes if lower-ranked nodes better express the product's core operating value.\n"
         "- Delivery/integration nodes must include APIs, docs, ecosystem, or architecture traits only.\n"
         "- Activate the third lens only when the market box is clearly bounded by customers, workflows, or capabilities.\n"
-        "- Open questions must be real evidence gaps, not generic follow-ups.\n\n"
+        "- Open questions must be real evidence gaps grounded in the current source evidence, not roadmap, strategy, or generic follow-ups.\n"
+        "- Prefer questions about missing segmentation, workflow depth, integration scope, customer proof, or capability detail.\n\n"
         "Return only valid JSON with this exact shape:\n"
         f"{json.dumps(MARKET_MAP_REASONING_OUTPUT_SCHEMA, ensure_ascii=False, indent=2)}\n\n"
         "Prioritize, in order:\n"
@@ -2397,6 +2422,27 @@ def normalize_thesis_claims(
 
 def normalize_open_questions(open_questions: Any) -> list[str]:
     return _normalize_string_list(open_questions, max_items=12, max_len=240)
+
+
+def _sanitize_reasoned_open_questions(open_questions: Any) -> list[str]:
+    sanitized: list[str] = []
+    seen: set[str] = set()
+    for question in normalize_open_questions(open_questions):
+        lowered = question.lower()
+        if any(term in lowered for term in OPEN_QUESTION_BLOCKLIST_TERMS):
+            continue
+        if "which customer segment" in lowered and (
+            "priorit" in lowered or "growth" in lowered or "strateg" in lowered
+        ):
+            continue
+        key = _normalize_phrase_key(question)
+        if key in seen:
+            continue
+        seen.add(key)
+        sanitized.append(question)
+        if len(sanitized) >= 4:
+            break
+    return sanitized
 
 
 def _extract_context_text(profile: CompanyProfile) -> str:
@@ -3157,7 +3203,7 @@ def bootstrap_thesis_payload(
         )
     ).strip()[:8000]
 
-    final_open_questions = normalize_open_questions(market_map_brief.get("open_questions"))[:4]
+    final_open_questions = _sanitize_reasoned_open_questions(market_map_brief.get("open_questions"))
     if market_map_brief.get("reasoning_status") != "success":
         for question in normalize_open_questions(open_questions):
             if question not in final_open_questions:

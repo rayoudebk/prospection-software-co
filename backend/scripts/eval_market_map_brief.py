@@ -82,7 +82,7 @@ def main() -> int:
     bootstrap_payload = bootstrap_thesis_payload(profile)
 
     output = bootstrap_payload if args.full else _compact_output(bootstrap_payload)
-    print(json.dumps(output, ensure_ascii=False, indent=2))
+    print(json.dumps(output, ensure_ascii=False, indent=2, default=str))
     return 0
 
 
