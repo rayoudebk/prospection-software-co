@@ -1112,6 +1112,8 @@ def test_market_map_reasoning_prompt_stays_domain_agnostic():
 
     lowered = prompt.lower()
     assert "use the source company's own vocabulary" in lowered
+    assert "opening paragraph of the sourcing brief" in lowered
+    assert "what adjacency box it suggests" in lowered
     assert "4tpm" not in lowered
     assert "hublo" not in lowered
     assert "private bank" not in lowered

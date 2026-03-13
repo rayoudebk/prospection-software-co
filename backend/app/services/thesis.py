@@ -1715,6 +1715,10 @@ def _generate_market_map_summary(
         sentences.append(
             f"Named customer proof includes {', '.join(named_names)}."
         )
+    if customer_names and workflow_names:
+        sentences.append(
+            f"This should anchor the first market map around {', '.join(customer_names[:2])} buyers and adjacent workflows around {workflow_names[0]}."
+        )
     if not sentences:
         sentences.append(
             f"{company_name} has limited first-party evidence; add more product, customer, or integration pages before trusting the market map."
@@ -1972,7 +1976,13 @@ def _truncate_words(value: Any, *, max_words: int, max_chars: int) -> str:
     words = text.split()
     if len(words) > max_words:
         text = " ".join(words[:max_words]).strip()
-    return text[:max_chars].strip()
+    if len(text) <= max_chars:
+        return text
+    clipped = text[:max_chars].rstrip()
+    last_space = clipped.rfind(" ")
+    if last_space >= max_chars * 0.6:
+        clipped = clipped[:last_space].rstrip()
+    return clipped
 
 
 def _compact_market_map_payload(
@@ -2087,6 +2097,8 @@ def _market_map_reasoning_prompt(payload: dict[str, Any]) -> str:
         "If evidence is thin, keep fields sparse rather than generic.\n\n"
         "Selection rules:\n"
         "- Keep the source summary under 120 words and make it specific.\n"
+        "- The source summary is the opening paragraph of the sourcing brief and should help decide what market map to build next.\n"
+        "- Use the summary to state what the source company appears to sell, to whom, across which workflows, and what adjacency box it suggests.\n"
         "- Prefer ranked nodes and evidence highlights over fallback summary text.\n"
         "- Customer nodes must be buyer/operator archetypes, never named accounts.\n"
         "- Workflow nodes must be operating jobs or workflow clusters.\n"
