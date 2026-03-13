@@ -1,4 +1,5 @@
 from app.models.workspace import CompanyProfile
+from app.services.llm.types import LLMOrchestrationError, ModelAttemptTrace
 from app.services.thesis import (
     apply_thesis_adjustment_operations,
     bootstrap_thesis_payload,
@@ -588,6 +589,8 @@ def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monke
     class _FakeResponse:
         def __init__(self, text: str):
             self.text = text
+            self.provider = "gemini"
+            self.model = "gemini-2.0-flash"
 
     class _FakeOrchestrator:
         def run_stage(self, request):
@@ -636,6 +639,9 @@ def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monke
     payload = bootstrap_thesis_payload(profile)
 
     assert payload["market_map_brief"]["source_summary"].startswith("4TPM appears to sell front-office wealth management capabilities")
+    assert payload["market_map_brief"]["reasoning_status"] == "success"
+    assert payload["market_map_brief"]["reasoning_provider"] == "gemini"
+    assert payload["market_map_brief"]["reasoning_model"] == "gemini-2.0-flash"
     assert [
         node["phrase"] for node in payload["market_map_brief"]["capability_nodes"]
     ] == [
@@ -648,3 +654,65 @@ def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monke
     assert payload["market_map_brief"]["open_questions"][0] == (
         "Which buyer segment should the first adjacency map prioritize?"
     )
+
+
+def test_bootstrap_thesis_payload_marks_degraded_reasoning_when_llm_fails(monkeypatch):
+    profile = CompanyProfile(
+        workspace_id=12,
+        buyer_company_url="https://4tpm.fr/platform/front-office",
+        generated_context_summary="",
+        reference_company_urls=[],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={},
+        context_pack_json={
+            "sites": [
+                {
+                    "url": "https://4tpm.fr/platform/front-office",
+                    "company_name": "4TPM",
+                    "summary": "",
+                    "signals": [],
+                    "customer_evidence": [],
+                    "pages": [
+                        {
+                            "url": "https://4tpm.fr/platform/front-office",
+                            "title": "4TPM - Plateforme Wealth Management",
+                            "page_type": "product",
+                            "blocks": [
+                                {"type": "heading", "content": "Préparation et modélisation des portefeuilles", "level": 3},
+                                {"type": "heading", "content": "Génération d'ordres blocs et routage full STP", "level": 3},
+                            ],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": "Front office titres PMS OMS REST API",
+                        }
+                    ],
+                }
+            ]
+        },
+        product_pages_found=1,
+    )
+
+    class _FailingOrchestrator:
+        def run_stage(self, request):
+            raise LLMOrchestrationError(
+                "all routes failed",
+                attempts=[
+                    ModelAttemptTrace(
+                        stage="market_map_reasoning",
+                        provider="gemini",
+                        model="gemini-2.0-flash",
+                        latency_ms=10,
+                        status="terminal_error",
+                        retry_count=1,
+                        error_message="schema invalid",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr("app.services.thesis.LLMOrchestrator", _FailingOrchestrator)
+
+    payload = bootstrap_thesis_payload(profile)
+
+    assert payload["market_map_brief"]["reasoning_status"] == "degraded"
+    assert "deterministic fallback" in str(payload["market_map_brief"]["reasoning_warning"] or "").lower()

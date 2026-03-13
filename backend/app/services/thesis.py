@@ -1843,6 +1843,10 @@ def _build_market_map_artifacts(
             customers=customers,
             named_customers=named_customers,
         ),
+        "reasoning_status": "not_run",
+        "reasoning_warning": None,
+        "reasoning_provider": None,
+        "reasoning_model": None,
         "customer_nodes": customers[:8],
         "workflow_nodes": workflows[:8],
         "capability_nodes": capabilities[:8],
@@ -2023,10 +2027,18 @@ def _merge_reasoned_market_map_brief(
     nodes: list[dict[str, Any]],
     lens_seeds: list[dict[str, Any]],
     fallback_brief: dict[str, Any],
+    reasoning_provider: Optional[str] = None,
+    reasoning_model: Optional[str] = None,
 ) -> dict[str, Any]:
     parsed = _extract_json_object(response_text)
     if not parsed:
-        return fallback_brief
+        return {
+            **fallback_brief,
+            "reasoning_status": "degraded",
+            "reasoning_warning": "Market map reasoning returned invalid structured output. Showing deterministic fallback from the source evidence graph.",
+            "reasoning_provider": reasoning_provider,
+            "reasoning_model": reasoning_model,
+        }
 
     node_by_id = {
         str(node.get("id")): node
@@ -2094,6 +2106,10 @@ def _merge_reasoned_market_map_brief(
         **fallback_brief,
         "source_summary": _safe_phrase(parsed.get("source_summary"), max_len=800)
         or fallback_brief.get("source_summary"),
+        "reasoning_status": "success",
+        "reasoning_warning": None,
+        "reasoning_provider": reasoning_provider,
+        "reasoning_model": reasoning_model,
         "customer_nodes": selected_customers,
         "workflow_nodes": selected_workflows,
         "capability_nodes": selected_capabilities,
@@ -2120,7 +2136,13 @@ def _reason_market_map_brief(
     fallback_brief: dict[str, Any],
 ) -> dict[str, Any]:
     if not nodes:
-        return fallback_brief
+        return {
+            **fallback_brief,
+            "reasoning_status": "not_applicable",
+            "reasoning_warning": "Reasoning did not run because the source crawl did not produce enough taxonomy evidence yet.",
+            "reasoning_provider": None,
+            "reasoning_model": None,
+        }
 
     prompt = _market_map_reasoning_prompt(
         _compact_market_map_payload(
@@ -2145,16 +2167,40 @@ def _reason_market_map_brief(
                 metadata={"company_name": company_name, "phase": "market_map_brief"},
             )
         )
-    except LLMOrchestrationError:
-        return fallback_brief
-    except Exception:
-        return fallback_brief
+    except LLMOrchestrationError as exc:
+        attempt_error = ""
+        if getattr(exc, "attempts", None):
+            last_attempt = exc.attempts[-1]
+            attempt_error = str(getattr(last_attempt, "error_message", "") or "").strip()
+        warning = "Market map reasoning failed after model retries. Showing deterministic fallback from the source evidence graph."
+        if attempt_error:
+            warning = f"{warning} Last error: {attempt_error[:240]}"
+        return {
+            **fallback_brief,
+            "reasoning_status": "degraded",
+            "reasoning_warning": warning,
+            "reasoning_provider": None,
+            "reasoning_model": None,
+        }
+    except Exception as exc:
+        return {
+            **fallback_brief,
+            "reasoning_status": "degraded",
+            "reasoning_warning": (
+                "Market map reasoning failed unexpectedly. Showing deterministic fallback from the source evidence graph. "
+                f"Last error: {str(exc)[:240]}"
+            ),
+            "reasoning_provider": None,
+            "reasoning_model": None,
+        }
 
     return _merge_reasoned_market_map_brief(
         response_text=response.text,
         nodes=nodes,
         lens_seeds=lens_seeds,
         fallback_brief=fallback_brief,
+        reasoning_provider=getattr(response, "provider", None),
+        reasoning_model=getattr(response, "model", None),
     )
 
 

@@ -223,6 +223,10 @@ class LensSeedResponse(BaseModel):
 class MarketMapBriefResponse(BaseModel):
     source_company: Dict[str, Any] = Field(default_factory=dict)
     source_summary: Optional[str] = None
+    reasoning_status: str = "not_run"
+    reasoning_warning: Optional[str] = None
+    reasoning_provider: Optional[str] = None
+    reasoning_model: Optional[str] = None
     customer_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
     workflow_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
     capability_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)

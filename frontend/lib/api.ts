@@ -230,6 +230,10 @@ export interface MarketMapBrief {
     website?: string | null;
   };
   source_summary?: string | null;
+  reasoning_status?: "success" | "degraded" | "not_run" | "not_applicable" | string;
+  reasoning_warning?: string | null;
+  reasoning_provider?: string | null;
+  reasoning_model?: string | null;
   customer_nodes: TaxonomyNode[];
   workflow_nodes: TaxonomyNode[];
   capability_nodes: TaxonomyNode[];

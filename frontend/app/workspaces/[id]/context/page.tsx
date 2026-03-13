@@ -991,6 +991,36 @@ export default function MarketMapBriefPage() {
                 {updateThesisPack.isPending ? "Saving..." : "Save"}
               </button>
             </div>
+            {thesisPack?.market_map_brief?.reasoning_status &&
+            thesisPack.market_map_brief.reasoning_status !== "success" ? (
+              <div className="mb-3 rounded-2xl border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-warning-dark">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <div>
+                    <div className="font-medium">
+                      {thesisPack.market_map_brief.reasoning_status === "not_applicable"
+                        ? "Reasoning not run yet"
+                        : "Reasoning degraded"}
+                    </div>
+                    <div className="mt-1 text-warning-dark/80">
+                      {thesisPack.market_map_brief.reasoning_warning ||
+                        "Showing a fallback summary from the source evidence graph."}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : thesisPack?.market_map_brief?.reasoning_provider ? (
+              <div className="mb-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                Reasoning succeeded via{" "}
+                <span className="font-medium">
+                  {thesisPack.market_map_brief.reasoning_provider}
+                  {thesisPack.market_map_brief.reasoning_model
+                    ? ` · ${thesisPack.market_map_brief.reasoning_model}`
+                    : ""}
+                </span>
+                .
+              </div>
+            ) : null}
             <textarea
               value={draftSummary}
               onChange={(event) => setDraftSummary(event.target.value)}
