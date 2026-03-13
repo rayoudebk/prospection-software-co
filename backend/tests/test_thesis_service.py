@@ -600,6 +600,11 @@ def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monke
             prompt = request.prompt
             input_idx = prompt.index("Input:\n") + len("Input:\n")
             payload = json.loads(prompt[input_idx:])
+            assert payload["prompt_version"] == "v2"
+            assert payload["selection_rules"]["max_capability_nodes"] == 6
+            assert "ranked_nodes_by_layer" in payload
+            assert payload["ranked_nodes_by_layer"]["capability"]
+            assert payload["evidence_highlights"]["top_capability_phrases"]
             node_by_phrase = {
                 node["phrase"]: node["id"]
                 for node in payload["taxonomy_nodes"]
@@ -653,6 +658,137 @@ def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monke
     ] == ["REST API"]
     assert payload["market_map_brief"]["open_questions"][0] == (
         "Which buyer segment should the first adjacency map prioritize?"
+    )
+
+
+def test_bootstrap_thesis_payload_builds_hublo_style_market_map_layers():
+    profile = CompanyProfile(
+        workspace_id=13,
+        buyer_company_url="https://www.hublo.com/en",
+        generated_context_summary="",
+        reference_company_urls=[],
+        reference_evidence_urls=[],
+        reference_summaries={},
+        geo_scope={},
+        context_pack_json={
+            "version": "v2",
+            "generated_at": "2026-03-12T00:00:00Z",
+            "sites": [
+                {
+                    "url": "https://www.hublo.com/en",
+                    "company_name": "Hublo",
+                    "website": "https://www.hublo.com/en",
+                    "summary": "Hublo helps hospitals and care providers manage staffing, shift replacement, and internal mobility.",
+                    "pages": [
+                        {
+                            "url": "https://www.hublo.com/en/solutions",
+                            "title": "Healthcare staffing platform",
+                            "page_type": "solutions",
+                            "blocks": [
+                                {"type": "heading", "content": "For hospitals and care providers", "level": 1},
+                                {"type": "heading", "content": "Shift replacement", "level": 2},
+                                {"type": "heading", "content": "Internal mobility", "level": 2},
+                                {"type": "heading", "content": "Pool management", "level": 2},
+                                {"type": "heading", "content": "API documentation", "level": 2},
+                            ],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": (
+                                "Hospitals use Hublo to manage staffing operations, replacement planning, "
+                                "and workforce pools across departments."
+                            ),
+                        },
+                        {
+                            "url": "https://careers.hublo.com/jobs/7331974-head-of-data-ai-f-h-n",
+                            "title": "Head of Data & AI",
+                            "page_type": "careers",
+                            "blocks": [
+                                {"type": "heading", "content": "Build data products for healthcare staffing operations"}
+                            ],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": (
+                                "Work with product, operations, hospitals, staffing workflows, and scheduling data."
+                            ),
+                        },
+                    ],
+                    "signals": [
+                        {
+                            "type": "customer_archetype",
+                            "value": "Hospitals",
+                            "source_url": "https://www.hublo.com/en/solutions",
+                        },
+                        {
+                            "type": "workflow",
+                            "value": "Shift replacement",
+                            "source_url": "https://www.hublo.com/en/solutions",
+                        },
+                        {
+                            "type": "workflow",
+                            "value": "Internal mobility",
+                            "source_url": "https://www.hublo.com/en/solutions",
+                        },
+                        {
+                            "type": "capability",
+                            "value": "Pool management",
+                            "source_url": "https://www.hublo.com/en/solutions",
+                        },
+                        {
+                            "type": "service",
+                            "value": "API documentation",
+                            "source_url": "https://www.hublo.com/en/solutions",
+                        },
+                    ],
+                    "customer_evidence": [
+                        {
+                            "name": "AP-HP",
+                            "source_url": "https://www.hublo.com/en/customers",
+                            "context": "Healthcare staffing customer proof",
+                            "evidence_type": "case_study",
+                        }
+                    ],
+                }
+            ],
+            "named_customers": [{"name": "AP-HP", "evidence_id": "cust_hp"}],
+            "integrations": [],
+            "partners": [],
+            "evidence_items": [
+                {"id": "hublo_1", "kind": "page_signal:customer_archetype", "text": "Hospitals"},
+                {"id": "hublo_2", "kind": "page_signal:workflow", "text": "Shift replacement"},
+                {"id": "hublo_3", "kind": "page_signal:workflow", "text": "Internal mobility"},
+                {"id": "hublo_4", "kind": "page_signal:capability", "text": "Pool management"},
+                {"id": "hublo_5", "kind": "page_signal:service", "text": "API documentation"},
+            ],
+            "extracted_raw_phrases": [
+                "Hospitals",
+                "Care providers",
+                "Healthcare staffing operations",
+                "Shift replacement",
+                "Internal mobility",
+                "Pool management",
+                "Replacement planning",
+                "API documentation",
+            ],
+            "crawl_coverage": {"total_sites": 1, "total_pages": 2, "career_pages_selected": 1},
+        },
+        product_pages_found=2,
+    )
+
+    payload = bootstrap_thesis_payload(profile)
+    taxonomy_by_layer: dict[str, list[str]] = {}
+    for node in payload["taxonomy_nodes"]:
+        taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
+
+    assert "Hospital" in taxonomy_by_layer["customer_archetype"] or "Hospitals" in taxonomy_by_layer["customer_archetype"]
+    assert "Shift replacement" in taxonomy_by_layer["workflow"]
+    assert "Internal mobility" in taxonomy_by_layer["workflow"]
+    assert "Pool management" in taxonomy_by_layer["capability"]
+    assert "API documentation" in taxonomy_by_layer["delivery_or_integration"]
+    assert "Healthcare staffing operations" not in taxonomy_by_layer.get("capability", [])
+    assert "AP-HP" not in taxonomy_by_layer.get("capability", [])
+    assert any(
+        lens["lens_type"] == "same_product_different_customer"
+        for lens in (payload["market_map_brief"].get("active_lenses") or [])
     )
 
 

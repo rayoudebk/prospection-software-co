@@ -21,6 +21,8 @@ The brief must be generated only from normalized phase-1 artifacts:
 - `taxonomy_nodes`
 - `taxonomy_edges`
 - `lens_seeds`
+- ranked node candidates by layer
+- evidence highlights derived from named-customer, workflow, capability, and integration proof
 
 No fresh web reasoning should happen in this step.
 
@@ -195,10 +197,24 @@ Do not activate when the result would drift into generic industry search.
 When surfacing top nodes in the brief:
 
 - prefer short, concrete, evidence-backed phrases
+- prefer ranked capability and workflow candidates over fallback summaries
 - prefer source-company feature phrases over generic page headings
 - demote sentence-like fragments
 - demote delivery/infrastructure terms from capability/workflow layers
 - preserve the full taxonomy separately even if the brief only surfaces the top slice
+
+## Selection Limits
+
+The reasoned brief should stay selective:
+
+- up to `4` customer nodes
+- up to `4` workflow nodes
+- up to `6` capability nodes
+- up to `4` delivery/integration nodes
+- up to `3` active lenses
+- up to `4` adjacency hypotheses
+- up to `4` confidence gaps
+- up to `4` open questions
 
 ## Non-Goals
 

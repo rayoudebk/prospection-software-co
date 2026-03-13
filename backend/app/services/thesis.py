@@ -43,7 +43,24 @@ DEFAULT_OPEN_QUESTIONS = [
 ]
 
 BUYER_EVIDENCE_MIN_SCORE = 3
-MARKET_MAP_REASONING_PROMPT_VERSION = "v1"
+MARKET_MAP_REASONING_PROMPT_VERSION = "v2"
+MARKET_MAP_REASONING_OUTPUT_SCHEMA = {
+    "source_summary": "string",
+    "customer_node_ids": ["taxonomy_id"],
+    "workflow_node_ids": ["taxonomy_id"],
+    "capability_node_ids": ["taxonomy_id"],
+    "delivery_or_integration_node_ids": ["taxonomy_id"],
+    "active_lens_ids": ["lens_id"],
+    "adjacency_hypotheses": [
+        {
+            "text": "string",
+            "supporting_node_ids": ["taxonomy_id"],
+            "confidence": 0.72,
+        }
+    ],
+    "confidence_gaps": ["string"],
+    "open_questions": ["string"],
+}
 
 CUSTOMER_KEYWORDS = (
     "asset manager",
@@ -1956,6 +1973,25 @@ def _compact_market_map_payload(
             "evidence_id": item.get("evidence_id"),
         }
 
+    ranked_nodes_by_layer: dict[str, list[dict[str, Any]]] = {}
+    for layer in ("customer_archetype", "workflow", "capability", "delivery_or_integration"):
+        ranked_nodes_by_layer[layer] = [
+            _node_stub(node)
+            for node in nodes
+            if node.get("layer") == layer and node.get("scope_status") != "removed"
+        ][:8]
+
+    evidence_highlights = {
+        "named_customer_names": [item.get("name") for item in named_customers[:8] if item.get("name")],
+        "integration_partner_names": [item.get("name") for item in integrations[:8] if item.get("name")],
+        "top_capability_phrases": [node.get("phrase") for node in ranked_nodes_by_layer.get("capability", [])[:6]],
+        "top_workflow_phrases": [node.get("phrase") for node in ranked_nodes_by_layer.get("workflow", [])[:6]],
+        "top_customer_phrases": [node.get("phrase") for node in ranked_nodes_by_layer.get("customer_archetype", [])[:6]],
+        "top_delivery_phrases": [
+            node.get("phrase") for node in ranked_nodes_by_layer.get("delivery_or_integration", [])[:6]
+        ],
+    }
+
     return {
         "prompt_version": MARKET_MAP_REASONING_PROMPT_VERSION,
         "source_company": {
@@ -1964,6 +2000,7 @@ def _compact_market_map_payload(
         },
         "crawl_coverage": crawl_coverage or {},
         "taxonomy_nodes": [_node_stub(node) for node in nodes[:36]],
+        "ranked_nodes_by_layer": ranked_nodes_by_layer,
         "lens_seeds": [
             {
                 "id": item.get("id"),
@@ -1979,6 +2016,18 @@ def _compact_market_map_payload(
         ],
         "named_customer_proof": [_proof_stub(item) for item in named_customers[:8]],
         "integration_partner_proof": [_proof_stub(item) for item in integrations[:8]],
+        "evidence_highlights": evidence_highlights,
+        "selection_rules": {
+            "summary_max_words": 120,
+            "max_customer_nodes": 4,
+            "max_workflow_nodes": 4,
+            "max_capability_nodes": 6,
+            "max_delivery_nodes": 4,
+            "max_active_lenses": 3,
+            "max_adjacency_hypotheses": 4,
+            "max_confidence_gaps": 4,
+            "max_open_questions": 4,
+        },
         "fallback_brief": {
             "source_summary": fallback_brief.get("source_summary"),
             "customer_node_ids": [node.get("id") for node in (fallback_brief.get("customer_nodes") or [])[:8]],
@@ -2002,20 +2051,25 @@ def _market_map_reasoning_prompt(payload: dict[str, Any]) -> str:
         "Do not invent nodes, customers, integrations, or lenses.\n"
         "Select from the provided node IDs and lens IDs only.\n"
         "Keep workflow, capability, and delivery/integration separate.\n"
-        "Prefer source-company product evidence over generic summaries.\n"
+        "Prefer source-company rendered product and solution evidence over generic summaries.\n"
         "If evidence is thin, keep fields sparse rather than generic.\n\n"
+        "Selection rules:\n"
+        "- Keep the source summary under 120 words and make it specific.\n"
+        "- Prefer ranked nodes and evidence highlights over fallback summary text.\n"
+        "- Customer nodes must be buyer/operator archetypes, never named accounts.\n"
+        "- Workflow nodes must be operating jobs or workflow clusters.\n"
+        "- Capability nodes must be feature clusters or product functions, not delivery traits.\n"
+        "- Delivery/integration nodes must include APIs, docs, ecosystem, or architecture traits only.\n"
+        "- Activate the third lens only when the market box is clearly bounded by customers, workflows, or capabilities.\n"
+        "- Open questions must be real evidence gaps, not generic follow-ups.\n\n"
         "Return only valid JSON with this exact shape:\n"
-        "{\n"
-        '  "source_summary": "string",\n'
-        '  "customer_node_ids": ["taxonomy_id"],\n'
-        '  "workflow_node_ids": ["taxonomy_id"],\n'
-        '  "capability_node_ids": ["taxonomy_id"],\n'
-        '  "delivery_or_integration_node_ids": ["taxonomy_id"],\n'
-        '  "active_lens_ids": ["lens_id"],\n'
-        '  "adjacency_hypotheses": [{"text": "string", "supporting_node_ids": ["taxonomy_id"], "confidence": 0.72}],\n'
-        '  "confidence_gaps": ["string"],\n'
-        '  "open_questions": ["string"]\n'
-        "}\n\n"
+        f"{json.dumps(MARKET_MAP_REASONING_OUTPUT_SCHEMA, ensure_ascii=False, indent=2)}\n\n"
+        "Prioritize, in order:\n"
+        "1. ranked source-company capability nodes\n"
+        "2. ranked source-company workflow nodes\n"
+        "3. named customer proof\n"
+        "4. integration proof\n"
+        "5. fallback brief summary\n\n"
         "Input:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
@@ -2051,34 +2105,43 @@ def _merge_reasoned_market_map_brief(
         if isinstance(item, dict) and item.get("id")
     }
 
-    def _select_nodes(key: str, fallback_key: str) -> list[dict[str, Any]]:
+    def _select_nodes(key: str, fallback_key: str, *, max_items: int) -> list[dict[str, Any]]:
         selected: list[dict[str, Any]] = []
-        for node_id in _normalize_string_list(parsed.get(key), max_items=8, max_len=96):
+        for node_id in _normalize_string_list(parsed.get(key), max_items=max_items, max_len=96):
             node = node_by_id.get(node_id)
             if node and node not in selected:
                 selected.append(node)
-        return selected or list(fallback_brief.get(fallback_key) or [])[:8]
+        return selected or list(fallback_brief.get(fallback_key) or [])[:max_items]
 
-    selected_customers = _select_nodes("customer_node_ids", "customer_nodes")
-    selected_workflows = _select_nodes("workflow_node_ids", "workflow_nodes")
-    selected_capabilities = _select_nodes("capability_node_ids", "capability_nodes")
-    selected_delivery = _select_nodes("delivery_or_integration_node_ids", "delivery_or_integration_nodes")
+    selected_customers = _select_nodes("customer_node_ids", "customer_nodes", max_items=4)
+    selected_workflows = _select_nodes("workflow_node_ids", "workflow_nodes", max_items=4)
+    selected_capabilities = _select_nodes("capability_node_ids", "capability_nodes", max_items=6)
+    selected_delivery = _select_nodes(
+        "delivery_or_integration_node_ids",
+        "delivery_or_integration_nodes",
+        max_items=4,
+    )
 
     selected_lenses: list[dict[str, Any]] = []
-    for lens_id in _normalize_string_list(parsed.get("active_lens_ids"), max_items=8, max_len=96):
+    for lens_id in _normalize_string_list(parsed.get("active_lens_ids"), max_items=3, max_len=96):
         lens = lens_by_id.get(lens_id)
         if lens and lens not in selected_lenses:
             selected_lenses.append(lens)
     if not selected_lenses:
-        selected_lenses = list(fallback_brief.get("active_lenses") or [])[:8]
+        selected_lenses = list(fallback_brief.get("active_lenses") or [])[:3]
 
     adjacency_hypotheses: list[dict[str, Any]] = []
+    seen_hypothesis_keys: set[str] = set()
     for item in parsed.get("adjacency_hypotheses") or []:
         if not isinstance(item, dict):
             continue
         text = _safe_phrase(item.get("text"), max_len=280)
         if not text:
             continue
+        text_key = _normalize_phrase_key(text)
+        if text_key in seen_hypothesis_keys:
+            continue
+        seen_hypothesis_keys.add(text_key)
         supporting_node_ids = _normalize_string_list(item.get("supporting_node_ids"), max_items=8, max_len=96)
         supporting_node_ids = [node_id for node_id in supporting_node_ids if node_id in node_by_id]
         derived_evidence_ids = _normalize_string_list(
@@ -2099,6 +2162,8 @@ def _merge_reasoned_market_map_brief(
                 "confidence": _clamp_confidence(item.get("confidence"), default=0.68),
             }
         )
+        if len(adjacency_hypotheses) >= 4:
+            break
     if not adjacency_hypotheses:
         adjacency_hypotheses = list(fallback_brief.get("adjacency_hypotheses") or [])[:6]
 
@@ -2115,11 +2180,11 @@ def _merge_reasoned_market_map_brief(
         "capability_nodes": selected_capabilities,
         "delivery_or_integration_nodes": selected_delivery,
         "active_lenses": selected_lenses,
-        "adjacency_hypotheses": adjacency_hypotheses[:6],
+        "adjacency_hypotheses": adjacency_hypotheses[:4],
         "confidence_gaps": normalize_open_questions(parsed.get("confidence_gaps"))
-        or list(fallback_brief.get("confidence_gaps") or [])[:8],
+        or list(fallback_brief.get("confidence_gaps") or [])[:4],
         "open_questions": normalize_open_questions(parsed.get("open_questions"))
-        or list(fallback_brief.get("open_questions") or [])[:8],
+        or list(fallback_brief.get("open_questions") or [])[:4],
     }
     return merged
 

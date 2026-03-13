@@ -23,6 +23,8 @@ The reasoning model should receive:
 - normalized taxonomy nodes and edges
 - lens seeds
 - crawl coverage summary
+- ranked node candidates by layer
+- evidence highlights for named customers, integrations, workflows, and capabilities
 
 The prompt should not require full raw HTML.
 
@@ -52,12 +54,23 @@ You must not:
 
 Output valid JSON matching the MarketMapBrief schema exactly.
 
+Selection limits:
+- maximum 4 customer nodes
+- maximum 4 workflow nodes
+- maximum 6 capability nodes
+- maximum 4 delivery/integration nodes
+- maximum 3 active lenses
+- maximum 4 adjacency hypotheses
+- maximum 4 confidence gaps
+- maximum 4 open questions
+
 Prioritize:
 1. source-company evidence
 2. rendered product/solution page evidence
 3. named customer proof
 4. integration proof
-5. generic summaries
+5. ranked node candidates by layer
+6. generic summaries
 
 When evidence is weak:
 - say so directly
