@@ -2315,26 +2315,8 @@ async def refresh_company_context(
     company_context_pack.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(company_context_pack)
-    try:
-        from app.workers.workspace_tasks import refresh_company_context_pack
-
-        task_result = await asyncio.wait_for(
-            asyncio.to_thread(refresh_company_context_pack.delay, workspace_id),
-            timeout=2.0,
-        )
-        logger.info(
-            "company_context_refresh_enqueued workspace_id=%s task_id=%s",
-            workspace_id,
-            getattr(task_result, "id", None),
-        )
-    except Exception as exc:
-        logger.warning(
-            "company_context_refresh_enqueue_failed workspace_id=%s fallback=inline error=%s",
-            workspace_id,
-            exc,
-        )
-        asyncio.create_task(_run_company_context_refresh_inline(workspace_id))
-        logger.info("company_context_refresh_inline_scheduled workspace_id=%s", workspace_id)
+    asyncio.create_task(_run_company_context_refresh_inline(workspace_id))
+    logger.info("company_context_refresh_inline_scheduled workspace_id=%s", workspace_id)
     payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
     payload["workspace_id"] = workspace_id
     payload["id"] = company_context_pack.id
