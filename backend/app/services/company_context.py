@@ -3675,7 +3675,41 @@ def _report_source_label(url: str, *, publisher: Any = None, fallback: Any = Non
     if fallback_text:
         return fallback_text[:120]
     host = normalize_domain(url)
-    return (host or "Source")[:120]
+    if host:
+        host = host.removeprefix("www.")
+        brand = host.split(".", 1)[0]
+        if brand:
+            tokens = [token for token in re.split(r"[-_]+", brand) if token]
+            normalized_tokens: list[str] = []
+            for token in tokens:
+                if any(ch.isdigit() for ch in token):
+                    normalized_tokens.append("".join(ch.upper() if ch.isalpha() else ch for ch in token))
+                elif len(token) <= 4:
+                    normalized_tokens.append(token.upper())
+                else:
+                    normalized_tokens.append(token.capitalize())
+            pretty = " ".join(normalized_tokens).strip()
+            if pretty:
+                return pretty[:120]
+    return "Source"
+
+
+def _dedupe_report_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        key = (
+            str(source.get("url") or "").strip(),
+            str(source.get("publisher") or "").strip(),
+            str(source.get("label") or "").strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(source)
+    return deduped
 
 
 def _build_source_document_lookup(
@@ -3842,11 +3876,16 @@ def _report_sentence(
     source_order: list[str],
     sources_by_id: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    citation_pill_ids = [
-        _register_report_source(source_order, sources_by_id, source)
-        for source in sources
-        if isinstance(source, dict) and str(source.get("url") or "").strip()
-    ]
+    citation_pill_ids: list[str] = []
+    seen_pill_ids: set[str] = set()
+    for source in _dedupe_report_sources(sources):
+        if not isinstance(source, dict) or not str(source.get("url") or "").strip():
+            continue
+        pill_id = _register_report_source(source_order, sources_by_id, source)
+        if pill_id in seen_pill_ids:
+            continue
+        seen_pill_ids.add(pill_id)
+        citation_pill_ids.append(pill_id)
     return {
         "id": sentence_id,
         "text": str(text or "").strip(),
@@ -3945,6 +3984,95 @@ def _brief_sources_from_nodes(
     return sources
 
 
+def _brief_sources_from_named_proof(
+    items: Any,
+    *,
+    source_documents_by_url: dict[str, dict[str, Any]],
+    evidence_by_id: dict[str, dict[str, Any]],
+    source_kind: str,
+    evidence_type: str,
+) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        sources.extend(
+            _resolve_report_sources(
+                evidence_ids=[item.get("evidence_id")] if item.get("evidence_id") else [],
+                urls=[item.get("source_url")] if item.get("source_url") else [],
+                source_documents_by_url=source_documents_by_url,
+                evidence_by_id=evidence_by_id,
+                fallback_label=item.get("name"),
+                source_tier="primary",
+                source_kind=source_kind,
+                evidence_type=evidence_type,
+                claim_scope="about_subject_company",
+            )
+        )
+    return sources
+
+
+def _sourcing_summary_sources(
+    brief: dict[str, Any],
+    *,
+    source_documents_by_url: dict[str, dict[str, Any]],
+    evidence_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    summary_sources = _brief_sources_from_nodes(
+        (brief.get("customer_nodes") or [])[:2]
+        + (brief.get("workflow_nodes") or [])[:2]
+        + (brief.get("capability_nodes") or [])[:3]
+        + (brief.get("delivery_or_integration_nodes") or [])[:2],
+        source_documents_by_url=source_documents_by_url,
+        evidence_by_id=evidence_by_id,
+    )
+    if summary_sources:
+        return _dedupe_report_sources(summary_sources)[:4]
+
+    fallback_sources: list[dict[str, Any]] = []
+    fallback_sources.extend(
+        _brief_sources_from_named_proof(
+            (brief.get("named_customer_proof") or [])[:2],
+            source_documents_by_url=source_documents_by_url,
+            evidence_by_id=evidence_by_id,
+            source_kind="named_customer",
+            evidence_type="named_customer",
+        )
+    )
+    fallback_sources.extend(
+        _brief_sources_from_named_proof(
+            (brief.get("partner_integration_proof") or [])[:2],
+            source_documents_by_url=source_documents_by_url,
+            evidence_by_id=evidence_by_id,
+            source_kind="partner_integration",
+            evidence_type="partner_integration",
+        )
+    )
+    for item in (brief.get("secondary_evidence_proof") or [])[:2]:
+        if not isinstance(item, dict):
+            continue
+        fallback_sources.extend(
+            _resolve_report_sources(
+                urls=[item.get("url")] if item.get("url") else [],
+                source_documents_by_url=source_documents_by_url,
+                evidence_by_id=evidence_by_id,
+                fallback_label=item.get("title") or item.get("publisher"),
+                publisher=item.get("publisher"),
+                publisher_channel=item.get("publisher_channel"),
+                publisher_type=item.get("publisher_type"),
+                source_tier=item.get("evidence_tier") or "secondary",
+                source_kind=item.get("claim_type") or "secondary_evidence",
+                evidence_type=item.get("claim_type") or "secondary_evidence",
+                claim_scope=item.get("claim_scope"),
+                published_at=item.get("published_at"),
+            )
+        )
+    if fallback_sources:
+        return _dedupe_report_sources(fallback_sources)[:4]
+
+    return _dedupe_report_sources(list(source_documents_by_url.values()))[:4]
+
+
 def build_sourcing_report_artifact(
     *,
     sourcing_brief: dict[str, Any],
@@ -3959,14 +4087,11 @@ def build_sourcing_report_artifact(
     source_order: list[str] = []
     sources_by_id: dict[str, dict[str, Any]] = {}
 
-    summary_sources = _brief_sources_from_nodes(
-        (brief.get("customer_nodes") or [])[:2]
-        + (brief.get("workflow_nodes") or [])[:2]
-        + (brief.get("capability_nodes") or [])[:3]
-        + (brief.get("delivery_or_integration_nodes") or [])[:2],
+    summary_sources = _sourcing_summary_sources(
+        brief,
         source_documents_by_url=source_documents_by_url,
         evidence_by_id=evidence_by_id,
-    )[:4]
+    )
 
     sections: list[dict[str, Any]] = []
 

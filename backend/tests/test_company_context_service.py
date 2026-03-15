@@ -115,6 +115,61 @@ def test_build_company_context_artifacts_generates_source_documents_and_brief():
     assert expansion_report["report_kind"] == "expansion_brief"
 
 
+def test_sourcing_report_summary_uses_named_proof_sources_when_taxonomy_sources_are_missing():
+    payload = build_company_context_artifacts(_build_profile())
+    brief = json.loads(json.dumps(payload["sourcing_brief"]))
+    for key in ("customer_nodes", "workflow_nodes", "capability_nodes", "delivery_or_integration_nodes"):
+        brief[key] = []
+
+    sourcing_report = build_sourcing_report_artifact(
+        sourcing_brief=brief,
+        source_documents=[],
+        context_pack_v2=payload["context_pack_v2"],
+        confirmed_at=payload["confirmed_at"],
+    )
+
+    summary_section = sourcing_report["sections"][0]
+    summary_sentence = summary_section["blocks"][0]["sentences"][0]
+    assert summary_sentence["citation_pill_ids"]
+
+
+def test_expansion_report_summary_dedupes_repeated_citations():
+    expansion_brief = {
+        "adjacent_capabilities": [
+            {
+                "label": "Portfolio analytics",
+                "why_it_matters": "Common adjacent module",
+                "status": "corroborated_expansion",
+                "evidence_urls": ["https://example.com/alpha"],
+                "source_entity_names": ["Example Source"],
+                "expansion_type": "adjacent_capability",
+            },
+            {
+                "label": "Risk reporting",
+                "why_it_matters": "Often bundled nearby",
+                "status": "corroborated_expansion",
+                "evidence_urls": ["https://example.com/alpha"],
+                "source_entity_names": ["Example Source"],
+                "expansion_type": "adjacent_capability",
+            },
+        ],
+        "adjacent_customer_segments": [],
+        "named_account_anchors": [],
+        "geography_expansions": [],
+    }
+
+    report = build_expansion_report_artifact(
+        source_company={"name": "Acme", "website": "https://acme.example.com"},
+        expansion_brief=expansion_brief,
+        source_documents=[],
+        context_pack_v2={},
+        confirmed_at=None,
+    )
+
+    summary_sentence = report["sections"][0]["blocks"][0]["sentences"][0]
+    assert len(summary_sentence["citation_pill_ids"]) == 1
+
+
 def test_derive_discovery_scope_hints_prefers_source_and_adjacent_scope():
     profile = _build_profile()
     payload = build_company_context_artifacts(profile)
