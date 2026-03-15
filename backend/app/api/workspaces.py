@@ -1,5 +1,6 @@
 """Workspace API routes - Full CRUD and workflow endpoints."""
 import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -79,6 +80,7 @@ from app.services.company_context import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 DIRECTORY_HOST_TOKENS = (
     "thewealthmosaic.com",
@@ -2284,8 +2286,14 @@ async def refresh_company_context(
     try:
         from app.workers.workspace_tasks import refresh_company_context_pack
 
-        refresh_company_context_pack.delay(workspace_id)
+        task_result = refresh_company_context_pack.delay(workspace_id)
+        logger.info(
+            "company_context_refresh_enqueued workspace_id=%s task_id=%s",
+            workspace_id,
+            getattr(task_result, "id", None),
+        )
     except Exception as exc:
+        logger.exception("company_context_refresh_enqueue_failed workspace_id=%s", workspace_id)
         company_context_pack.graph_sync_status = "failed"
         company_context_pack.graph_sync_error = f"Failed to enqueue sourcing refresh: {exc}"[:1000]
         company_context_pack.graph_synced_at = datetime.utcnow()
