@@ -6610,6 +6610,91 @@ def generate_context_pack_v2(job_id: int):
         db.close()
 
 
+@celery_app.task(name="app.workers.workspace_tasks.refresh_company_context_pack")
+def refresh_company_context_pack(workspace_id: int):
+    from app.services.company_context import build_company_context_artifacts
+    from app.services.company_context_graph import (
+        Neo4jCompanyContextGraphStore,
+        build_company_context_payload,
+    )
+
+    db = SessionLocal()
+    company_context_pack = None
+    try:
+        profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == workspace_id).first()
+        if not profile:
+            return {"status": "failed", "error": "Company profile not found", "workspace_id": workspace_id}
+
+        company_context_pack = (
+            db.query(CompanyContextPack).filter(CompanyContextPack.workspace_id == workspace_id).first()
+        )
+        if not company_context_pack:
+            refreshed = build_company_context_artifacts(profile)
+            company_context_pack = CompanyContextPack(
+                workspace_id=workspace_id,
+                sourcing_brief_json=refreshed.get("sourcing_brief") or {},
+                expansion_brief_json=refreshed.get("expansion_brief") or {},
+                taxonomy_nodes_json=refreshed.get("taxonomy_nodes") or [],
+                taxonomy_edges_json=refreshed.get("taxonomy_edges") or [],
+                lens_seeds_json=refreshed.get("lens_seeds") or [],
+                generated_at=refreshed.get("generated_at"),
+                confirmed_at=None,
+            )
+            db.add(company_context_pack)
+            db.flush()
+
+        refreshed = build_company_context_artifacts(profile)
+        company_context_pack.sourcing_brief_json = refreshed.get("sourcing_brief") or {}
+        company_context_pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
+        company_context_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
+        company_context_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
+        company_context_pack.lens_seeds_json = refreshed.get("lens_seeds") or []
+        company_context_pack.generated_at = refreshed.get("generated_at")
+        company_context_pack.confirmed_at = None
+        company_context_pack.updated_at = datetime.utcnow()
+
+        payload = build_company_context_payload(company_context_pack, profile)
+        graph_payload = payload.get("company_context_graph") or {}
+        sync_result = Neo4jCompanyContextGraphStore().sync_graph(graph_payload)
+        sync_status = str(sync_result.get("status") or "failed")
+        graph_ref = (
+            payload.get("company_context_graph_ref")
+            or graph_payload.get("graph_ref")
+            or sync_result.get("graph_ref")
+        )
+
+        company_context_pack.company_context_graph_ref = graph_ref
+        company_context_pack.company_context_graph_cache_json = graph_payload
+        company_context_pack.graph_stats_json = payload.get("graph_stats") or {}
+        company_context_pack.graph_sync_status = sync_status
+        company_context_pack.graph_sync_error = sync_result.get("error")
+        company_context_pack.graph_synced_at = datetime.utcnow()
+        company_context_pack.sourcing_brief_json = (
+            payload.get("sourcing_brief") or company_context_pack.sourcing_brief_json or {}
+        )
+        company_context_pack.expansion_brief_json = (
+            payload.get("expansion_brief") or company_context_pack.expansion_brief_json or {}
+        )
+        company_context_pack.updated_at = datetime.utcnow()
+        db.commit()
+        return {
+            "status": sync_status,
+            "error": sync_result.get("error"),
+            "graph_ref": graph_ref,
+            "workspace_id": workspace_id,
+        }
+    except Exception as exc:
+        if company_context_pack is not None:
+            company_context_pack.graph_sync_status = "failed"
+            company_context_pack.graph_sync_error = str(exc)[:1000]
+            company_context_pack.graph_synced_at = datetime.utcnow()
+            company_context_pack.updated_at = datetime.utcnow()
+            db.commit()
+        return {"status": "failed", "error": str(exc), "workspace_id": workspace_id}
+    finally:
+        db.close()
+
+
 @celery_app.task(name="app.workers.workspace_tasks.run_monitoring_delta")
 def run_monitoring_delta(job_id: int):
     """Refresh watchlist candidates based on stale evidence or material claim deltas."""

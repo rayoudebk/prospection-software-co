@@ -420,3 +420,46 @@ def test_company_profile_result_is_not_treated_as_customer_corroboration(monkeyp
 
     assert payload["sourcing_brief"]["customer_partner_corroboration"] == []
     assert payload["sourcing_brief"]["secondary_evidence_proof"] == []
+
+
+def test_low_signal_host_result_is_not_treated_as_customer_corroboration(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.company_context_graph.run_external_search_queries",
+        lambda *args, **kwargs: {
+            "results": [
+                {
+                    "url": "https://www.pappers.fr/dirigeant/willy_van%20stappen_1956-01",
+                    "title": "Willy Van Stappen - Pappers",
+                    "snippet": "Corporate officer profile mentioning BNP Paribas.",
+                    "query_type": "customer_corroboration",
+                }
+            ],
+            "provider_mix": {"serper": 1},
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.company_context_graph.fetch_page_fast",
+        lambda url: {
+            "url": url,
+            "content": "Corporate officer profile mentioning BNP Paribas.",
+            "provider": "jina_reader",
+            "error": None,
+        },
+    )
+    profile = _build_profile()
+
+    payload = build_company_context_payload(build_company_context_artifacts(profile), profile)
+
+    assert payload["sourcing_brief"]["customer_partner_corroboration"] == []
+    assert payload["sourcing_brief"]["secondary_evidence_proof"] == []

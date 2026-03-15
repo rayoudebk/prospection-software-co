@@ -247,6 +247,33 @@ def test_scope_review_contract_updates_and_confirms_scope(tmp_path: Path, monkey
     assert gates_response.json()["scope_review"] is True
 
 
+def test_company_context_refresh_enqueues_worker_and_returns_refreshing(tmp_path: Path, monkeypatch):
+    client, session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Refresh workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+    _seed_company_profile(session_maker, workspace_id)
+
+    enqueued: list[int] = []
+
+    def _fake_delay(arg: int):
+        enqueued.append(arg)
+        return SimpleNamespace(id="task-123")
+
+    monkeypatch.setattr(
+        "app.workers.workspace_tasks.refresh_company_context_pack.delay",
+        _fake_delay,
+    )
+
+    response = client.post(f"/workspaces/{workspace_id}/company-context:refresh")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["graph_status"] == "refreshing"
+    assert enqueued == [workspace_id]
+
+
 def test_company_context_uses_graph_ref_from_cache_when_column_empty(tmp_path: Path):
     pack = CompanyContextPack(
         id=1,

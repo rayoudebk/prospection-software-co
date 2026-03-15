@@ -103,6 +103,16 @@ PRESS_RELEASE_TOKENS = ("press release", "announces", "announcement", "newsroom"
 PARTNER_TOKENS = ("partner", "partnership", "partners with", "integration", "integrates with")
 DEPLOYMENT_TOKENS = ("deploy", "deployment", "go live", "go-live", "selects", "chooses", "implements", "implementation")
 LOW_SIGNAL_HOST_TOKENS = ("youtube.com", "facebook.com", "instagram.com", "x.com", "twitter.com")
+LOW_SIGNAL_CORROBORATION_HOST_TOKENS = (
+    "linkedin.com",
+    "rocketreach.co",
+    "pappers.fr",
+    "northdata.com",
+    "sec.gov",
+    "societe.com",
+    "lefigaro.fr",
+    "bodacc.fr",
+)
 LOW_SIGNAL_SECONDARY_TEXT_TOKENS = (
     "password should contain",
     "confirm password",
@@ -1187,6 +1197,10 @@ def _secondary_signal_quality(
         return "drop"
     if any(token in text_blob for token in FALSE_POSITIVE_SCIENCE_TOKENS):
         return "drop"
+    if query_type in {"customer_corroboration", "partner_corroboration"} and any(
+        token in host for token in LOW_SIGNAL_CORROBORATION_HOST_TOKENS
+    ):
+        return "drop"
     if any(token in text_blob for token in LOW_SIGNAL_SECONDARY_TEXT_TOKENS):
         return "document_only"
     if _secondary_company_profile_identity_match(url, title, company_name, company_domain):
@@ -1209,6 +1223,16 @@ def _secondary_signal_quality(
         if not any(token in host for token in DIRECTORY_HOST_TOKENS):
             return "document_only"
         return "strong"
+    if query_type == "customer_corroboration":
+        if not matched_customers:
+            return "drop"
+        if not any(token in text_blob for token in (*DEPLOYMENT_TOKENS, *PRESS_RELEASE_TOKENS)):
+            return "drop"
+    if query_type == "partner_corroboration":
+        if not matched_partners:
+            return "drop"
+        if not any(token in text_blob for token in (*PARTNER_TOKENS, *PRESS_RELEASE_TOKENS)):
+            return "drop"
     if claim_type == "deployment_announcement" and not matched_customers:
         return "document_only"
     if claim_type == "integration_announcement" and not matched_partners:

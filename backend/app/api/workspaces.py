@@ -1,6 +1,6 @@
 """Workspace API routes - Full CRUD and workflow endpoints."""
 import asyncio
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel, Field
@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import math
 
-from app.models.base import async_session_maker, get_db
+from app.models.base import get_db
 from app.models.workspace import Workspace, CompanyProfile
 from app.models.company_context import CompanyContextPack
 from app.models.company import Company, CompanyDossier, CompanyStatus
@@ -1334,35 +1334,6 @@ async def _run_context_pack_inline(job_id: int) -> None:
     await asyncio.to_thread(generate_context_pack_v2, job_id)
 
 
-async def _run_company_context_refresh_inline(workspace_id: int) -> None:
-    async with async_session_maker() as db:
-        profile = await _get_company_profile(db, workspace_id)
-        if not profile:
-            return
-        company_context_pack = await _ensure_company_context_pack(
-            db,
-            workspace_id,
-            profile=profile,
-        )
-        try:
-            refreshed = build_company_context_artifacts(profile)
-            company_context_pack.sourcing_brief_json = refreshed.get("sourcing_brief") or {}
-            company_context_pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
-            company_context_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
-            company_context_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
-            company_context_pack.lens_seeds_json = refreshed.get("lens_seeds") or []
-            company_context_pack.generated_at = refreshed.get("generated_at")
-            company_context_pack.confirmed_at = None
-            company_context_pack.updated_at = datetime.utcnow()
-            await _sync_company_context_graph(company_context_pack, profile)
-        except Exception as exc:
-            company_context_pack.graph_sync_status = "failed"
-            company_context_pack.graph_sync_error = str(exc)[:1000]
-            company_context_pack.graph_synced_at = datetime.utcnow()
-            company_context_pack.updated_at = datetime.utcnow()
-        await db.commit()
-
-
 def _source_from_evidence(evidence: Optional[SourceEvidence]) -> Optional[SourcePill]:
     if not evidence or not evidence.source_url:
         return None
@@ -2289,7 +2260,6 @@ async def update_company_context(
 @router.post("/{workspace_id}/company-context:refresh", response_model=CompanyContextPackResponse)
 async def refresh_company_context(
     workspace_id: int,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_company_profile(db, workspace_id)
@@ -2311,7 +2281,21 @@ async def refresh_company_context(
     company_context_pack.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(company_context_pack)
-    background_tasks.add_task(_run_company_context_refresh_inline, workspace_id)
+    try:
+        from app.workers.workspace_tasks import refresh_company_context_pack
+
+        refresh_company_context_pack.delay(workspace_id)
+    except Exception as exc:
+        company_context_pack.graph_sync_status = "failed"
+        company_context_pack.graph_sync_error = f"Failed to enqueue sourcing refresh: {exc}"[:1000]
+        company_context_pack.graph_synced_at = datetime.utcnow()
+        company_context_pack.updated_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(company_context_pack)
+        payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
+        payload["workspace_id"] = workspace_id
+        payload["id"] = company_context_pack.id
+        return payload
     payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
     payload["workspace_id"] = workspace_id
     payload["id"] = company_context_pack.id
