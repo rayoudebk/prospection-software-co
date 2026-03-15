@@ -1281,8 +1281,14 @@ async def _get_company_profile(db: AsyncSession, workspace_id: int) -> Optional[
 async def _sync_company_context_graph(
     company_context_pack: CompanyContextPack,
     profile: CompanyProfile,
+    *,
+    payload_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    payload = build_company_context_payload(company_context_pack, profile)
+    payload = (
+        build_company_context_payload(payload_override, profile)
+        if isinstance(payload_override, dict)
+        else build_company_context_payload(company_context_pack, profile)
+    )
     graph_payload = payload.get("company_context_graph") or {}
     sync_result = Neo4jCompanyContextGraphStore().sync_graph(graph_payload)
     sync_status = str(sync_result.get("status") or "failed")
@@ -1366,7 +1372,7 @@ async def _run_company_context_refresh_inline(workspace_id: int) -> None:
             company_context_pack.generated_at = refreshed.get("generated_at")
             company_context_pack.confirmed_at = None
             company_context_pack.updated_at = datetime.utcnow()
-            await _sync_company_context_graph(company_context_pack, profile)
+            await _sync_company_context_graph(company_context_pack, profile, payload_override=refreshed)
             logger.info("company_context_refresh_inline_completed workspace_id=%s", workspace_id)
         except Exception:
             logger.exception("company_context_refresh_inline_failed workspace_id=%s", workspace_id)
