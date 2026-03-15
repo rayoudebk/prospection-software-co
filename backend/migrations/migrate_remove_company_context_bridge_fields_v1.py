@@ -2,7 +2,7 @@
 Drop legacy company-context bridge columns that are no longer canonical.
 
 This removes old thesis-era storage from company_context_packs now that
-market_map_brief_json and graph-backed payloads are canonical.
+sourcing_brief_json and graph-backed payloads are canonical.
 """
 from __future__ import annotations
 

@@ -13,7 +13,7 @@ class CompanyContextPack(Base):
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, unique=True, index=True)
 
-    market_map_brief_json = Column(JSON, default=dict)
+    sourcing_brief_json = Column(JSON, default=dict)
     expansion_brief_json = Column(JSON, default=dict)
     taxonomy_nodes_json = Column(JSON, default=list)
     taxonomy_edges_json = Column(JSON, default=list)

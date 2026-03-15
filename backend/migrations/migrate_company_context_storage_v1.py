@@ -76,9 +76,11 @@ def migrate_company_context_storage_v1(database_url: str | None = None) -> dict[
             ("reference_company_urls", "comparator_seed_urls"),
             ("reference_evidence_urls", "supporting_evidence_urls"),
             ("reference_summaries", "comparator_seed_summaries"),
+            ("market_map_brief_json", "sourcing_brief_json"),
         ]:
-            if _rename_column_if_needed(conn, "company_profiles", old_name, new_name):
-                summary["columns_renamed"].append(f"company_profiles.{old_name}->{new_name}")
+            target_table = "company_context_packs" if old_name == "market_map_brief_json" else "company_profiles"
+            if _rename_column_if_needed(conn, target_table, old_name, new_name):
+                summary["columns_renamed"].append(f"{target_table}.{old_name}->{new_name}")
 
         if _drop_index_if_exists(conn, "ix_buyer_thesis_packs_company_context_graph_ref"):
             summary["indexes_dropped"].append("ix_buyer_thesis_packs_company_context_graph_ref")

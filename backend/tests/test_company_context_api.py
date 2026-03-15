@@ -1,7 +1,9 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -13,6 +15,18 @@ from app.models.base import Base
 from app.models.job import Job, JobProvider, JobState, JobType
 from app.models.company_context import CompanyContextPack
 from app.models.workspace import CompanyProfile
+
+
+@pytest.fixture(autouse=True)
+def _disable_live_llm(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context.get_settings",
+        lambda: SimpleNamespace(
+            gemini_api_key="",
+            openai_api_key="",
+            anthropic_api_key="",
+        ),
+    )
 
 
 def _build_test_client(tmp_path: Path):
@@ -96,7 +110,7 @@ def _seed_company_profile(session_maker: async_sessionmaker[AsyncSession], works
 
 def test_company_context_bootstrap_update_and_adjustment_contract(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -115,12 +129,15 @@ def test_company_context_bootstrap_update_and_adjustment_contract(tmp_path: Path
     company_context_response = client.get(f"/workspaces/{workspace_id}/company-context")
     assert company_context_response.status_code == 200
     company_context_payload = company_context_response.json()
-    assert company_context_payload["market_map_brief"]["source_summary"]
+    assert company_context_payload["sourcing_brief"]["source_summary"]
     assert company_context_payload["source_documents"]
     assert company_context_payload["buyer_evidence"]["status"] == "sufficient"
     assert company_context_payload["graph_status"] in {"success", "not_configured", "failed"}
-    assert "market_map_brief" in company_context_payload
+    assert "sourcing_brief" in company_context_payload
     assert "expansion_brief" in company_context_payload
+    assert company_context_payload["sourcing_report"]["artifact_type"] == "report_artifact"
+    assert company_context_payload["sourcing_report"]["report_kind"] == "sourcing_brief"
+    assert company_context_payload["expansion_report"]["report_kind"] == "expansion_brief"
     assert "taxonomy_nodes" in company_context_payload
     assert "lens_seeds" in company_context_payload
     assert any(item["label"] == "Northwind Capital" for item in company_context_payload["expansion_brief"]["named_account_anchors"])
@@ -170,7 +187,7 @@ def test_company_context_bootstrap_update_and_adjustment_contract(tmp_path: Path
 
 def test_scope_review_contract_updates_and_confirms_scope(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -314,7 +331,7 @@ def test_company_context_response_preserves_expansion_inputs():
         "taxonomy_nodes": [],
         "taxonomy_edges": [],
         "lens_seeds": [],
-        "market_map_brief": {
+        "sourcing_brief": {
             "source_company": {"name": "4TPM", "website": "https://4tpm.fr"},
             "source_summary": "Summary",
             "customer_nodes": [],

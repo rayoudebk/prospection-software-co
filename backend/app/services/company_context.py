@@ -1751,7 +1751,7 @@ def _taxonomy_node_quality_score(node: dict[str, Any]) -> tuple[float, int, int,
     return (round(quality, 4), evidence_count, alias_count, -word_count)
 
 
-def _generate_market_map_summary(
+def _generate_sourcing_brief_summary(
     company_name: str,
     *,
     capabilities: list[dict[str, Any]],
@@ -1780,16 +1780,16 @@ def _generate_market_map_summary(
         )
     if customer_names and workflow_names:
         sentences.append(
-            f"This should anchor the first market map around {', '.join(customer_names[:2])} buyers and adjacent workflows around {workflow_names[0]}."
+            f"This should anchor the sourcing brief around {', '.join(customer_names[:2])} buyers and adjacent workflows around {workflow_names[0]}."
         )
     if not sentences:
         sentences.append(
-            f"{company_name} has limited first-party evidence; add more product, customer, or integration pages before trusting the market map."
+            f"{company_name} has limited first-party evidence; add more product, customer, or integration pages before trusting the sourcing brief."
         )
     return " ".join(sentences)[:800]
 
 
-def _build_market_map_artifacts(
+def _build_sourcing_brief_artifacts(
     profile: CompanyProfile,
     *,
     source_pills: list[dict[str, Any]],
@@ -1931,17 +1931,17 @@ def _build_market_map_artifacts(
     if not open_questions:
         open_questions.extend(
             [
-                "Which customer segment is most strategic for the first market map pass?",
+                "Which customer segment is most strategic for the first sourcing brief pass?",
                 "Which adjacent workflow should discovery prioritize first?",
             ]
         )
 
-    market_map_brief = {
+    sourcing_brief = {
         "source_company": {
             "name": company_name,
             "website": normalize_url(profile.buyer_company_url) if profile.buyer_company_url else None,
         },
-        "source_summary": _generate_market_map_summary(
+        "source_summary": _generate_sourcing_brief_summary(
             company_name,
             capabilities=capabilities,
             workflows=workflows,
@@ -1974,7 +1974,7 @@ def _build_market_map_artifacts(
         "confirmed_at": None,
     }
 
-    market_map_brief = _reason_market_map_brief(
+    sourcing_brief = _reason_sourcing_brief(
         company_name=company_name,
         company_url=normalize_url(profile.buyer_company_url) if profile.buyer_company_url else None,
         crawl_coverage=context_pack_v2.get("crawl_coverage") or {},
@@ -1982,7 +1982,7 @@ def _build_market_map_artifacts(
         lens_seeds=lens_seeds,
         named_customers=named_customers,
         integrations=integrations,
-        fallback_brief=market_map_brief,
+        fallback_brief=sourcing_brief,
     )
 
     return (
@@ -1991,7 +1991,7 @@ def _build_market_map_artifacts(
         edges,
         lens_seeds,
         open_questions[:8],
-        market_map_brief,
+        sourcing_brief,
     )
 
 
@@ -2048,7 +2048,7 @@ def _truncate_words(value: Any, *, max_words: int, max_chars: int) -> str:
     return clipped
 
 
-def _compact_market_map_payload(
+def _compact_sourcing_brief_payload(
     *,
     company_name: str,
     company_url: Optional[str],
@@ -2147,9 +2147,9 @@ def _compact_market_map_payload(
     }
 
 
-def _market_map_reasoning_prompt(payload: dict[str, Any]) -> str:
+def _sourcing_brief_reasoning_prompt(payload: dict[str, Any]) -> str:
     return (
-        "You are an M&A sourcing analyst generating a phase-1 Market Map Brief from normalized source-company evidence.\n\n"
+        "You are an M&A sourcing analyst generating a phase-1 Sourcing Brief from normalized source-company evidence.\n\n"
         "Your job is discovery-first, not transaction-first.\n"
         "Use only the provided source-scoped artifacts.\n"
         "Do not invent nodes, customers, integrations, or lenses.\n"
@@ -2160,7 +2160,7 @@ def _market_map_reasoning_prompt(payload: dict[str, Any]) -> str:
         "If evidence is thin, keep fields sparse rather than generic.\n\n"
         "Selection rules:\n"
         "- Keep the source summary under 120 words and make it specific.\n"
-        "- The source summary is the opening paragraph of the sourcing brief and should help decide what market map to build next.\n"
+        "- The source summary is the opening paragraph of the sourcing brief and should help decide what expansion work to prioritize next.\n"
         "- Use the summary to state what the source company appears to sell, to whom, across which workflows, and what adjacency box it suggests.\n"
         "- Prefer ranked nodes and evidence highlights over fallback summary text.\n"
         "- Customer nodes must be buyer/operator archetypes, never named accounts.\n"
@@ -2190,7 +2190,7 @@ def _compact_expansion_research_payload(
     *,
     company_name: str,
     company_url: Optional[str],
-    market_map_brief: dict[str, Any],
+    sourcing_brief: dict[str, Any],
     taxonomy_nodes: list[dict[str, Any]],
     expansion_inputs: list[dict[str, Any]],
     geo_scope: dict[str, Any],
@@ -2243,17 +2243,17 @@ def _compact_expansion_research_payload(
             "website": company_url,
         },
         "source_brief": {
-            "source_summary": _truncate_words(market_map_brief.get("source_summary"), max_words=120, max_chars=800),
-            "customer_nodes": [_node_stub(node) for node in (market_map_brief.get("customer_nodes") or [])[:6] if isinstance(node, dict)],
-            "workflow_nodes": [_node_stub(node) for node in (market_map_brief.get("workflow_nodes") or [])[:6] if isinstance(node, dict)],
-            "capability_nodes": [_node_stub(node) for node in (market_map_brief.get("capability_nodes") or [])[:8] if isinstance(node, dict)],
+            "source_summary": _truncate_words(sourcing_brief.get("source_summary"), max_words=120, max_chars=800),
+            "customer_nodes": [_node_stub(node) for node in (sourcing_brief.get("customer_nodes") or [])[:6] if isinstance(node, dict)],
+            "workflow_nodes": [_node_stub(node) for node in (sourcing_brief.get("workflow_nodes") or [])[:6] if isinstance(node, dict)],
+            "capability_nodes": [_node_stub(node) for node in (sourcing_brief.get("capability_nodes") or [])[:8] if isinstance(node, dict)],
             "delivery_nodes": [
                 _node_stub(node)
-                for node in (market_map_brief.get("delivery_or_integration_nodes") or [])[:6]
+                for node in (sourcing_brief.get("delivery_or_integration_nodes") or [])[:6]
                 if isinstance(node, dict)
             ],
-            "named_customer_proof": [_proof_stub(item) for item in (market_map_brief.get("named_customer_proof") or [])[:8] if isinstance(item, dict)],
-            "partner_integration_proof": [_proof_stub(item) for item in (market_map_brief.get("partner_integration_proof") or [])[:8] if isinstance(item, dict)],
+            "named_customer_proof": [_proof_stub(item) for item in (sourcing_brief.get("named_customer_proof") or [])[:8] if isinstance(item, dict)],
+            "partner_integration_proof": [_proof_stub(item) for item in (sourcing_brief.get("partner_integration_proof") or [])[:8] if isinstance(item, dict)],
             "secondary_evidence_proof": [
                 {
                     "title": item.get("title"),
@@ -2262,7 +2262,7 @@ def _compact_expansion_research_payload(
                     "url": item.get("url"),
                     "claim_text": _safe_phrase(item.get("claim_text"), max_len=180),
                 }
-                for item in (market_map_brief.get("secondary_evidence_proof") or [])[:8]
+                for item in (sourcing_brief.get("secondary_evidence_proof") or [])[:8]
                 if isinstance(item, dict)
             ],
         },
@@ -2288,7 +2288,7 @@ def _expansion_research_prompt(payload: dict[str, Any]) -> str:
         "You are generating a bounded Expansion Research artifact for M&A sourcing.\n\n"
         "Start only from the provided source-company brief, taxonomy, expansion inputs, and geo scope.\n"
         "You may use web search when available, but remain tightly bounded to one-hop adjacencies around the source evidence.\n"
-        "Do not generate a full market map and do not return a long company list.\n"
+        "Do not generate a full expansion map and do not return a long company list.\n"
         "Prefer categories that repeatedly appear across source evidence, expansion inputs, named accounts, integrations, or nearby public evidence.\n"
         "Demote niche, edge-case, or peripheral use cases that are too small or too optional to steer primary discovery.\n"
         "If an adjacency is real but likely too narrow to drive target discovery on its own, keep it and mark it low importance rather than dropping it.\n\n"
@@ -2351,7 +2351,7 @@ def _expansion_normalization_prompt(
     )
 
 
-def _merge_reasoned_market_map_brief(
+def _merge_reasoned_sourcing_brief(
     *,
     response_text: str,
     nodes: list[dict[str, Any]],
@@ -2469,7 +2469,7 @@ def _merge_reasoned_market_map_brief(
     return merged
 
 
-def _reason_market_map_brief(
+def _reason_sourcing_brief(
     *,
     company_name: str,
     company_url: Optional[str],
@@ -2488,9 +2488,18 @@ def _reason_market_map_brief(
             "reasoning_provider": None,
             "reasoning_model": None,
         }
+    settings = get_settings()
+    if not any([settings.gemini_api_key, settings.openai_api_key, settings.anthropic_api_key]):
+        return {
+            **fallback_brief,
+            "reasoning_status": str(fallback_brief.get("reasoning_status") or "degraded"),
+            "reasoning_warning": fallback_brief.get("reasoning_warning"),
+            "reasoning_provider": fallback_brief.get("reasoning_provider"),
+            "reasoning_model": fallback_brief.get("reasoning_model"),
+        }
 
-    prompt = _market_map_reasoning_prompt(
-        _compact_market_map_payload(
+    prompt = _sourcing_brief_reasoning_prompt(
+        _compact_sourcing_brief_payload(
             company_name=company_name,
             company_url=company_url,
             crawl_coverage=crawl_coverage,
@@ -2509,7 +2518,7 @@ def _reason_market_map_brief(
                 timeout_seconds=60,
                 use_web_search=False,
                 expect_json=True,
-                metadata={"company_name": company_name, "phase": "market_map_brief"},
+                metadata={"company_name": company_name, "phase": "sourcing_brief"},
             )
         )
     except LLMOrchestrationError as exc:
@@ -2539,7 +2548,7 @@ def _reason_market_map_brief(
             "reasoning_model": None,
         }
 
-    return _merge_reasoned_market_map_brief(
+    return _merge_reasoned_sourcing_brief(
         response_text=response.text,
         nodes=nodes,
         lens_seeds=lens_seeds,
@@ -2823,18 +2832,18 @@ def _derive_adjacent_nodes_from_expansion_inputs(
 def _build_deterministic_expansion_brief(
     *,
     profile: CompanyProfile,
-    market_map_brief: dict[str, Any],
+    sourcing_brief: dict[str, Any],
     taxonomy_nodes: list[dict[str, Any]],
     expansion_inputs: list[dict[str, Any]],
 ) -> dict[str, Any]:
     source_capabilities = [
         str(item.get("phrase") or "").strip()
-        for item in (market_map_brief.get("capability_nodes") or [])
+        for item in (sourcing_brief.get("capability_nodes") or [])
         if isinstance(item, dict) and str(item.get("phrase") or "").strip()
     ]
     source_customers = [
         str(item.get("phrase") or "").strip()
-        for item in (market_map_brief.get("customer_nodes") or [])
+        for item in (sourcing_brief.get("customer_nodes") or [])
         if isinstance(item, dict) and str(item.get("phrase") or "").strip()
     ]
     source_summary = ", ".join(source_capabilities[:2]) or "the current source brief"
@@ -2857,7 +2866,7 @@ def _build_deterministic_expansion_brief(
     )
 
     named_account_anchors: list[dict[str, Any]] = []
-    for item in market_map_brief.get("named_customer_proof") or []:
+    for item in sourcing_brief.get("named_customer_proof") or []:
         if not isinstance(item, dict):
             continue
         label = _compact_phrase(item.get("name"), max_words=6, max_len=120)
@@ -3005,12 +3014,12 @@ def _merge_reasoned_expansion_brief(
 def _reason_expansion_brief(
     *,
     profile: CompanyProfile,
-    market_map_brief: dict[str, Any],
+    sourcing_brief: dict[str, Any],
     taxonomy_nodes: list[dict[str, Any]],
     expansion_inputs: list[dict[str, Any]],
     fallback_brief: dict[str, Any],
 ) -> dict[str, Any]:
-    if not market_map_brief.get("capability_nodes") and not market_map_brief.get("customer_nodes"):
+    if not sourcing_brief.get("capability_nodes") and not sourcing_brief.get("customer_nodes"):
         return {
             **normalize_expansion_brief(fallback_brief),
             "reasoning_status": "not_applicable",
@@ -3023,9 +3032,9 @@ def _reason_expansion_brief(
         return normalize_expansion_brief(fallback_brief)
 
     research_payload = _compact_expansion_research_payload(
-        company_name=str(((market_map_brief.get("source_company") or {}).get("name")) or _domain_brand_name(profile.buyer_company_url or "") or "Source Company"),
+        company_name=str(((sourcing_brief.get("source_company") or {}).get("name")) or _domain_brand_name(profile.buyer_company_url or "") or "Source Company"),
         company_url=normalize_url(profile.buyer_company_url) if profile.buyer_company_url else None,
-        market_map_brief=market_map_brief,
+        sourcing_brief=sourcing_brief,
         taxonomy_nodes=taxonomy_nodes,
         expansion_inputs=expansion_inputs,
         geo_scope=profile.geo_scope or {},
@@ -3143,19 +3152,19 @@ def _reason_expansion_brief(
 def build_expansion_brief(
     *,
     profile: CompanyProfile,
-    market_map_brief: dict[str, Any],
+    sourcing_brief: dict[str, Any],
     taxonomy_nodes: list[dict[str, Any]],
     expansion_inputs: list[dict[str, Any]],
 ) -> dict[str, Any]:
     fallback_brief = _build_deterministic_expansion_brief(
         profile=profile,
-        market_map_brief=market_map_brief,
+        sourcing_brief=sourcing_brief,
         taxonomy_nodes=taxonomy_nodes,
         expansion_inputs=expansion_inputs,
     )
     return _reason_expansion_brief(
         profile=profile,
-        market_map_brief=market_map_brief,
+        sourcing_brief=sourcing_brief,
         taxonomy_nodes=taxonomy_nodes,
         expansion_inputs=expansion_inputs,
         fallback_brief=fallback_brief,
@@ -3547,7 +3556,7 @@ def build_expansion_inputs(
                 {
                     "name": comparator_name,
                     "website": str(primary_site.get("website") or primary_site.get("url") or comparator_domain),
-                    "source_summary": _generate_market_map_summary(
+                    "source_summary": _generate_sourcing_brief_summary(
                         comparator_name,
                         capabilities=nodes_by_layer.get("capability", []),
                         workflows=nodes_by_layer.get("workflow", []),
@@ -3595,9 +3604,9 @@ def build_company_context_artifacts(
         taxonomy_nodes,
         taxonomy_edges,
         lens_seeds,
-        market_map_open_questions,
-        market_map_brief,
-    ) = _build_market_map_artifacts(
+        sourcing_brief_open_questions,
+        sourcing_brief,
+    ) = _build_sourcing_brief_artifacts(
         profile,
         source_pills=source_pills,
         override_nodes=override_nodes,
@@ -3610,35 +3619,35 @@ def build_company_context_artifacts(
 
     source_summary = str(
         source_summary_override
-        or ((market_map_brief.get("source_summary") if isinstance(market_map_brief, dict) else None) or "")
+        or ((sourcing_brief.get("source_summary") if isinstance(sourcing_brief, dict) else None) or "")
         or (
             "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
             "Add supporting evidence or regenerate after improving the crawl target."
             if profile.buyer_company_url
-            else "Source company context is still too thin to generate a market map brief."
+            else "Source company context is still too thin to generate a sourcing brief."
         )
     ).strip()[:8000]
 
     final_open_questions = normalize_open_questions(
-        open_questions_override if open_questions_override is not None else market_map_brief.get("open_questions")
+        open_questions_override if open_questions_override is not None else sourcing_brief.get("open_questions")
     )
     if not final_open_questions:
-        final_open_questions = normalize_open_questions(market_map_open_questions)
+        final_open_questions = normalize_open_questions(sourcing_brief_open_questions)
     if buyer_evidence.get("status") == "insufficient" and buyer_evidence.get("warning"):
         warning = str(buyer_evidence.get("warning"))
         if warning not in final_open_questions:
             final_open_questions.insert(0, warning)
     final_open_questions = normalize_open_questions(final_open_questions)[:8]
 
-    market_map_brief = {
-        **(market_map_brief if isinstance(market_map_brief, dict) else {}),
+    sourcing_brief = {
+        **(sourcing_brief if isinstance(sourcing_brief, dict) else {}),
         "source_summary": source_summary,
         "open_questions": final_open_questions,
         "confirmed_at": confirmed_at.isoformat() if confirmed_at else None,
     }
     expansion_brief = build_expansion_brief(
         profile=profile,
-        market_map_brief=market_map_brief,
+        sourcing_brief=sourcing_brief,
         taxonomy_nodes=taxonomy_nodes,
         expansion_inputs=expansion_inputs,
     )
@@ -3650,11 +3659,731 @@ def build_company_context_artifacts(
         "taxonomy_nodes": taxonomy_nodes,
         "taxonomy_edges": taxonomy_edges,
         "lens_seeds": lens_seeds,
-        "market_map_brief": market_map_brief,
+        "sourcing_brief": sourcing_brief,
         "expansion_brief": expansion_brief,
         "expansion_inputs": expansion_inputs,
         "generated_at": datetime.utcnow(),
         "confirmed_at": confirmed_at,
+    }
+
+
+def _report_source_label(url: str, *, publisher: Any = None, fallback: Any = None) -> str:
+    publisher_text = str(publisher or "").strip()
+    if publisher_text:
+        return publisher_text[:120]
+    fallback_text = str(fallback or "").strip()
+    if fallback_text:
+        return fallback_text[:120]
+    host = normalize_domain(url)
+    return (host or "Source")[:120]
+
+
+def _build_source_document_lookup(
+    source_documents: Any,
+    context_pack_v2: Any,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    documents_by_url: dict[str, dict[str, Any]] = {}
+    evidence_by_id: dict[str, dict[str, Any]] = {}
+
+    for item in source_documents or []:
+        if not isinstance(item, dict):
+            continue
+        url = normalize_url(item.get("url"))
+        if not url:
+            continue
+        documents_by_url[url] = {
+            "id": str(item.get("id") or hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]),
+            "label": _report_source_label(url, publisher=item.get("publisher"), fallback=item.get("name")),
+            "url": url,
+            "publisher": str(item.get("publisher") or "").strip() or None,
+            "publisher_channel": str(item.get("publisher_channel") or "company_website").strip() or "company_website",
+            "publisher_type": str(item.get("publisher_type") or "").strip() or None,
+            "source_tier": str(item.get("evidence_tier") or "primary").strip() or "primary",
+            "source_kind": str(item.get("evidence_type") or "source_document").strip() or "source_document",
+            "evidence_type": str(item.get("evidence_type") or "source_document").strip() or "source_document",
+            "claim_scope": str(item.get("claim_scope") or "").strip() or None,
+            "published_at": None,
+            "captured_at": None,
+        }
+
+    def _register_evidence_item(item: Any) -> None:
+        if not isinstance(item, dict):
+            return
+        evidence_id = str(item.get("id") or "").strip()
+        url = normalize_url(item.get("url"))
+        if url and url not in documents_by_url:
+            documents_by_url[url] = {
+                "id": hashlib.sha1(url.encode("utf-8")).hexdigest()[:12],
+                "label": _report_source_label(url, fallback=item.get("page_title") or item.get("text")),
+                "url": url,
+                "publisher": None,
+                "publisher_channel": str(item.get("page_type") or "company_website").strip() or "company_website",
+                "publisher_type": None,
+                "source_tier": "primary",
+                "source_kind": str(item.get("kind") or "evidence_item").strip() or "evidence_item",
+                "evidence_type": str(item.get("kind") or "evidence_item").strip() or "evidence_item",
+                "claim_scope": "about_subject_company",
+                "published_at": None,
+                "captured_at": item.get("captured_at"),
+            }
+        if evidence_id and url:
+            evidence_by_id[evidence_id] = documents_by_url[url]
+
+    for item in (context_pack_v2 or {}).get("evidence_items") or []:
+        _register_evidence_item(item)
+    for site in (context_pack_v2 or {}).get("sites") or []:
+        if not isinstance(site, dict):
+            continue
+        for item in site.get("evidence_items") or []:
+            _register_evidence_item(item)
+
+    return documents_by_url, evidence_by_id
+
+
+def _register_report_source(
+    source_order: list[str],
+    sources_by_id: dict[str, dict[str, Any]],
+    source: dict[str, Any],
+) -> str:
+    source_id = str(source.get("id") or "").strip() or hashlib.sha1(
+        f"{source.get('url') or ''}|{source.get('label') or ''}".encode("utf-8")
+    ).hexdigest()[:12]
+    if source_id not in sources_by_id:
+        sources_by_id[source_id] = {
+            "id": source_id,
+            "label": str(source.get("label") or "Source").strip()[:120] or "Source",
+            "url": str(source.get("url") or "").strip(),
+            "publisher": source.get("publisher"),
+            "publisher_channel": str(source.get("publisher_channel") or "company_website").strip() or "company_website",
+            "publisher_type": source.get("publisher_type"),
+            "source_tier": str(source.get("source_tier") or "primary").strip() or "primary",
+            "source_kind": str(source.get("source_kind") or "source_document").strip() or "source_document",
+            "evidence_type": str(source.get("evidence_type") or "source_document").strip() or "source_document",
+            "claim_scope": source.get("claim_scope"),
+            "published_at": source.get("published_at"),
+            "captured_at": source.get("captured_at"),
+        }
+        source_order.append(source_id)
+    return source_id
+
+
+def _resolve_report_sources(
+    *,
+    evidence_ids: Any = None,
+    urls: Any = None,
+    source_documents_by_url: dict[str, dict[str, Any]],
+    evidence_by_id: dict[str, dict[str, Any]],
+    fallback_label: Any = None,
+    publisher: Any = None,
+    publisher_channel: Any = None,
+    publisher_type: Any = None,
+    source_tier: Any = None,
+    source_kind: Any = None,
+    evidence_type: Any = None,
+    claim_scope: Any = None,
+    published_at: Any = None,
+    captured_at: Any = None,
+) -> list[dict[str, Any]]:
+    resolved: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for evidence_id in evidence_ids or []:
+        key = str(evidence_id or "").strip()
+        source = evidence_by_id.get(key)
+        if not source:
+            continue
+        source_id = str(source.get("id") or "").strip()
+        if source_id and source_id in seen:
+            continue
+        if source_id:
+            seen.add(source_id)
+        resolved.append(deepcopy(source))
+
+    for url in urls or []:
+        normalized = normalize_url(url)
+        if not normalized:
+            continue
+        source = source_documents_by_url.get(normalized)
+        if source:
+            source_id = str(source.get("id") or "").strip()
+            if source_id and source_id in seen:
+                continue
+            if source_id:
+                seen.add(source_id)
+            resolved.append(deepcopy(source))
+            continue
+        fallback_source = {
+            "id": hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12],
+            "label": _report_source_label(normalized, publisher=publisher, fallback=fallback_label),
+            "url": normalized,
+            "publisher": str(publisher or "").strip() or None,
+            "publisher_channel": str(publisher_channel or "web").strip() or "web",
+            "publisher_type": str(publisher_type or "").strip() or None,
+            "source_tier": str(source_tier or "secondary").strip() or "secondary",
+            "source_kind": str(source_kind or "web_source").strip() or "web_source",
+            "evidence_type": str(evidence_type or "web_source").strip() or "web_source",
+            "claim_scope": str(claim_scope or "").strip() or None,
+            "published_at": published_at,
+            "captured_at": captured_at,
+        }
+        if fallback_source["id"] in seen:
+            continue
+        seen.add(fallback_source["id"])
+        resolved.append(fallback_source)
+
+    return resolved
+
+
+def _report_sentence(
+    sentence_id: str,
+    text: str,
+    sources: list[dict[str, Any]],
+    *,
+    source_order: list[str],
+    sources_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    citation_pill_ids = [
+        _register_report_source(source_order, sources_by_id, source)
+        for source in sources
+        if isinstance(source, dict) and str(source.get("url") or "").strip()
+    ]
+    return {
+        "id": sentence_id,
+        "text": str(text or "").strip(),
+        "citation_pill_ids": citation_pill_ids,
+    }
+
+
+def _paragraph_block(
+    block_id: str,
+    text: str,
+    sources: list[dict[str, Any]],
+    *,
+    source_order: list[str],
+    sources_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "type": "paragraph",
+        "sentences": [
+            _report_sentence(block_id, text, sources, source_order=source_order, sources_by_id=sources_by_id)
+        ],
+    }
+
+
+def _bullet_list_block(
+    block_id: str,
+    items: list[tuple[str, list[dict[str, Any]]]],
+    *,
+    source_order: list[str],
+    sources_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "type": "bullet_list",
+        "items": [
+            _report_sentence(
+                f"{block_id}_{idx}",
+                text,
+                item_sources,
+                source_order=source_order,
+                sources_by_id=sources_by_id,
+            )
+            for idx, (text, item_sources) in enumerate(items, start=1)
+            if str(text or "").strip()
+        ],
+    }
+
+
+def _callout_block(
+    block_id: str,
+    tone: str,
+    title: str | None,
+    items: list[tuple[str, list[dict[str, Any]]]],
+    *,
+    source_order: list[str],
+    sources_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "type": "callout",
+        "tone": tone,
+        "title": title,
+        "sentences": [
+            _report_sentence(
+                f"{block_id}_{idx}",
+                text,
+                item_sources,
+                source_order=source_order,
+                sources_by_id=sources_by_id,
+            )
+            for idx, (text, item_sources) in enumerate(items, start=1)
+            if str(text or "").strip()
+        ],
+    }
+
+
+def _brief_sources_from_nodes(
+    nodes: Any,
+    *,
+    source_documents_by_url: dict[str, dict[str, Any]],
+    evidence_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+        sources.extend(
+            _resolve_report_sources(
+                evidence_ids=node.get("evidence_ids") or [],
+                source_documents_by_url=source_documents_by_url,
+                evidence_by_id=evidence_by_id,
+                fallback_label=node.get("phrase"),
+                source_tier="primary",
+                source_kind="taxonomy_node",
+                evidence_type="taxonomy_evidence",
+                claim_scope="about_subject_company",
+            )
+        )
+    return sources
+
+
+def build_sourcing_report_artifact(
+    *,
+    sourcing_brief: dict[str, Any],
+    source_documents: Any,
+    context_pack_v2: Any,
+    confirmed_at: Any = None,
+) -> dict[str, Any]:
+    brief = sourcing_brief if isinstance(sourcing_brief, dict) else {}
+    source_company = brief.get("source_company") or {}
+    company_name = str(source_company.get("name") or normalize_domain(source_company.get("website")) or "Source Company")
+    source_documents_by_url, evidence_by_id = _build_source_document_lookup(source_documents, context_pack_v2)
+    source_order: list[str] = []
+    sources_by_id: dict[str, dict[str, Any]] = {}
+
+    summary_sources = _brief_sources_from_nodes(
+        (brief.get("customer_nodes") or [])[:2]
+        + (brief.get("workflow_nodes") or [])[:2]
+        + (brief.get("capability_nodes") or [])[:3]
+        + (brief.get("delivery_or_integration_nodes") or [])[:2],
+        source_documents_by_url=source_documents_by_url,
+        evidence_by_id=evidence_by_id,
+    )[:4]
+
+    sections: list[dict[str, Any]] = []
+
+    summary_text = str(brief.get("source_summary") or "").strip()
+    if summary_text:
+        sections.append(
+            {
+                "id": "summary",
+                "heading": None,
+                "blocks": [
+                    _paragraph_block(
+                        "summary_intro",
+                        summary_text,
+                        summary_sources,
+                        source_order=source_order,
+                        sources_by_id=sources_by_id,
+                    )
+                ],
+            }
+        )
+
+    signal_items: list[tuple[str, list[dict[str, Any]]]] = []
+    for node in (brief.get("customer_nodes") or [])[:4]:
+        signal_items.append(
+            (
+                f"Customer signal: {node.get('phrase')}.",
+                _resolve_report_sources(
+                    evidence_ids=node.get("evidence_ids") or [],
+                    source_documents_by_url=source_documents_by_url,
+                    evidence_by_id=evidence_by_id,
+                    fallback_label=node.get("phrase"),
+                    source_tier="primary",
+                    source_kind="taxonomy_node",
+                    evidence_type="customer_signal",
+                    claim_scope="about_subject_company",
+                ),
+            )
+        )
+    for node in (brief.get("workflow_nodes") or [])[:4]:
+        signal_items.append(
+            (
+                f"Workflow signal: {node.get('phrase')}.",
+                _resolve_report_sources(
+                    evidence_ids=node.get("evidence_ids") or [],
+                    source_documents_by_url=source_documents_by_url,
+                    evidence_by_id=evidence_by_id,
+                    fallback_label=node.get("phrase"),
+                    source_tier="primary",
+                    source_kind="taxonomy_node",
+                    evidence_type="workflow_signal",
+                    claim_scope="about_subject_company",
+                ),
+            )
+        )
+    for node in (brief.get("capability_nodes") or [])[:6]:
+        signal_items.append(
+            (
+                f"Capability signal: {node.get('phrase')}.",
+                _resolve_report_sources(
+                    evidence_ids=node.get("evidence_ids") or [],
+                    source_documents_by_url=source_documents_by_url,
+                    evidence_by_id=evidence_by_id,
+                    fallback_label=node.get("phrase"),
+                    source_tier="primary",
+                    source_kind="taxonomy_node",
+                    evidence_type="capability_signal",
+                    claim_scope="about_subject_company",
+                ),
+            )
+        )
+    for node in (brief.get("delivery_or_integration_nodes") or [])[:4]:
+        signal_items.append(
+            (
+                f"Delivery or integration signal: {node.get('phrase')}.",
+                _resolve_report_sources(
+                    evidence_ids=node.get("evidence_ids") or [],
+                    source_documents_by_url=source_documents_by_url,
+                    evidence_by_id=evidence_by_id,
+                    fallback_label=node.get("phrase"),
+                    source_tier="primary",
+                    source_kind="taxonomy_node",
+                    evidence_type="delivery_signal",
+                    claim_scope="about_subject_company",
+                ),
+            )
+        )
+    if signal_items:
+        sections.append(
+            {
+                "id": "signals",
+                "heading": "Customer, workflow, and capability signals",
+                "blocks": [
+                    _bullet_list_block(
+                        "signals_list",
+                        signal_items[:12],
+                        source_order=source_order,
+                        sources_by_id=sources_by_id,
+                    )
+                ],
+            }
+        )
+
+    proof_items: list[tuple[str, list[dict[str, Any]]]] = []
+    for item in (brief.get("named_customer_proof") or [])[:8]:
+        if not isinstance(item, dict):
+            continue
+        text = f"Named customer proof: {item.get('name')}."
+        if str(item.get("context") or "").strip():
+            text = f"{text[:-1]} — {str(item.get('context')).strip()}."
+        proof_items.append(
+            (
+                text,
+                _resolve_report_sources(
+                    evidence_ids=[item.get("evidence_id")] if item.get("evidence_id") else [],
+                    urls=[item.get("source_url")] if item.get("source_url") else [],
+                    source_documents_by_url=source_documents_by_url,
+                    evidence_by_id=evidence_by_id,
+                    fallback_label=item.get("name"),
+                    source_tier="primary",
+                    source_kind=str(item.get("evidence_type") or "named_customer"),
+                    evidence_type=str(item.get("evidence_type") or "named_customer"),
+                    claim_scope="about_subject_company",
+                ),
+            )
+        )
+    for item in (brief.get("partner_integration_proof") or [])[:8]:
+        if not isinstance(item, dict):
+            continue
+        proof_items.append(
+            (
+                f"Partner or integration proof: {item.get('name')}.",
+                _resolve_report_sources(
+                    evidence_ids=[item.get("evidence_id")] if item.get("evidence_id") else [],
+                    urls=[item.get("source_url")] if item.get("source_url") else [],
+                    source_documents_by_url=source_documents_by_url,
+                    evidence_by_id=evidence_by_id,
+                    fallback_label=item.get("name"),
+                    source_tier="primary",
+                    source_kind="partner_integration",
+                    evidence_type="partner_integration",
+                    claim_scope="about_subject_company",
+                ),
+            )
+        )
+    if proof_items:
+        sections.append(
+            {
+                "id": "proof",
+                "heading": "Named proof",
+                "blocks": [
+                    _bullet_list_block(
+                        "proof_list",
+                        proof_items,
+                        source_order=source_order,
+                        sources_by_id=sources_by_id,
+                    )
+                ],
+            }
+        )
+
+    secondary_items: list[tuple[str, list[dict[str, Any]]]] = []
+    for item in (brief.get("secondary_evidence_proof") or [])[:10]:
+        if not isinstance(item, dict):
+            continue
+        secondary_items.append(
+            (
+                str(item.get("claim_text") or item.get("evidence_snippet") or item.get("title") or "").strip(),
+                _resolve_report_sources(
+                    urls=[item.get("url")] if item.get("url") else [],
+                    source_documents_by_url=source_documents_by_url,
+                    evidence_by_id=evidence_by_id,
+                    fallback_label=item.get("title") or item.get("publisher"),
+                    publisher=item.get("publisher"),
+                    publisher_channel=item.get("publisher_channel"),
+                    publisher_type=item.get("publisher_type"),
+                    source_tier=item.get("evidence_tier") or "secondary",
+                    source_kind=item.get("claim_type") or "secondary_evidence",
+                    evidence_type=item.get("claim_type") or "secondary_evidence",
+                    claim_scope=item.get("claim_scope"),
+                    published_at=item.get("published_at"),
+                ),
+            )
+        )
+    if secondary_items:
+        sections.append(
+            {
+                "id": "secondary",
+                "heading": "Secondary corroboration",
+                "blocks": [
+                    _bullet_list_block(
+                        "secondary_list",
+                        secondary_items,
+                        source_order=source_order,
+                        sources_by_id=sources_by_id,
+                    )
+                ],
+            }
+        )
+
+    gap_items = [(gap, []) for gap in (brief.get("confidence_gaps") or [])[:4] if str(gap or "").strip()]
+    question_items = [(question, []) for question in (brief.get("open_questions") or [])[:4] if str(question or "").strip()]
+    if gap_items or question_items:
+        blocks: list[dict[str, Any]] = []
+        if gap_items:
+            blocks.append(
+                _callout_block(
+                    "confidence_gaps",
+                    "warning",
+                    "Confidence gaps",
+                    gap_items,
+                    source_order=source_order,
+                    sources_by_id=sources_by_id,
+                )
+            )
+        if question_items:
+            blocks.append(
+                _bullet_list_block(
+                    "open_questions",
+                    question_items,
+                    source_order=source_order,
+                    sources_by_id=sources_by_id,
+                )
+            )
+        sections.append(
+            {
+                "id": "gaps",
+                "heading": "Confidence gaps and open questions",
+                "blocks": blocks,
+            }
+        )
+
+    return {
+        "artifact_type": "report_artifact",
+        "report_kind": "sourcing_brief",
+        "version": "v1",
+        "status": "degraded" if str(brief.get("reasoning_status") or "not_run") != "success" else "ready",
+        "generated_at": datetime.utcnow().isoformat(),
+        "confirmed_at": confirmed_at.isoformat() if isinstance(confirmed_at, datetime) else confirmed_at,
+        "reasoning_status": brief.get("reasoning_status") or "not_run",
+        "reasoning_warning": brief.get("reasoning_warning"),
+        "reasoning_provider": brief.get("reasoning_provider"),
+        "reasoning_model": brief.get("reasoning_model"),
+        "title": f"{company_name} Sourcing Brief",
+        "summary": summary_text or None,
+        "sections": sections,
+        "sources": [sources_by_id[source_id] for source_id in source_order],
+        "footer_actions": ["copy", "good", "bad", "share", "regenerate"],
+    }
+
+
+def build_expansion_report_artifact(
+    *,
+    source_company: Any,
+    expansion_brief: dict[str, Any],
+    source_documents: Any,
+    context_pack_v2: Any,
+    confirmed_at: Any = None,
+) -> dict[str, Any]:
+    brief = normalize_expansion_brief(expansion_brief or {})
+    company_name = str((source_company or {}).get("name") or normalize_domain((source_company or {}).get("website")) or "Source Company")
+    source_documents_by_url, evidence_by_id = _build_source_document_lookup(source_documents, context_pack_v2)
+    source_order: list[str] = []
+    sources_by_id: dict[str, dict[str, Any]] = {}
+
+    def _item_sources(item: dict[str, Any]) -> list[dict[str, Any]]:
+        return _resolve_report_sources(
+            evidence_ids=item.get("evidence_ids") or [],
+            urls=item.get("evidence_urls") or [],
+            source_documents_by_url=source_documents_by_url,
+            evidence_by_id=evidence_by_id,
+            fallback_label=item.get("label"),
+            publisher=", ".join(item.get("source_entity_names") or []) or None,
+            publisher_channel="expansion_input",
+            publisher_type="other",
+            source_tier="secondary",
+            source_kind=item.get("expansion_type") or "expansion_signal",
+            evidence_type=item.get("expansion_type") or "expansion_signal",
+            claim_scope="about_subject_company",
+        )
+
+    sections: list[dict[str, Any]] = []
+
+    summary_bits: list[str] = []
+    if (brief.get("adjacent_capabilities") or []):
+        summary_bits.append(
+            "Adjacent capabilities center on "
+            + ", ".join(str(item.get("label") or "").strip() for item in (brief.get("adjacent_capabilities") or [])[:3] if str(item.get("label") or "").strip())
+            + "."
+        )
+    if (brief.get("adjacent_customer_segments") or []):
+        summary_bits.append(
+            "Adjacent customer segments include "
+            + ", ".join(str(item.get("label") or "").strip() for item in (brief.get("adjacent_customer_segments") or [])[:3] if str(item.get("label") or "").strip())
+            + "."
+        )
+    if (brief.get("named_account_anchors") or []):
+        summary_bits.append(
+            "Named account anchors include "
+            + ", ".join(str(item.get("label") or "").strip() for item in (brief.get("named_account_anchors") or [])[:3] if str(item.get("label") or "").strip())
+            + "."
+        )
+    summary_text = " ".join(bit for bit in summary_bits if bit.strip()).strip()
+    summary_sources: list[dict[str, Any]] = []
+    for group in ("adjacent_capabilities", "adjacent_customer_segments", "named_account_anchors", "geography_expansions"):
+        for item in (brief.get(group) or [])[:2]:
+            if isinstance(item, dict):
+                summary_sources.extend(_item_sources(item))
+    if summary_text:
+        sections.append(
+            {
+                "id": "summary",
+                "heading": None,
+                "blocks": [
+                    _paragraph_block(
+                        "expansion_summary",
+                        summary_text,
+                        summary_sources[:4],
+                        source_order=source_order,
+                        sources_by_id=sources_by_id,
+                    )
+                ],
+            }
+        )
+
+    corroborated_items: list[tuple[str, list[dict[str, Any]]]] = []
+    hypothesis_items: list[tuple[str, list[dict[str, Any]]]] = []
+    for group in ("adjacent_capabilities", "adjacent_customer_segments", "named_account_anchors", "geography_expansions"):
+        for item in (brief.get(group) or []):
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("why_it_matters") or item.get("label") or "").strip()
+            if text and text != str(item.get("label") or "").strip():
+                text = f"{item.get('label')}: {text}"
+            else:
+                text = str(item.get("label") or "").strip()
+            bucket = corroborated_items if str(item.get("status") or "").strip() in {"corroborated_expansion", "source_grounded", "user_kept"} else hypothesis_items
+            bucket.append((text, _item_sources(item)))
+
+    if corroborated_items:
+        sections.append(
+            {
+                "id": "corroborated",
+                "heading": "Corroborated expansions",
+                "blocks": [
+                    _bullet_list_block(
+                        "corroborated_list",
+                        corroborated_items[:10],
+                        source_order=source_order,
+                        sources_by_id=sources_by_id,
+                    )
+                ],
+            }
+        )
+
+    if hypothesis_items:
+        sections.append(
+            {
+                "id": "hypotheses",
+                "heading": "Hypotheses to validate",
+                "blocks": [
+                    _callout_block(
+                        "hypotheses_list",
+                        "info",
+                        None,
+                        hypothesis_items[:10],
+                        source_order=source_order,
+                        sources_by_id=sources_by_id,
+                    )
+                ],
+            }
+        )
+
+    for group, heading in (
+        ("named_account_anchors", "Named account anchors"),
+        ("geography_expansions", "Geography expansions"),
+    ):
+        items = [
+            (
+                str(item.get("label") or "").strip() if not str(item.get("why_it_matters") or "").strip()
+                else f"{item.get('label')}: {str(item.get('why_it_matters')).strip()}",
+                _item_sources(item),
+            )
+            for item in (brief.get(group) or [])[:8]
+            if isinstance(item, dict) and str(item.get("label") or "").strip()
+        ]
+        if items:
+            sections.append(
+                {
+                    "id": group,
+                    "heading": heading,
+                    "blocks": [
+                        _bullet_list_block(
+                            group,
+                            items,
+                            source_order=source_order,
+                            sources_by_id=sources_by_id,
+                        )
+                    ],
+                }
+            )
+
+    return {
+        "artifact_type": "report_artifact",
+        "report_kind": "expansion_brief",
+        "version": "v1",
+        "status": "degraded" if str(brief.get("reasoning_status") or "not_run") != "success" else "ready",
+        "generated_at": datetime.utcnow().isoformat(),
+        "confirmed_at": confirmed_at.isoformat() if isinstance(confirmed_at, datetime) else confirmed_at,
+        "reasoning_status": brief.get("reasoning_status") or "not_run",
+        "reasoning_warning": brief.get("reasoning_warning"),
+        "reasoning_provider": brief.get("reasoning_provider"),
+        "reasoning_model": brief.get("reasoning_model"),
+        "title": f"{company_name} Expansion Brief",
+        "summary": summary_text or None,
+        "sections": sections,
+        "sources": [sources_by_id[source_id] for source_id in source_order],
+        "footer_actions": ["copy", "good", "bad", "share", "regenerate"],
     }
 
 
@@ -3692,17 +4421,17 @@ def derive_scope_review_payload(
 ) -> dict[str, Any]:
     if isinstance(company_context_pack, CompanyContextPack):
         taxonomy_nodes = normalize_taxonomy_nodes(company_context_pack.taxonomy_nodes_json or [])
-        market_map_brief = company_context_pack.market_map_brief_json or {}
+        sourcing_brief = company_context_pack.sourcing_brief_json or {}
         expansion_brief = normalize_expansion_brief(company_context_pack.expansion_brief_json or {})
     else:
         taxonomy_nodes = normalize_taxonomy_nodes(company_context_pack.get("taxonomy_nodes") or [])
-        market_map_brief = company_context_pack.get("market_map_brief") or {}
+        sourcing_brief = company_context_pack.get("sourcing_brief") or {}
         expansion_brief = normalize_expansion_brief(company_context_pack.get("expansion_brief") or {})
 
     selected_ids = {
         str(item.get("id") or "")
         for key in ("customer_nodes", "workflow_nodes", "capability_nodes", "delivery_or_integration_nodes")
-        for item in (market_map_brief.get(key) or [])
+        for item in (sourcing_brief.get(key) or [])
         if isinstance(item, dict) and str(item.get("id") or "").strip()
     }
 

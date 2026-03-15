@@ -44,7 +44,7 @@ async def _sync_workspace(workspace_id: int) -> int:
             await session.flush()
 
         refreshed = build_company_context_artifacts(profile)
-        pack.market_map_brief_json = refreshed.get("market_map_brief") or {}
+        pack.sourcing_brief_json = refreshed.get("sourcing_brief") or {}
         pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
         pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
         pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
@@ -64,7 +64,7 @@ async def _sync_workspace(workspace_id: int) -> int:
         pack.graph_sync_status = sync_status
         pack.graph_sync_error = sync_result.get("error")
         pack.graph_synced_at = datetime.utcnow()
-        pack.market_map_brief_json = payload.get("market_map_brief") or pack.market_map_brief_json or {}
+        pack.sourcing_brief_json = payload.get("sourcing_brief") or pack.sourcing_brief_json or {}
         pack.expansion_brief_json = payload.get("expansion_brief") or pack.expansion_brief_json or {}
 
         await session.commit()
@@ -75,7 +75,7 @@ async def _sync_workspace(workspace_id: int) -> int:
             "graph_status": sync_status,
             "graph_warning": pack.graph_sync_error,
             "graph_stats": pack.graph_stats_json or {},
-            "market_map_brief": pack.market_map_brief_json or {},
+            "sourcing_brief": pack.sourcing_brief_json or {},
             "expansion_brief": pack.expansion_brief_json or {},
         }
         print(json.dumps(result, indent=2, default=str))

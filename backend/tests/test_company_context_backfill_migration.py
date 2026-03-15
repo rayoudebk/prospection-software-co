@@ -66,6 +66,6 @@ def test_company_context_backfill_creates_tables_and_backfills_workspace():
 
     with SessionLocal() as session:
         company_context_pack = session.query(CompanyContextPack).one()
-        assert company_context_pack.market_map_brief_json.get("source_summary")
+        assert company_context_pack.sourcing_brief_json.get("source_summary")
         assert company_context_pack.taxonomy_nodes_json
         assert company_context_pack.graph_sync_status == "not_synced"

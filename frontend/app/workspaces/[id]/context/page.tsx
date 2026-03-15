@@ -21,6 +21,7 @@ import {
 import { StepHeader } from "@/components/StepHeader";
 import { JobProgressPanel } from "@/components/JobProgressPanel";
 import { JobRunSummary } from "@/components/JobRunSummary";
+import { ReportArtifactRenderer } from "@/components/ReportArtifactRenderer";
 import {
   ContextPackV2,
   ContextPackEvidenceItem,
@@ -354,7 +355,7 @@ function TaxonomyCard({
   );
 }
 
-export default function MarketMapBriefPage() {
+export default function SourcingBriefPage() {
   const params = useParams();
   const workspaceId = Number(params.id);
 
@@ -373,7 +374,6 @@ export default function MarketMapBriefPage() {
   const [evidenceUrls, setEvidenceUrls] = useState<string[]>([]);
   const [newEvidenceUrl, setNewEvidenceUrl] = useState("");
   const [evidenceUrlError, setEvidenceUrlError] = useState<string | null>(null);
-  const [draftSummary, setDraftSummary] = useState("");
   const [taxonomyDrafts, setTaxonomyDrafts] = useState<Record<string, TaxonomyDraft>>({});
   const [isSourcesDrawerOpen, setIsSourcesDrawerOpen] = useState(false);
 
@@ -383,12 +383,6 @@ export default function MarketMapBriefPage() {
     setReferenceUrls(profile.comparator_seed_urls || []);
     setEvidenceUrls(profile.supporting_evidence_urls || []);
   }, [profile]);
-
-  useEffect(() => {
-    setDraftSummary(
-      companyContext?.market_map_brief?.source_summary || ""
-    );
-  }, [companyContext?.market_map_brief?.source_summary]);
 
   useEffect(() => {
     const nextDrafts: Record<string, TaxonomyDraft> = {};
@@ -544,12 +538,6 @@ export default function MarketMapBriefPage() {
     );
   };
 
-  const saveSummary = async () => {
-    await updateCompanyContext.mutateAsync({
-      source_summary: draftSummary.trim() || null,
-    });
-  };
-
   const confirmBrief = async () => {
     await updateCompanyContext.mutateAsync({ confirmed: true });
   };
@@ -603,8 +591,8 @@ export default function MarketMapBriefPage() {
       <div className="flex items-start justify-between gap-4">
         <StepHeader
           step={1}
-          title="Market Map Brief"
-          subtitle="Ground the market map in a source-company crawl, confirm the customer/workflow/capability taxonomy, and activate the map lenses you want to carry into discovery."
+          title="Sourcing Brief"
+          subtitle="Ground the source-company understanding in primary and secondary evidence, normalize the graph, and validate the cited sourcing artifact."
         />
         {gates ? (
           <div
@@ -848,7 +836,7 @@ export default function MarketMapBriefPage() {
 
       <div className="space-y-5 border border-steel-200 bg-white p-6">
         <div>
-          <h3 className="font-serif text-xl text-oxford">System Market Map Brief</h3>
+          <h3 className="font-serif text-xl text-oxford">System Sourcing Brief</h3>
           <p className="mt-1 text-xs text-steel-400">{outputMetaLine}</p>
         </div>
 
@@ -918,57 +906,17 @@ export default function MarketMapBriefPage() {
         ) : null}
 
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.7fr)]">
-          <div className="rounded-2xl border border-steel-200 bg-steel-50 p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-                Source Summary
-              </span>
-              <button
-                type="button"
-                onClick={saveSummary}
-                disabled={updateCompanyContext.isPending}
-                className="inline-flex items-center gap-1 text-xs font-medium text-oxford transition-colors hover:text-oxford-light disabled:opacity-50"
-              >
-                <Save className="h-3.5 w-3.5" />
-                {updateCompanyContext.isPending ? "Saving..." : "Save"}
-              </button>
-            </div>
-            {companyContext?.market_map_brief?.reasoning_status &&
-            companyContext.market_map_brief.reasoning_status !== "success" ? (
-              <div className="mb-3 rounded-2xl border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-warning-dark">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <div>
-                    <div className="font-medium">
-                      {companyContext.market_map_brief.reasoning_status === "not_applicable"
-                        ? "Reasoning not run yet"
-                        : "Reasoning degraded"}
-                    </div>
-                    <div className="mt-1 text-warning-dark/80">
-                      {companyContext.market_map_brief.reasoning_warning ||
-                        "Showing a fallback summary from the source evidence graph."}
-                    </div>
-                  </div>
-                </div>
+          <div>
+            {companyContext?.sourcing_report ? (
+              <ReportArtifactRenderer
+                artifact={companyContext.sourcing_report}
+                onRegenerate={() => refreshCompanyContext.mutate()}
+              />
+            ) : (
+              <div className="rounded-2xl border border-dashed border-steel-200 bg-steel-50 px-4 py-5 text-sm text-steel-500">
+                Generate a sourcing brief to render the report artifact.
               </div>
-            ) : companyContext?.market_map_brief?.reasoning_provider ? (
-              <div className="mb-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                Reasoning succeeded via{" "}
-                <span className="font-medium">
-                  {companyContext.market_map_brief.reasoning_provider}
-                  {companyContext.market_map_brief.reasoning_model
-                    ? ` · ${companyContext.market_map_brief.reasoning_model}`
-                    : ""}
-                </span>
-                .
-              </div>
-            ) : null}
-            <textarea
-              value={draftSummary}
-              onChange={(event) => setDraftSummary(event.target.value)}
-              placeholder="Generate a brief to populate this system summary."
-              className="min-h-[150px] w-full resize-none border border-steel-200 bg-white px-3 py-2 text-sm text-steel-800 placeholder:text-steel-400 focus:border-oxford focus:outline-none focus:ring-1 focus:ring-oxford/20"
-            />
+            )}
           </div>
 
           <div className="rounded-2xl border border-steel-200 bg-white p-4">
@@ -1006,7 +954,7 @@ export default function MarketMapBriefPage() {
               Strongest Evidence Buckets
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              {(companyContext?.market_map_brief?.strongest_evidence_buckets || []).map((bucket) => (
+              {(companyContext?.sourcing_brief?.strongest_evidence_buckets || []).map((bucket) => (
                 <span
                   key={bucket.label}
                   className="rounded-full border border-steel-200 bg-steel-50 px-3 py-1 text-xs text-steel-600"
@@ -1076,8 +1024,8 @@ export default function MarketMapBriefPage() {
               Named Customer Proof
             </div>
             <div className="mt-3 space-y-3">
-              {(companyContext?.market_map_brief?.named_customer_proof || []).length ? (
-                companyContext?.market_map_brief?.named_customer_proof.map((item) => (
+              {(companyContext?.sourcing_brief?.named_customer_proof || []).length ? (
+                companyContext?.sourcing_brief?.named_customer_proof.map((item) => (
                   <div key={`${item.name}-${item.source_url || item.evidence_id || ""}`} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
                     <div className="text-sm font-semibold text-oxford">{item.name}</div>
                     {item.context ? (
@@ -1112,8 +1060,8 @@ export default function MarketMapBriefPage() {
               Partner / Integration Proof
             </div>
             <div className="mt-3 space-y-3">
-              {(companyContext?.market_map_brief?.partner_integration_proof || []).length ? (
-                companyContext?.market_map_brief?.partner_integration_proof.map((item) => (
+              {(companyContext?.sourcing_brief?.partner_integration_proof || []).length ? (
+                companyContext?.sourcing_brief?.partner_integration_proof.map((item) => (
                   <div key={`${item.name}-${item.source_url || item.evidence_id || ""}`} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
                     <div className="text-sm font-semibold text-oxford">{item.name}</div>
                     <EvidenceLinks
@@ -1199,18 +1147,18 @@ export default function MarketMapBriefPage() {
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1 text-[11px] text-steel-500">
-              Customer / partner corroboration: {companyContext?.market_map_brief?.customer_partner_corroboration?.length || 0}
+              Customer / partner corroboration: {companyContext?.sourcing_brief?.customer_partner_corroboration?.length || 0}
             </span>
             <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1 text-[11px] text-steel-500">
-              Directory / category context: {companyContext?.market_map_brief?.directory_category_context?.length || 0}
+              Directory / category context: {companyContext?.sourcing_brief?.directory_category_context?.length || 0}
             </span>
             <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1 text-[11px] text-steel-500">
-              Other secondary context: {companyContext?.market_map_brief?.other_secondary_context?.length || 0}
+              Other secondary context: {companyContext?.sourcing_brief?.other_secondary_context?.length || 0}
             </span>
           </div>
           <div className="mt-3 space-y-3">
-            {(companyContext?.market_map_brief?.secondary_evidence_proof || []).length ? (
-              companyContext?.market_map_brief?.secondary_evidence_proof.map((item) => (
+            {(companyContext?.sourcing_brief?.secondary_evidence_proof || []).length ? (
+              companyContext?.sourcing_brief?.secondary_evidence_proof.map((item) => (
                 <div key={item.id} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -1266,8 +1214,8 @@ export default function MarketMapBriefPage() {
               Recommended Lenses
             </div>
             <div className="mt-3 space-y-3">
-              {(companyContext?.market_map_brief?.active_lenses || companyContext?.lens_seeds || []).length ? (
-                (companyContext?.market_map_brief?.active_lenses || companyContext?.lens_seeds || []).map((lens) => (
+              {(companyContext?.sourcing_brief?.active_lenses || companyContext?.lens_seeds || []).length ? (
+                (companyContext?.sourcing_brief?.active_lenses || companyContext?.lens_seeds || []).map((lens) => (
                   <div key={lens.id} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-sm font-semibold text-oxford">{lens.label}</div>
@@ -1298,8 +1246,8 @@ export default function MarketMapBriefPage() {
               Adjacency Hypotheses
             </div>
             <div className="mt-3 space-y-3">
-              {(companyContext?.market_map_brief?.adjacency_hypotheses || []).length ? (
-                companyContext?.market_map_brief?.adjacency_hypotheses.map((item) => (
+              {(companyContext?.sourcing_brief?.adjacency_hypotheses || []).length ? (
+                companyContext?.sourcing_brief?.adjacency_hypotheses.map((item) => (
                   <div key={item.id} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
                     <div className="text-sm text-steel-700">{item.text}</div>
                     <div className="mt-2 text-xs text-steel-500">
@@ -1323,8 +1271,8 @@ export default function MarketMapBriefPage() {
               Confidence Gaps
             </div>
             <div className="mt-3 space-y-2">
-              {(companyContext?.market_map_brief?.confidence_gaps || []).length ? (
-                companyContext?.market_map_brief?.confidence_gaps.map((gap) => (
+              {(companyContext?.sourcing_brief?.confidence_gaps || []).length ? (
+                companyContext?.sourcing_brief?.confidence_gaps.map((gap) => (
                   <div
                     key={gap}
                     className="rounded-2xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm text-steel-700"
@@ -1345,7 +1293,7 @@ export default function MarketMapBriefPage() {
               Open Questions
             </div>
             <div className="mt-3 space-y-2">
-              {(companyContext?.market_map_brief?.open_questions || []).map((question) => (
+              {(companyContext?.sourcing_brief?.open_questions || []).map((question) => (
                 <div
                   key={question}
                   className="rounded-2xl border border-steel-200 bg-steel-50 px-3 py-2 text-sm text-steel-700"
@@ -1361,7 +1309,7 @@ export default function MarketMapBriefPage() {
           <div className="text-sm text-steel-500">
             {companyContext?.confirmed_at
               ? `Brief confirmed ${new Date(companyContext.confirmed_at).toLocaleString()}`
-              : "Confirm this brief once the taxonomy and lenses match the market map you want to search."}
+              : "Confirm this brief once the sourcing report and underlying taxonomy look right."}
           </div>
           <button
             type="button"

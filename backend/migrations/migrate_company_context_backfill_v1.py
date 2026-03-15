@@ -37,8 +37,8 @@ def _apply_company_context_payload(
     preserve_existing: bool,
 ) -> bool:
     changed = False
-    if not preserve_existing or not (company_context_pack.market_map_brief_json or {}):
-        company_context_pack.market_map_brief_json = payload.get("market_map_brief") or {}
+    if not preserve_existing or not (company_context_pack.sourcing_brief_json or {}):
+        company_context_pack.sourcing_brief_json = payload.get("sourcing_brief") or {}
         changed = True
     if not preserve_existing or not (company_context_pack.expansion_brief_json or {}):
         company_context_pack.expansion_brief_json = payload.get("expansion_brief") or {}
@@ -79,7 +79,7 @@ def backfill_company_context(session) -> dict[str, int]:
         if company_context_pack is None:
             company_context_pack = CompanyContextPack(
                 workspace_id=workspace.id,
-                market_map_brief_json=bootstrap_payload.get("market_map_brief") or {},
+                sourcing_brief_json=bootstrap_payload.get("sourcing_brief") or {},
                 expansion_brief_json=bootstrap_payload.get("expansion_brief") or {},
                 taxonomy_nodes_json=bootstrap_payload.get("taxonomy_nodes") or [],
                 taxonomy_edges_json=bootstrap_payload.get("taxonomy_edges") or [],

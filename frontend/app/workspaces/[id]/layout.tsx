@@ -14,13 +14,13 @@ import clsx from "clsx";
 const navItems = [
   {
     href: "context",
-    label: "Market Map Brief",
+    label: "Sourcing Brief",
     step: 1,
     gateKey: null,
   },
   {
     href: "bricks",
-    label: "Scope Review",
+    label: "Expansion Brief",
     step: 2,
     gateKey: "context_pack",
   },

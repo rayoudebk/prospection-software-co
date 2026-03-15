@@ -41,7 +41,7 @@ def _profile_from_context_pack(payload: dict[str, Any], *, workspace_id: int) ->
 
 
 def _compact_output(payload: dict[str, Any]) -> dict[str, Any]:
-    brief = payload.get("market_map_brief") or {}
+    brief = payload.get("sourcing_brief") or {}
     return {
         "reasoning_status": brief.get("reasoning_status"),
         "reasoning_provider": brief.get("reasoning_provider"),

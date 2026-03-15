@@ -69,7 +69,7 @@ def test_company_context_graph_preserves_primary_provenance(monkeypatch):
         lambda *args, **kwargs: {"results": [], "provider_mix": {}, "errors": []},
     )
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -89,7 +89,7 @@ def test_company_context_graph_preserves_primary_provenance(monkeypatch):
     assert "CustomerArchetype" in labels
     assert "DeliveryIntegration" in labels
     assert "SourceDocument" in labels
-    assert graph["market_map_brief"]["named_customer_proof"]
+    assert graph["sourcing_brief"]["named_customer_proof"]
     assert any(edge["type"] == "SUPPORTED_BY" and edge["source_type"] == "primary" for edge in graph["edges"])
     assert any(node["label"] == "Capability" and node.get("source_document_id") for node in graph["nodes"])
     assert all("source_document_id" in node for node in graph["nodes"])
@@ -98,7 +98,7 @@ def test_company_context_graph_preserves_primary_provenance(monkeypatch):
 
 def test_company_context_graph_adds_secondary_evidence_proof(monkeypatch):
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -176,8 +176,8 @@ def test_company_context_graph_adds_secondary_evidence_proof(monkeypatch):
         "rcsb.org" not in str(item.get("url") or "")
         for item in payload["company_context_graph"]["secondary_evidence_proof"]
     )
-    assert payload["market_map_brief"]["customer_partner_corroboration"]
-    assert payload["market_map_brief"]["directory_category_context"]
+    assert payload["sourcing_brief"]["customer_partner_corroboration"]
+    assert payload["sourcing_brief"]["directory_category_context"]
     assert all(
         item.get("query_type") in {"directory_category", "customer_corroboration", "partner_corroboration", "market_context"}
         for item in payload["company_context_graph"]["secondary_evidence_proof"]
@@ -190,7 +190,7 @@ def test_company_context_payload_preserves_expansion_inputs(monkeypatch):
         lambda *args, **kwargs: {"results": [], "provider_mix": {}, "errors": []},
     )
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -232,7 +232,7 @@ def test_company_context_payload_preserves_expansion_inputs(monkeypatch):
 
 def test_secondary_queries_anchor_on_exact_company_identity(monkeypatch):
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -263,7 +263,7 @@ def test_secondary_queries_anchor_on_exact_company_identity(monkeypatch):
 
 def test_secondary_queries_include_one_customer_query_per_named_customer(monkeypatch):
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -291,7 +291,7 @@ def test_secondary_queries_include_one_customer_query_per_named_customer(monkeyp
 
 def test_secondary_company_graph_uses_secondary_specific_provider_order(monkeypatch):
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -321,7 +321,7 @@ def test_secondary_company_graph_uses_secondary_specific_provider_order(monkeypa
 
 def test_company_profile_secondary_result_is_kept_as_other_context(monkeypatch):
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -358,8 +358,8 @@ def test_company_profile_secondary_result_is_kept_as_other_context(monkeypatch):
 
     payload = build_company_context_payload(build_company_context_artifacts(profile), profile)
 
-    assert payload["market_map_brief"]["secondary_evidence_proof"]
+    assert payload["sourcing_brief"]["secondary_evidence_proof"]
     assert any(
         "crunchbase.com" in str(item.get("url") or "")
-        for item in payload["market_map_brief"]["other_secondary_context"]
+        for item in payload["sourcing_brief"]["other_secondary_context"]
     )

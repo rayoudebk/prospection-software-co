@@ -1,15 +1,32 @@
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from app.models.workspace import CompanyProfile
 from app.services.llm.types import LLMOrchestrationError, LLMResponse, LLMStage, ModelAttemptTrace
 from app.services.company_context import (
-    _market_map_reasoning_prompt,
+    _sourcing_brief_reasoning_prompt,
     apply_scope_review_decisions,
+    build_expansion_report_artifact,
     build_company_context_artifacts,
+    build_sourcing_report_artifact,
     build_context_pack_v2,
     derive_discovery_scope_hints,
     derive_scope_review_payload,
 )
+
+
+@pytest.fixture(autouse=True)
+def _disable_live_llm(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context.get_settings",
+        lambda: SimpleNamespace(
+            gemini_api_key="",
+            openai_api_key="",
+            anthropic_api_key="",
+        ),
+    )
 
 
 def _build_profile() -> CompanyProfile:
@@ -72,11 +89,30 @@ def test_build_company_context_artifacts_generates_source_documents_and_brief():
     assert payload["buyer_evidence"]["used_for_inference"] is True
     assert payload["context_pack_v2"]["version"] == "v2"
     assert "taxonomy_nodes" in payload
-    assert "market_map_brief" in payload
+    assert "sourcing_brief" in payload
     assert "expansion_brief" in payload
-    assert payload["market_map_brief"]["source_summary"]
-    assert payload["market_map_brief"]["named_customer_proof"]
+    assert payload["sourcing_brief"]["source_summary"]
+    assert payload["sourcing_brief"]["named_customer_proof"]
     assert payload["lens_seeds"]
+
+    sourcing_report = build_sourcing_report_artifact(
+        sourcing_brief=payload["sourcing_brief"],
+        source_documents=[],
+        context_pack_v2=payload["context_pack_v2"],
+        confirmed_at=payload["confirmed_at"],
+    )
+    expansion_report = build_expansion_report_artifact(
+        source_company=(payload["sourcing_brief"] or {}).get("source_company") or {},
+        expansion_brief=payload["expansion_brief"],
+        source_documents=[],
+        context_pack_v2=payload["context_pack_v2"],
+        confirmed_at=(payload["expansion_brief"] or {}).get("confirmed_at"),
+    )
+
+    assert sourcing_report["artifact_type"] == "report_artifact"
+    assert sourcing_report["report_kind"] == "sourcing_brief"
+    assert sourcing_report["sections"]
+    assert expansion_report["report_kind"] == "expansion_brief"
 
 
 def test_derive_discovery_scope_hints_prefers_source_and_adjacent_scope():
@@ -194,7 +230,7 @@ def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monke
     profile.geo_scope = {"region": "EU+UK", "include_countries": ["Belgium"], "exclude_countries": []}
 
     monkeypatch.setattr(
-        "app.services.company_context._reason_market_map_brief",
+        "app.services.company_context._reason_sourcing_brief",
         lambda **kwargs: {
             **kwargs["fallback_brief"],
             "reasoning_status": "success",
@@ -386,11 +422,11 @@ def test_build_company_context_artifacts_ignores_comparator_context_for_empty_bu
 
     assert payload["buyer_evidence"]["status"] == "insufficient"
     assert payload["buyer_evidence"]["used_for_inference"] is False
-    assert payload["market_map_brief"]["source_summary"].startswith(
+    assert payload["sourcing_brief"]["source_summary"].startswith(
         "Buyer website crawled, but no first-party product or customer evidence was extracted yet."
     )
-    assert payload["market_map_brief"]["customer_nodes"] == []
-    assert payload["market_map_brief"]["capability_nodes"] == []
+    assert payload["sourcing_brief"]["customer_nodes"] == []
+    assert payload["sourcing_brief"]["capability_nodes"] == []
 
 
 def test_build_context_pack_v2_keeps_high_signal_job_pages():
@@ -690,7 +726,7 @@ def test_build_company_context_artifacts_promotes_rendered_product_features_into
     for node in payload["taxonomy_nodes"]:
         taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
     surfaced_capabilities = [
-        node["phrase"] for node in (payload["market_map_brief"].get("capability_nodes") or [])
+        node["phrase"] for node in (payload["sourcing_brief"].get("capability_nodes") or [])
     ]
 
     assert "Préparation et modélisation des portefeuilles" in taxonomy_by_layer["capability"]
@@ -849,23 +885,23 @@ def test_build_company_context_artifacts_uses_market_map_reasoning_when_availabl
 
     payload = build_company_context_artifacts(profile)
 
-    assert payload["market_map_brief"]["source_summary"].startswith("4TPM appears to sell front-office wealth management capabilities")
-    assert payload["market_map_brief"]["reasoning_status"] == "success"
-    assert payload["market_map_brief"]["reasoning_provider"] == "gemini"
-    assert payload["market_map_brief"]["reasoning_model"] == "gemini-2.0-flash"
+    assert payload["sourcing_brief"]["source_summary"].startswith("4TPM appears to sell front-office wealth management capabilities")
+    assert payload["sourcing_brief"]["reasoning_status"] == "success"
+    assert payload["sourcing_brief"]["reasoning_provider"] == "gemini"
+    assert payload["sourcing_brief"]["reasoning_model"] == "gemini-2.0-flash"
     assert [
-        node["phrase"] for node in payload["market_map_brief"]["capability_nodes"]
+        node["phrase"] for node in payload["sourcing_brief"]["capability_nodes"]
     ] == [
         "Préparation et modélisation des portefeuilles",
         "Génération d'ordres blocs et routage full STP",
     ]
     assert [
-        node["phrase"] for node in payload["market_map_brief"]["delivery_or_integration_nodes"]
+        node["phrase"] for node in payload["sourcing_brief"]["delivery_or_integration_nodes"]
     ] == ["REST API"]
-    assert payload["market_map_brief"]["open_questions"][0] == (
+    assert payload["sourcing_brief"]["open_questions"][0] == (
         "Which buyer segment should the first adjacency map prioritize?"
     )
-    assert len(payload["market_map_brief"]["open_questions"]) == 1
+    assert len(payload["sourcing_brief"]["open_questions"]) == 1
 
 
 def test_build_company_context_artifacts_builds_hublo_style_market_map_layers():
@@ -994,7 +1030,7 @@ def test_build_company_context_artifacts_builds_hublo_style_market_map_layers():
     assert "AP-HP" not in taxonomy_by_layer.get("capability", [])
     assert any(
         lens["lens_type"] == "same_product_different_customer"
-        for lens in (payload["market_map_brief"].get("active_lenses") or [])
+        for lens in (payload["sourcing_brief"].get("active_lenses") or [])
     )
 
 
@@ -1055,8 +1091,8 @@ def test_build_company_context_artifacts_marks_degraded_reasoning_when_llm_fails
 
     payload = build_company_context_artifacts(profile)
 
-    assert payload["market_map_brief"]["reasoning_status"] == "degraded"
-    assert "deterministic fallback" in str(payload["market_map_brief"]["reasoning_warning"] or "").lower()
+    assert payload["sourcing_brief"]["reasoning_status"] == "degraded"
+    assert "deterministic fallback" in str(payload["sourcing_brief"]["reasoning_warning"] or "").lower()
 
 
 def test_build_company_context_artifacts_keeps_reasoned_questions_capped(monkeypatch):
@@ -1134,8 +1170,8 @@ def test_build_company_context_artifacts_keeps_reasoned_questions_capped(monkeyp
 
     payload = build_company_context_artifacts(profile)
 
-    assert payload["market_map_brief"]["reasoning_status"] == "success"
-    assert payload["market_map_brief"]["open_questions"] == [
+    assert payload["sourcing_brief"]["reasoning_status"] == "success"
+    assert payload["sourcing_brief"]["open_questions"] == [
         "Which customer segment is strongest?",
         "What adjacent workflow should be mapped next?",
     ]
@@ -1215,14 +1251,14 @@ def test_build_company_context_artifacts_filters_strategy_style_reasoned_questio
 
     payload = build_company_context_artifacts(profile)
 
-    assert payload["market_map_brief"]["reasoning_status"] == "success"
-    assert payload["market_map_brief"]["open_questions"] == [
+    assert payload["sourcing_brief"]["reasoning_status"] == "success"
+    assert payload["sourcing_brief"]["open_questions"] == [
         "What evidence clarifies workflow depth across front-office operations?"
     ]
 
 
-def test_market_map_reasoning_prompt_stays_domain_agnostic():
-    prompt = _market_map_reasoning_prompt(
+def test_sourcing_brief_reasoning_prompt_stays_domain_agnostic():
+    prompt = _sourcing_brief_reasoning_prompt(
         {
             "prompt_version": "v2",
             "source_company": {"name": "ExampleCo", "website": "https://example.com"},

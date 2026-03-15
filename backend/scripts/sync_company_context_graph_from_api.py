@@ -81,7 +81,7 @@ def main() -> None:
         "graph_status": sync_result.get("status"),
         "graph_warning": sync_result.get("error"),
         "graph_stats": graph_payload.get("graph_stats") or {},
-        "market_map_brief": graph_payload.get("market_map_brief") or {},
+        "sourcing_brief": graph_payload.get("sourcing_brief") or {},
         "expansion_brief": graph_payload.get("expansion_brief") or {},
     }
     print(json.dumps(output, indent=2, ensure_ascii=False))

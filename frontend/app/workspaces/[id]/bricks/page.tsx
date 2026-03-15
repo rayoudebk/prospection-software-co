@@ -5,6 +5,7 @@ import {
   useCompanyContextPack,
   useConfirmScopeReview,
   useGates,
+  useRefreshCompanyContextPack,
   useScopeReview,
 } from "@/lib/hooks";
 import { ScopeReviewItem } from "@/lib/api";
@@ -16,6 +17,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
+import { ReportArtifactRenderer } from "@/components/ReportArtifactRenderer";
 import clsx from "clsx";
 
 function StatusBadge({ status }: { status: string }) {
@@ -70,6 +72,7 @@ export default function ScopeReviewPage() {
   const { data: companyContext } = useCompanyContextPack(workspaceId);
   const { data: gates } = useGates(workspaceId);
   const confirmScopeReview = useConfirmScopeReview(workspaceId);
+  const refreshCompanyContext = useRefreshCompanyContextPack(workspaceId);
 
   if (isLoading) {
     return (
@@ -83,8 +86,8 @@ export default function ScopeReviewPage() {
     <div className="space-y-6">
       <StepHeader
         step={2}
-        title="Scope Review"
-        subtitle="Review the source-backed and expansion-backed nodes before universe discovery."
+        title="Expansion Brief"
+        subtitle="Review the bounded one-hop expansion artifact before moving into scope review and universe discovery."
       />
 
       {gates && (
@@ -109,14 +112,21 @@ export default function ScopeReviewPage() {
         </div>
       )}
 
-      {companyContext?.market_map_brief?.source_summary && (
+      {companyContext?.expansion_report ? (
+        <ReportArtifactRenderer
+          artifact={companyContext.expansion_report}
+          onRegenerate={() => refreshCompanyContext.mutate()}
+        />
+      ) : null}
+
+      {companyContext?.sourcing_brief?.source_summary && (
         <div className="bg-oxford text-white border border-oxford-dark p-5">
           <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-steel-400 mb-2">
             <Sparkles className="w-4 h-4" />
             Source Brief
           </div>
           <p className="text-sm text-steel-100 leading-relaxed">
-            {companyContext.market_map_brief.source_summary}
+            {companyContext.sourcing_brief.source_summary}
           </p>
         </div>
       )}

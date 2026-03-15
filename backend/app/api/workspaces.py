@@ -62,6 +62,8 @@ from app.services.company_context_graph import (
 from app.services.company_context import (
     assess_buyer_evidence,
     apply_scope_review_decisions,
+    build_expansion_report_artifact,
+    build_sourcing_report_artifact,
     build_context_pack_v2,
     build_expansion_inputs,
     build_company_context_artifacts,
@@ -72,7 +74,7 @@ from app.services.company_context import (
     normalize_open_questions,
     normalize_taxonomy_edges,
     normalize_taxonomy_nodes,
-    _build_market_map_artifacts,
+    _build_sourcing_brief_artifacts,
     _derive_source_pills_from_profile,
 )
 
@@ -191,7 +193,7 @@ class LensSeedResponse(BaseModel):
     confidence: float
 
 
-class MarketMapBriefResponse(BaseModel):
+class SourcingBriefResponse(BaseModel):
     source_company: Dict[str, Any] = Field(default_factory=dict)
     source_summary: Optional[str] = None
     reasoning_status: str = "not_run"
@@ -291,6 +293,80 @@ class SourceDocumentResponse(BaseModel):
     evidence_type: str
 
 
+class ReportArtifactSourcePillResponse(BaseModel):
+    id: str
+    label: str
+    url: str
+    publisher: Optional[str] = None
+    publisher_channel: str
+    publisher_type: Optional[str] = None
+    source_tier: str
+    source_kind: str
+    evidence_type: str
+    claim_scope: Optional[str] = None
+    published_at: Optional[str] = None
+    captured_at: Optional[str] = None
+
+
+class ReportArtifactSentenceResponse(BaseModel):
+    id: str
+    text: str
+    citation_pill_ids: List[str] = Field(default_factory=list)
+
+
+class ReportArtifactParagraphBlockResponse(BaseModel):
+    type: str = "paragraph"
+    sentences: List[ReportArtifactSentenceResponse] = Field(default_factory=list)
+
+
+class ReportArtifactBulletListBlockResponse(BaseModel):
+    type: str = "bullet_list"
+    items: List[ReportArtifactSentenceResponse] = Field(default_factory=list)
+
+
+class ReportArtifactCalloutBlockResponse(BaseModel):
+    type: str = "callout"
+    tone: str = "neutral"
+    title: Optional[str] = None
+    sentences: List[ReportArtifactSentenceResponse] = Field(default_factory=list)
+
+
+class ReportArtifactKeyValueItemResponse(BaseModel):
+    id: str
+    key: str
+    value: str
+    citation_pill_ids: List[str] = Field(default_factory=list)
+
+
+class ReportArtifactKeyValueBlockResponse(BaseModel):
+    type: str = "key_value"
+    items: List[ReportArtifactKeyValueItemResponse] = Field(default_factory=list)
+
+
+class ReportArtifactSectionResponse(BaseModel):
+    id: str
+    heading: Optional[str] = None
+    blocks: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ReportArtifactResponse(BaseModel):
+    artifact_type: str = "report_artifact"
+    report_kind: str
+    version: str = "v1"
+    status: str
+    generated_at: Optional[str] = None
+    confirmed_at: Optional[str] = None
+    reasoning_status: str = "not_run"
+    reasoning_warning: Optional[str] = None
+    reasoning_provider: Optional[str] = None
+    reasoning_model: Optional[str] = None
+    title: str
+    summary: Optional[str] = None
+    sections: List[ReportArtifactSectionResponse] = Field(default_factory=list)
+    sources: List[ReportArtifactSourcePillResponse] = Field(default_factory=list)
+    footer_actions: List[str] = Field(default_factory=list)
+
+
 class CompanyContextPackResponse(BaseModel):
     id: int
     workspace_id: int
@@ -308,8 +384,10 @@ class CompanyContextPackResponse(BaseModel):
     taxonomy_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
     taxonomy_edges: List[TaxonomyEdgeResponse] = Field(default_factory=list)
     lens_seeds: List[LensSeedResponse] = Field(default_factory=list)
-    market_map_brief: Optional[MarketMapBriefResponse] = None
+    sourcing_brief: Optional[SourcingBriefResponse] = None
     expansion_brief: Optional[ExpansionBriefResponse] = None
+    sourcing_report: Optional[ReportArtifactResponse] = None
+    expansion_report: Optional[ReportArtifactResponse] = None
     generated_at: Optional[datetime]
     confirmed_at: Optional[datetime]
 
@@ -961,15 +1039,15 @@ async def _latest_completed_discovery_job(
 
 
 def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyContextPackResponse:
-    market_map_brief = payload.get("market_map_brief")
-    if isinstance(market_map_brief, dict):
-        market_map_brief = {
-            **market_map_brief,
-            "partner_integration_proof": market_map_brief.get("partner_integration_proof") or [],
-            "secondary_evidence_proof": market_map_brief.get("secondary_evidence_proof") or [],
-            "customer_partner_corroboration": market_map_brief.get("customer_partner_corroboration") or [],
-            "directory_category_context": market_map_brief.get("directory_category_context") or [],
-            "other_secondary_context": market_map_brief.get("other_secondary_context") or [],
+    sourcing_brief = payload.get("sourcing_brief")
+    if isinstance(sourcing_brief, dict):
+        sourcing_brief = {
+            **sourcing_brief,
+            "partner_integration_proof": sourcing_brief.get("partner_integration_proof") or [],
+            "secondary_evidence_proof": sourcing_brief.get("secondary_evidence_proof") or [],
+            "customer_partner_corroboration": sourcing_brief.get("customer_partner_corroboration") or [],
+            "directory_category_context": sourcing_brief.get("directory_category_context") or [],
+            "other_secondary_context": sourcing_brief.get("other_secondary_context") or [],
         }
     expansion_brief = normalize_expansion_brief(payload.get("expansion_brief") or {})
     source_documents = []
@@ -984,6 +1062,27 @@ def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyCo
                 "claim_scope": item.get("claim_scope"),
                 "subject_company": item.get("subject_company"),
             }
+        )
+    sourcing_report = payload.get("sourcing_report")
+    if not isinstance(sourcing_report, dict):
+        sourcing_report = build_sourcing_report_artifact(
+            sourcing_brief=sourcing_brief if isinstance(sourcing_brief, dict) else {},
+            source_documents=source_documents,
+            context_pack_v2=payload.get("context_pack_v2") if isinstance(payload.get("context_pack_v2"), dict) else {},
+            confirmed_at=payload.get("confirmed_at"),
+        )
+    expansion_report = payload.get("expansion_report")
+    if not isinstance(expansion_report, dict):
+        expansion_report = build_expansion_report_artifact(
+            source_company=(sourcing_brief.get("source_company") if isinstance(sourcing_brief, dict) else {}) or {},
+            expansion_brief=expansion_brief,
+            source_documents=source_documents,
+            context_pack_v2=payload.get("context_pack_v2") if isinstance(payload.get("context_pack_v2"), dict) else {},
+            confirmed_at=(
+                expansion_brief.get("confirmed_at")
+                if isinstance(expansion_brief, dict)
+                else payload.get("confirmed_at")
+            ),
         )
     return CompanyContextPackResponse(
         id=int(payload.get("id") or 0),
@@ -1030,12 +1129,14 @@ def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyCo
             for item in (payload.get("lens_seeds") or [])
             if isinstance(item, dict)
         ],
-        market_map_brief=(
-            MarketMapBriefResponse.model_validate(market_map_brief)
-            if isinstance(market_map_brief, dict)
+        sourcing_brief=(
+            SourcingBriefResponse.model_validate(sourcing_brief)
+            if isinstance(sourcing_brief, dict)
             else None
         ),
         expansion_brief=ExpansionBriefResponse.model_validate(expansion_brief),
+        sourcing_report=ReportArtifactResponse.model_validate(sourcing_report),
+        expansion_report=ReportArtifactResponse.model_validate(expansion_report),
         generated_at=payload.get("generated_at"),
         confirmed_at=payload.get("confirmed_at"),
     )
@@ -1097,7 +1198,7 @@ def _company_context_payload_from_pack(
         "taxonomy_nodes": normalize_taxonomy_nodes(company_context_pack.taxonomy_nodes_json or []),
         "taxonomy_edges": normalize_taxonomy_edges(company_context_pack.taxonomy_edges_json or []),
         "lens_seeds": normalize_lens_seeds(company_context_pack.lens_seeds_json or []),
-        "market_map_brief": company_context_pack.market_map_brief_json or {},
+        "sourcing_brief": company_context_pack.sourcing_brief_json or {},
         "expansion_brief": normalize_expansion_brief(company_context_pack.expansion_brief_json or {}),
         "generated_at": company_context_pack.generated_at,
         "confirmed_at": company_context_pack.confirmed_at,
@@ -1154,7 +1255,7 @@ async def _sync_company_context_graph(
     company_context_pack.graph_sync_status = sync_status
     company_context_pack.graph_sync_error = sync_result.get("error")
     company_context_pack.graph_synced_at = datetime.utcnow()
-    company_context_pack.market_map_brief_json = payload.get("market_map_brief") or company_context_pack.market_map_brief_json or {}
+    company_context_pack.sourcing_brief_json = payload.get("sourcing_brief") or company_context_pack.sourcing_brief_json or {}
     company_context_pack.expansion_brief_json = payload.get("expansion_brief") or company_context_pack.expansion_brief_json or {}
     payload["graph_status"] = sync_status
     payload["graph_warning"] = sync_result.get("error")
@@ -1183,7 +1284,7 @@ async def _ensure_company_context_pack(
     company_context_payload = build_company_context_artifacts(profile)
     company_context_pack = CompanyContextPack(
         workspace_id=workspace_id,
-        market_map_brief_json=company_context_payload.get("market_map_brief") or {},
+        sourcing_brief_json=company_context_payload.get("sourcing_brief") or {},
         expansion_brief_json=company_context_payload.get("expansion_brief") or {},
         taxonomy_nodes_json=company_context_payload.get("taxonomy_nodes") or [],
         taxonomy_edges_json=company_context_payload.get("taxonomy_edges") or [],
@@ -1711,7 +1812,7 @@ async def list_workspaces(db: AsyncSession = Depends(get_db)):
         )
         company_context_pack = company_context_result.scalar_one_or_none()
         has_context_pack = bool(
-            (company_context_pack and (company_context_pack.market_map_brief_json or company_context_pack.company_context_graph_ref))
+            (company_context_pack and (company_context_pack.sourcing_brief_json or company_context_pack.company_context_graph_ref))
             or (profile and profile.context_pack_markdown)
         )
 
@@ -1757,7 +1858,7 @@ async def get_workspace(workspace_id: int, db: AsyncSession = Depends(get_db)):
     )
     company_context_pack = company_context_result.scalar_one_or_none()
     has_context_pack = bool(
-        (company_context_pack and (company_context_pack.market_map_brief_json or company_context_pack.company_context_graph_ref))
+        (company_context_pack and (company_context_pack.sourcing_brief_json or company_context_pack.company_context_graph_ref))
         or (profile and profile.context_pack_markdown)
     )
 
@@ -2054,7 +2155,7 @@ async def get_company_context(workspace_id: int, db: AsyncSession = Depends(get_
     payload["expansion_inputs"] = build_expansion_inputs(
         payload.get("context_pack_v2") or {},
         comparator_seed_urls=[],
-        buyer_url=profile.buyer_company_url or ((payload.get("market_map_brief") or {}).get("source_company") or {}).get("website"),
+        buyer_url=profile.buyer_company_url or ((payload.get("sourcing_brief") or {}).get("source_company") or {}).get("website"),
     )
     payload["workspace_id"] = workspace_id
     payload["id"] = company_context_pack.id
@@ -2076,9 +2177,9 @@ async def update_company_context(
         profile=profile,
     )
     if data.source_summary is not None:
-        market_map_brief = company_context_pack.market_map_brief_json if isinstance(company_context_pack.market_map_brief_json, dict) else {}
-        market_map_brief["source_summary"] = str(data.source_summary or "").strip()[:8000] or None
-        company_context_pack.market_map_brief_json = market_map_brief
+        sourcing_brief = company_context_pack.sourcing_brief_json if isinstance(company_context_pack.sourcing_brief_json, dict) else {}
+        sourcing_brief["source_summary"] = str(data.source_summary or "").strip()[:8000] or None
+        company_context_pack.sourcing_brief_json = sourcing_brief
     if data.taxonomy_nodes is not None:
         normalized_nodes = normalize_taxonomy_nodes([item.model_dump() for item in data.taxonomy_nodes])
         (
@@ -2087,8 +2188,8 @@ async def update_company_context(
             rebuilt_edges,
             rebuilt_lens_seeds,
             rebuilt_open_questions,
-            rebuilt_market_map_brief,
-        ) = _build_market_map_artifacts(
+            rebuilt_sourcing_brief,
+        ) = _build_sourcing_brief_artifacts(
             profile,
             source_pills=_derive_source_pills_from_profile(profile),
             override_nodes=normalized_nodes,
@@ -2096,21 +2197,21 @@ async def update_company_context(
         company_context_pack.taxonomy_nodes_json = rebuilt_nodes
         company_context_pack.taxonomy_edges_json = rebuilt_edges
         company_context_pack.lens_seeds_json = rebuilt_lens_seeds
-        company_context_pack.market_map_brief_json = {
-            **rebuilt_market_map_brief,
+        company_context_pack.sourcing_brief_json = {
+            **rebuilt_sourcing_brief,
             "source_summary": (
-                ((company_context_pack.market_map_brief_json or {}).get("source_summary"))
-                if isinstance(company_context_pack.market_map_brief_json, dict)
+                ((company_context_pack.sourcing_brief_json or {}).get("source_summary"))
+                if isinstance(company_context_pack.sourcing_brief_json, dict)
                 else None
-            ) or rebuilt_market_map_brief.get("source_summary"),
+            ) or rebuilt_sourcing_brief.get("source_summary"),
             "confirmed_at": company_context_pack.confirmed_at.isoformat() if company_context_pack.confirmed_at else None,
         }
-        company_context_pack.market_map_brief_json["open_questions"] = normalize_open_questions(rebuilt_open_questions)
+        company_context_pack.sourcing_brief_json["open_questions"] = normalize_open_questions(rebuilt_open_questions)
     if data.confirmed is not None:
         company_context_pack.confirmed_at = datetime.utcnow() if data.confirmed else None
-    market_map_brief = company_context_pack.market_map_brief_json if isinstance(company_context_pack.market_map_brief_json, dict) else {}
-    market_map_brief["confirmed_at"] = company_context_pack.confirmed_at.isoformat() if company_context_pack.confirmed_at else None
-    company_context_pack.market_map_brief_json = market_map_brief
+    sourcing_brief = company_context_pack.sourcing_brief_json if isinstance(company_context_pack.sourcing_brief_json, dict) else {}
+    sourcing_brief["confirmed_at"] = company_context_pack.confirmed_at.isoformat() if company_context_pack.confirmed_at else None
+    company_context_pack.sourcing_brief_json = sourcing_brief
     company_context_pack.updated_at = datetime.utcnow()
     payload = await _sync_company_context_graph(company_context_pack, profile)
     await db.commit()
@@ -2118,7 +2219,7 @@ async def update_company_context(
     payload["expansion_inputs"] = build_expansion_inputs(
         payload.get("context_pack_v2") or {},
         comparator_seed_urls=[],
-        buyer_url=profile.buyer_company_url or ((payload.get("market_map_brief") or {}).get("source_company") or {}).get("website"),
+        buyer_url=profile.buyer_company_url or ((payload.get("sourcing_brief") or {}).get("source_company") or {}).get("website"),
     )
     payload["workspace_id"] = workspace_id
     payload["id"] = company_context_pack.id
@@ -2137,7 +2238,7 @@ async def refresh_company_context(workspace_id: int, db: AsyncSession = Depends(
         profile=profile,
     )
     refreshed = build_company_context_artifacts(profile)
-    company_context_pack.market_map_brief_json = refreshed.get("market_map_brief") or {}
+    company_context_pack.sourcing_brief_json = refreshed.get("sourcing_brief") or {}
     company_context_pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
     company_context_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
     company_context_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
@@ -2153,7 +2254,7 @@ async def refresh_company_context(workspace_id: int, db: AsyncSession = Depends(
     payload["expansion_inputs"] = build_expansion_inputs(
         payload.get("context_pack_v2") or {},
         comparator_seed_urls=[],
-        buyer_url=profile.buyer_company_url or ((payload.get("market_map_brief") or {}).get("source_company") or {}).get("website"),
+        buyer_url=profile.buyer_company_url or ((payload.get("sourcing_brief") or {}).get("source_company") or {}).get("website"),
     )
     payload["workspace_id"] = workspace_id
     payload["id"] = company_context_pack.id
@@ -4549,16 +4650,16 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
             missing_items["context_pack"].append("Add a source company URL")
         else:
             context_claim_groups_available.add("identity_scope")
-        market_map_brief = company_context_payload.get("market_map_brief") or {}
+        sourcing_brief = company_context_payload.get("sourcing_brief") or {}
         if not (
-            isinstance(market_map_brief, dict)
+            isinstance(sourcing_brief, dict)
             and (
-                str(market_map_brief.get("source_summary") or "").strip()
-                or market_map_brief.get("customer_nodes")
-                or market_map_brief.get("capability_nodes")
+                str(sourcing_brief.get("source_summary") or "").strip()
+                or sourcing_brief.get("customer_nodes")
+                or sourcing_brief.get("capability_nodes")
             )
         ):
-            missing_items["context_pack"].append("Generate or refresh the market map brief")
+            missing_items["context_pack"].append("Generate or refresh the sourcing brief")
         else:
             context_claim_groups_available.add("product_depth")
         if profile.comparator_seed_urls:
@@ -4579,9 +4680,9 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         context_pack_ready = bool(
             has_company_or_brief
             and (
-                str(market_map_brief.get("source_summary") or "").strip()
-                or market_map_brief.get("customer_nodes")
-                or market_map_brief.get("capability_nodes")
+                str(sourcing_brief.get("source_summary") or "").strip()
+                or sourcing_brief.get("customer_nodes")
+                or sourcing_brief.get("capability_nodes")
             )
             and covered >= min_required
         )

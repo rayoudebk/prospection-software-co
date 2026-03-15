@@ -47,7 +47,7 @@ def _profile_from_context_pack(payload: dict[str, Any], *, workspace_id: int) ->
 
 
 def _stub_market_map_reasoning() -> None:
-    company_context_mod._reason_market_map_brief = lambda **kwargs: {  # type: ignore[attr-defined]
+    company_context_mod._reason_sourcing_brief = lambda **kwargs: {  # type: ignore[attr-defined]
         **kwargs["fallback_brief"],
         "reasoning_status": "success",
         "reasoning_warning": None,
@@ -100,15 +100,15 @@ def main() -> int:
     settings = get_settings()
     output = {
         "workspace_id": args.workspace_id,
-        "source_company": (company_context_payload.get("market_map_brief") or {}).get("source_company") or {},
+        "source_company": (company_context_payload.get("sourcing_brief") or {}).get("source_company") or {},
         "named_customers": [
             item.get("name")
-            for item in ((company_context_payload.get("market_map_brief") or {}).get("named_customer_proof") or [])
+            for item in ((company_context_payload.get("sourcing_brief") or {}).get("named_customer_proof") or [])
             if isinstance(item, dict) and item.get("name")
         ],
         "partners": [
             item.get("name")
-            for item in ((company_context_payload.get("market_map_brief") or {}).get("partner_integration_proof") or [])
+            for item in ((company_context_payload.get("sourcing_brief") or {}).get("partner_integration_proof") or [])
             if isinstance(item, dict) and item.get("name")
         ],
         "secondary_budget": {

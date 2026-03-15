@@ -144,6 +144,86 @@ export interface CitationSummaryV1 {
   source_pills: CitationSourcePill[];
 }
 
+export interface ReportArtifactSourcePill {
+  id: string;
+  label: string;
+  url: string;
+  publisher?: string | null;
+  publisher_channel: string;
+  publisher_type?: string | null;
+  source_tier: string;
+  source_kind: string;
+  evidence_type: string;
+  claim_scope?: string | null;
+  published_at?: string | null;
+  captured_at?: string | null;
+}
+
+export interface ReportArtifactSentence {
+  id: string;
+  text: string;
+  citation_pill_ids: string[];
+}
+
+export interface ReportArtifactParagraphBlock {
+  type: "paragraph";
+  sentences: ReportArtifactSentence[];
+}
+
+export interface ReportArtifactBulletListBlock {
+  type: "bullet_list";
+  items: ReportArtifactSentence[];
+}
+
+export interface ReportArtifactCalloutBlock {
+  type: "callout";
+  tone: "info" | "warning" | "success" | "neutral" | string;
+  title?: string | null;
+  sentences: ReportArtifactSentence[];
+}
+
+export interface ReportArtifactKeyValueItem {
+  id: string;
+  key: string;
+  value: string;
+  citation_pill_ids: string[];
+}
+
+export interface ReportArtifactKeyValueBlock {
+  type: "key_value";
+  items: ReportArtifactKeyValueItem[];
+}
+
+export type ReportArtifactBlock =
+  | ReportArtifactParagraphBlock
+  | ReportArtifactBulletListBlock
+  | ReportArtifactCalloutBlock
+  | ReportArtifactKeyValueBlock;
+
+export interface ReportArtifactSection {
+  id: string;
+  heading?: string | null;
+  blocks: ReportArtifactBlock[];
+}
+
+export interface ReportArtifact {
+  artifact_type: "report_artifact";
+  report_kind: "sourcing_brief" | "expansion_brief" | string;
+  version: "v1" | string;
+  status: "ready" | "degraded" | "pending" | "failed" | string;
+  generated_at?: string | null;
+  confirmed_at?: string | null;
+  reasoning_status?: "success" | "degraded" | "not_run" | "not_applicable" | string;
+  reasoning_warning?: string | null;
+  reasoning_provider?: string | null;
+  reasoning_model?: string | null;
+  title: string;
+  summary?: string | null;
+  sections: ReportArtifactSection[];
+  sources: ReportArtifactSourcePill[];
+  footer_actions: Array<"copy" | "good" | "bad" | "share" | "regenerate" | string>;
+}
+
 export interface BuyerEvidenceDiagnostics {
   mode: string;
   status: string;
@@ -196,7 +276,7 @@ export interface LensSeed {
   confidence: number;
 }
 
-export interface MarketMapBrief {
+export interface SourcingBrief {
   source_company?: {
     name?: string | null;
     website?: string | null;
@@ -332,7 +412,7 @@ export interface CompanyContextGraph {
   nodes: Array<Record<string, unknown>>;
   edges: Array<Record<string, unknown>>;
   source_documents?: SourceDocument[];
-  secondary_evidence_proof?: MarketMapBrief["secondary_evidence_proof"];
+  secondary_evidence_proof?: SourcingBrief["secondary_evidence_proof"];
   graph_stats?: Record<string, unknown>;
 }
 
@@ -364,9 +444,42 @@ export interface CompanyContextPack {
   taxonomy_nodes: TaxonomyNode[];
   taxonomy_edges: TaxonomyEdge[];
   lens_seeds: LensSeed[];
-  market_map_brief?: MarketMapBrief | null;
+  sourcing_brief?: SourcingBrief | null;
+  expansion_brief?: ExpansionBrief | null;
+  sourcing_report?: ReportArtifact | null;
+  expansion_report?: ReportArtifact | null;
   generated_at: string | null;
   confirmed_at: string | null;
+}
+
+export interface ExpansionBriefItem {
+  id: string;
+  label: string;
+  expansion_type: string;
+  status: string;
+  confidence: number;
+  why_it_matters?: string | null;
+  evidence_urls: string[];
+  supporting_node_ids: string[];
+  source_entity_names: string[];
+  market_importance: string;
+  operational_centrality: string;
+  workflow_criticality: string;
+  daily_operator_usage: string;
+  switching_cost_intensity: string;
+  priority_tier: string;
+}
+
+export interface ExpansionBrief {
+  reasoning_status?: "success" | "degraded" | "not_run" | "not_applicable" | string;
+  reasoning_warning?: string | null;
+  reasoning_provider?: string | null;
+  reasoning_model?: string | null;
+  confirmed_at?: string | null;
+  adjacent_capabilities: ExpansionBriefItem[];
+  adjacent_customer_segments: ExpansionBriefItem[];
+  named_account_anchors: ExpansionBriefItem[];
+  geography_expansions: ExpansionBriefItem[];
 }
 
 export interface ScopeReviewItem {

@@ -144,7 +144,7 @@ def _empty_graph(graph_ref: str, workspace_id: int) -> Dict[str, Any]:
         "generated_at": _utcnow_iso(),
         "nodes": [],
         "edges": [],
-        "market_map_brief": {},
+        "sourcing_brief": {},
         "source_documents": [],
         "secondary_evidence_proof": [],
         "graph_stats": {
@@ -457,7 +457,7 @@ def _curated_primary_taxonomy_nodes(payload: Dict[str, Any]) -> List[Dict[str, A
     if not nodes:
         return []
 
-    brief = payload.get("market_map_brief") or {}
+    brief = payload.get("sourcing_brief") or {}
     selected_ids = {
         str(node.get("id"))
         for key in (
@@ -559,7 +559,7 @@ def build_primary_company_graph_from_context(
     primary_input: Dict[str, Any],
 ) -> Dict[str, Any]:
     payload = primary_input or {}
-    source_company = (payload.get("market_map_brief") or {}).get("source_company") or {}
+    source_company = (payload.get("sourcing_brief") or {}).get("source_company") or {}
     company_name = (
         source_company.get("name")
         or normalize_domain(profile.buyer_company_url or "")
@@ -569,7 +569,7 @@ def build_primary_company_graph_from_context(
     graph = _empty_graph(graph_ref, profile.workspace_id)
     company_id = _stable_id("company", graph_ref, company_name)
     graph["company_node_id"] = company_id
-    graph["market_map_brief"] = deepcopy(payload.get("market_map_brief") or {})
+    graph["sourcing_brief"] = deepcopy(payload.get("sourcing_brief") or {})
 
     company_node = _node(
         company_id,
@@ -697,7 +697,7 @@ def build_primary_company_graph_from_context(
             properties={"graph_ref": graph_ref},
         )
 
-    brief = payload.get("market_map_brief") or {}
+    brief = payload.get("sourcing_brief") or {}
     for customer in brief.get("named_customer_proof") or []:
         if not isinstance(customer, dict) or not customer.get("name"):
             continue
@@ -1463,12 +1463,12 @@ def merge_company_graphs(primary_graph: Dict[str, Any], secondary_graph: Dict[st
     return merged
 
 
-def generate_market_map_brief_from_graph(
+def generate_sourcing_brief_from_graph(
     graph: Dict[str, Any],
     *,
     base_brief: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    brief = deepcopy(base_brief or graph.get("market_map_brief") or {})
+    brief = deepcopy(base_brief or graph.get("sourcing_brief") or {})
     nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
 
     def _top_nodes(label: str, limit: int) -> List[Dict[str, Any]]:
@@ -1585,7 +1585,7 @@ def build_deep_research_handoff(
     brief: Optional[Dict[str, Any]] = None,
     expansion_inputs: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    resolved_brief = deepcopy(brief or graph.get("market_map_brief") or {})
+    resolved_brief = deepcopy(brief or graph.get("sourcing_brief") or {})
     source_company = deepcopy(resolved_brief.get("source_company") or {})
     source_documents = [
         item
@@ -1681,9 +1681,9 @@ def build_company_context_graph(
     primary_graph = build_primary_company_graph_from_context(profile, primary_input)
     secondary_graph = _build_secondary_company_graph(profile, primary_graph)
     merged_graph = merge_company_graphs(primary_graph, secondary_graph)
-    merged_graph["market_map_brief"] = generate_market_map_brief_from_graph(
+    merged_graph["sourcing_brief"] = generate_sourcing_brief_from_graph(
         merged_graph,
-        base_brief=(primary_input or {}).get("market_map_brief") or primary_graph.get("market_map_brief") or {},
+        base_brief=(primary_input or {}).get("sourcing_brief") or primary_graph.get("sourcing_brief") or {},
     )
     return merged_graph
 
@@ -1767,13 +1767,13 @@ def build_company_context_payload(
     profile: CompanyProfile,
 ) -> Dict[str, Any]:
     if hasattr(company_context_pack, "workspace_id"):
-        market_map_brief_override = (
-            deepcopy(company_context_pack.market_map_brief_json)
-            if isinstance(getattr(company_context_pack, "market_map_brief_json", None), dict)
+        sourcing_brief_override = (
+            deepcopy(company_context_pack.sourcing_brief_json)
+            if isinstance(getattr(company_context_pack, "sourcing_brief_json", None), dict)
             else {}
         )
-        summary_override = str(market_map_brief_override.get("source_summary") or "").strip() or None
-        open_questions_override = market_map_brief_override.get("open_questions") or None
+        summary_override = str(sourcing_brief_override.get("source_summary") or "").strip() or None
+        open_questions_override = sourcing_brief_override.get("open_questions") or None
         override_nodes = (
             deepcopy(company_context_pack.taxonomy_nodes_json)
             if isinstance(company_context_pack.taxonomy_nodes_json, list) and company_context_pack.taxonomy_nodes_json
@@ -1791,11 +1791,11 @@ def build_company_context_payload(
     else:
         base_payload = deepcopy(company_context_pack or {})
     graph = build_company_context_graph(profile, payload=base_payload)
-    brief = generate_market_map_brief_from_graph(
+    brief = generate_sourcing_brief_from_graph(
         graph,
-        base_brief=base_payload.get("market_map_brief") or {},
+        base_brief=base_payload.get("sourcing_brief") or {},
     )
-    graph["market_map_brief"] = brief
+    graph["sourcing_brief"] = brief
     deep_research_handoff = build_deep_research_handoff(
         graph,
         brief=brief,
@@ -1809,6 +1809,6 @@ def build_company_context_payload(
         "graph_status": "ready",
         "graph_freshness": graph.get("generated_at"),
         "graph_stats": graph.get("graph_stats") or {},
-        "market_map_brief": brief,
+        "sourcing_brief": brief,
         "expansion_inputs": base_payload.get("expansion_inputs") or [],
     }
