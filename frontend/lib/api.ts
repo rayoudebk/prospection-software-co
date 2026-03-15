@@ -445,11 +445,22 @@ export interface CompanyContextPack {
   taxonomy_edges: TaxonomyEdge[];
   lens_seeds: LensSeed[];
   sourcing_brief?: SourcingBrief | null;
-  expansion_brief?: ExpansionBrief | null;
   sourcing_report?: ReportArtifact | null;
-  expansion_report?: ReportArtifact | null;
   generated_at: string | null;
   confirmed_at: string | null;
+}
+
+export interface ExpansionArtifact {
+  id: number;
+  workspace_id: number;
+  status: string;
+  warning?: string | null;
+  generated_at?: string | null;
+  confirmed_at?: string | null;
+  deep_research_handoff?: Record<string, unknown> | null;
+  expansion_inputs: ExpansionInput[];
+  expansion_brief?: ExpansionBrief | null;
+  expansion_report?: ReportArtifact | null;
 }
 
 export interface ExpansionBriefItem {
@@ -948,6 +959,12 @@ export const workspaceApi = {
 
   refreshCompanyContext: (id: number) =>
     fetchJSON<CompanyContextPack>(`/workspaces/${id}/company-context:refresh`, {
+      method: "POST",
+    }),
+  getExpansionBrief: (id: number) =>
+    fetchJSON<ExpansionArtifact>(`/workspaces/${id}/expansion-brief`),
+  generateExpansionBrief: (id: number) =>
+    fetchJSON<ExpansionArtifact>(`/workspaces/${id}/expansion-brief:generate`, {
       method: "POST",
     }),
   // Scope Review

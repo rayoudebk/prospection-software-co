@@ -51,6 +51,11 @@ def test_run_startup_migrations_uses_sync_database_url(monkeypatch):
     )
     monkeypatch.setattr(
         startup_migrations,
+        "migrate_expansion_generation_v1",
+        lambda *, database_url: calls.append(("expansion_generation", database_url)),
+    )
+    monkeypatch.setattr(
+        startup_migrations,
         "migrate_company_context_graph_v1",
         lambda *, database_url: calls.append(("company_context_graph", database_url)),
     )
@@ -85,6 +90,7 @@ def test_run_startup_migrations_uses_sync_database_url(monkeypatch):
         ("remove_legacy_summary", "postgresql://example/test"),
         ("sourcing_brief", "postgresql://example/test"),
         ("expansion_brief", "postgresql://example/test"),
+        ("expansion_generation", "postgresql://example/test"),
         ("company_context_graph", "postgresql://example/test"),
         ("company_context_storage", "postgresql://example/test"),
         ("remove_company_context_bridges", "postgresql://example/test"),

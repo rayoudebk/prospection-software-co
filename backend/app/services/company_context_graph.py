@@ -18,7 +18,11 @@ from app.models.workspace import CompanyProfile
 from app.services.retrieval.crawl_connectors import fetch_page_fast
 from app.services.retrieval.search_orchestrator import run_external_search_queries
 from app.services.reporting import normalize_domain
-from app.services.company_context import build_company_context_artifacts
+from app.services.company_context import (
+    build_company_context_artifacts,
+    build_context_pack_v2,
+    build_expansion_inputs,
+)
 
 GRAPH_NODE_LABELS = {
     "Company",
@@ -1863,6 +1867,11 @@ def build_company_context_payload(
     company_context_pack: Any,
     profile: CompanyProfile,
 ) -> Dict[str, Any]:
+    expansion_inputs = build_expansion_inputs(
+        build_context_pack_v2(profile.context_pack_json or {}),
+        comparator_seed_urls=profile.comparator_seed_urls or [],
+        buyer_url=profile.buyer_company_url,
+    )
     if hasattr(company_context_pack, "workspace_id"):
         sourcing_brief_override = (
             deepcopy(company_context_pack.sourcing_brief_json)
@@ -1883,10 +1892,9 @@ def build_company_context_payload(
             open_questions_override=open_questions_override,
             confirmed_at=company_context_pack.confirmed_at,
         )
-        if isinstance(getattr(company_context_pack, "expansion_brief_json", None), dict) and company_context_pack.expansion_brief_json:
-            base_payload["expansion_brief"] = deepcopy(company_context_pack.expansion_brief_json)
     else:
         base_payload = deepcopy(company_context_pack or {})
+    base_payload["expansion_inputs"] = expansion_inputs
     graph = build_company_context_graph(profile, payload=base_payload)
     brief = generate_sourcing_brief_from_graph(
         graph,

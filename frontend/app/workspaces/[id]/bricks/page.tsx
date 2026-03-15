@@ -4,8 +4,9 @@ import { useParams } from "next/navigation";
 import {
   useCompanyContextPack,
   useConfirmScopeReview,
+  useExpansionBrief,
+  useGenerateExpansionBrief,
   useGates,
-  useRefreshCompanyContextPack,
   useScopeReview,
 } from "@/lib/hooks";
 import { ScopeReviewItem } from "@/lib/api";
@@ -70,11 +71,12 @@ export default function ScopeReviewPage() {
 
   const { data: scopeReview, isLoading } = useScopeReview(workspaceId);
   const { data: companyContext } = useCompanyContextPack(workspaceId);
+  const { data: expansionArtifact } = useExpansionBrief(workspaceId);
   const { data: gates } = useGates(workspaceId);
   const confirmScopeReview = useConfirmScopeReview(workspaceId);
-  const refreshCompanyContext = useRefreshCompanyContextPack(workspaceId);
-  const isCompanyContextRefreshing =
-    refreshCompanyContext.isPending || companyContext?.graph_status === "refreshing";
+  const generateExpansionBrief = useGenerateExpansionBrief(workspaceId);
+  const isExpansionGenerating =
+    generateExpansionBrief.isPending || expansionArtifact?.status === "generating";
 
   if (isLoading) {
     return (
@@ -114,14 +116,38 @@ export default function ScopeReviewPage() {
         </div>
       )}
 
-      {companyContext?.expansion_report ? (
+      {expansionArtifact?.expansion_report ? (
         <ReportArtifactRenderer
-          artifact={companyContext.expansion_report}
+          artifact={expansionArtifact.expansion_report}
           onRegenerate={() => {
-            if (!isCompanyContextRefreshing) refreshCompanyContext.mutate();
+            if (!isExpansionGenerating) generateExpansionBrief.mutate();
           }}
         />
-      ) : null}
+      ) : (
+        <div className="bg-steel-50 border border-steel-200 p-5 space-y-3">
+          <div className="text-base font-semibold text-oxford">Expansion Brief</div>
+          <p className="text-sm text-steel-700 leading-relaxed">
+            Generate the bounded one-hop expansion artifact from the sourcing graph and handoff packet.
+          </p>
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={() => generateExpansionBrief.mutate()}
+              disabled={isExpansionGenerating}
+              className="btn-primary flex items-center gap-2 disabled:opacity-50"
+            >
+              {isExpansionGenerating ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              Generate Expansion Brief
+            </button>
+          </div>
+          {expansionArtifact?.warning ? (
+            <p className="text-sm text-warning">{expansionArtifact.warning}</p>
+          ) : null}
+        </div>
+      )}
 
       {companyContext?.sourcing_brief?.source_summary && (
         <div className="bg-oxford text-white border border-oxford-dark p-5">

@@ -24,6 +24,9 @@ class CompanyContextPack(Base):
     graph_sync_error = Column(Text, nullable=True)
     graph_stats_json = Column(JSON, default=dict)
     graph_synced_at = Column(DateTime, nullable=True)
+    expansion_status = Column(String(32), nullable=False, default="not_generated")
+    expansion_error = Column(Text, nullable=True)
+    expansion_generated_at = Column(DateTime, nullable=True)
 
     generated_at = Column(DateTime, nullable=True)
     confirmed_at = Column(DateTime, nullable=True)

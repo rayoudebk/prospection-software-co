@@ -63,6 +63,7 @@ from app.services.company_context_graph import (
 from app.services.company_context import (
     assess_buyer_evidence,
     apply_scope_review_decisions,
+    build_expansion_artifacts,
     build_expansion_report_artifact,
     build_sourcing_report_artifact,
     build_context_pack_v2,
@@ -387,11 +388,22 @@ class CompanyContextPackResponse(BaseModel):
     taxonomy_edges: List[TaxonomyEdgeResponse] = Field(default_factory=list)
     lens_seeds: List[LensSeedResponse] = Field(default_factory=list)
     sourcing_brief: Optional[SourcingBriefResponse] = None
-    expansion_brief: Optional[ExpansionBriefResponse] = None
     sourcing_report: Optional[ReportArtifactResponse] = None
-    expansion_report: Optional[ReportArtifactResponse] = None
     generated_at: Optional[datetime]
     confirmed_at: Optional[datetime]
+
+
+class ExpansionArtifactResponse(BaseModel):
+    id: int
+    workspace_id: int
+    status: str = "not_generated"
+    warning: Optional[str] = None
+    generated_at: Optional[datetime] = None
+    confirmed_at: Optional[datetime] = None
+    deep_research_handoff: Dict[str, Any] = Field(default_factory=dict)
+    expansion_inputs: List[Dict[str, Any]] = Field(default_factory=list)
+    expansion_brief: Optional[ExpansionBriefResponse] = None
+    expansion_report: Optional[ReportArtifactResponse] = None
 
 
 class CompanyContextPackUpdate(BaseModel):
@@ -1051,7 +1063,6 @@ def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyCo
             "directory_category_context": sourcing_brief.get("directory_category_context") or [],
             "other_secondary_context": sourcing_brief.get("other_secondary_context") or [],
         }
-    expansion_brief = normalize_expansion_brief(payload.get("expansion_brief") or {})
     source_documents = []
     for item in (payload.get("source_documents") or []):
         if not isinstance(item, dict):
@@ -1072,19 +1083,6 @@ def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyCo
             source_documents=source_documents,
             context_pack_v2=payload.get("context_pack_v2") if isinstance(payload.get("context_pack_v2"), dict) else {},
             confirmed_at=payload.get("confirmed_at"),
-        )
-    expansion_report = payload.get("expansion_report")
-    if not isinstance(expansion_report, dict):
-        expansion_report = build_expansion_report_artifact(
-            source_company=(sourcing_brief.get("source_company") if isinstance(sourcing_brief, dict) else {}) or {},
-            expansion_brief=expansion_brief,
-            source_documents=source_documents,
-            context_pack_v2=payload.get("context_pack_v2") if isinstance(payload.get("context_pack_v2"), dict) else {},
-            confirmed_at=(
-                expansion_brief.get("confirmed_at")
-                if isinstance(expansion_brief, dict)
-                else payload.get("confirmed_at")
-            ),
         )
     return CompanyContextPackResponse(
         id=int(payload.get("id") or 0),
@@ -1136,9 +1134,7 @@ def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyCo
             if isinstance(sourcing_brief, dict)
             else None
         ),
-        expansion_brief=ExpansionBriefResponse.model_validate(expansion_brief),
         sourcing_report=ReportArtifactResponse.model_validate(sourcing_report),
-        expansion_report=ReportArtifactResponse.model_validate(expansion_report),
         generated_at=payload.get("generated_at"),
         confirmed_at=payload.get("confirmed_at"),
     )
@@ -1167,9 +1163,7 @@ def _company_context_refresh_response_from_payload(payload: Dict[str, Any]) -> C
         taxonomy_edges=[],
         lens_seeds=[],
         sourcing_brief=None,
-        expansion_brief=None,
         sourcing_report=None,
-        expansion_report=None,
         generated_at=payload.get("generated_at"),
         confirmed_at=payload.get("confirmed_at"),
     )
@@ -1177,6 +1171,15 @@ def _company_context_refresh_response_from_payload(payload: Dict[str, Any]) -> C
 
 def _is_stale_company_context_refresh(company_context_pack: CompanyContextPack) -> bool:
     if str(company_context_pack.graph_sync_status or "") != "refreshing":
+        return False
+    updated_at = getattr(company_context_pack, "updated_at", None)
+    if not isinstance(updated_at, datetime):
+        return True
+    return (datetime.utcnow() - updated_at).total_seconds() > 300
+
+
+def _is_stale_expansion_generation(company_context_pack: CompanyContextPack) -> bool:
+    if str(company_context_pack.expansion_status or "") != "generating":
         return False
     updated_at = getattr(company_context_pack, "updated_at", None)
     if not isinstance(updated_at, datetime):
@@ -1241,7 +1244,6 @@ def _company_context_payload_from_pack(
         "taxonomy_edges": normalize_taxonomy_edges(company_context_pack.taxonomy_edges_json or []),
         "lens_seeds": normalize_lens_seeds(company_context_pack.lens_seeds_json or []),
         "sourcing_brief": company_context_pack.sourcing_brief_json or {},
-        "expansion_brief": normalize_expansion_brief(company_context_pack.expansion_brief_json or {}),
         "generated_at": company_context_pack.generated_at,
         "confirmed_at": company_context_pack.confirmed_at,
     }
@@ -1265,10 +1267,80 @@ def _company_context_payload_from_pack(
     )
     payload["expansion_inputs"] = build_expansion_inputs(
         context_pack_v2,
-        comparator_seed_urls=[],
+        comparator_seed_urls=profile.comparator_seed_urls or [],
         buyer_url=profile.buyer_company_url,
     )
     return payload
+
+
+def _expansion_payload_from_pack(
+    company_context_pack: CompanyContextPack,
+    *,
+    profile: CompanyProfile,
+) -> Dict[str, Any]:
+    base_payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
+    expansion_brief = normalize_expansion_brief(company_context_pack.expansion_brief_json or {})
+    source_documents = [
+        item
+        for item in (base_payload.get("source_documents") or [])
+        if isinstance(item, dict)
+    ]
+    expansion_report = (
+        build_expansion_report_artifact(
+            source_company=((base_payload.get("sourcing_brief") or {}).get("source_company") or {}),
+            expansion_brief=expansion_brief,
+            source_documents=source_documents,
+            context_pack_v2=base_payload.get("context_pack_v2") if isinstance(base_payload.get("context_pack_v2"), dict) else {},
+            confirmed_at=expansion_brief.get("confirmed_at"),
+        )
+        if expansion_brief
+        else None
+    )
+    return {
+        "id": company_context_pack.id,
+        "workspace_id": company_context_pack.workspace_id,
+        "status": str(company_context_pack.expansion_status or "not_generated"),
+        "warning": company_context_pack.expansion_error,
+        "generated_at": company_context_pack.expansion_generated_at,
+        "confirmed_at": expansion_brief.get("confirmed_at"),
+        "deep_research_handoff": base_payload.get("deep_research_handoff") or {},
+        "expansion_inputs": base_payload.get("expansion_inputs") or [],
+        "expansion_brief": expansion_brief or None,
+        "expansion_report": expansion_report,
+    }
+
+
+def _expansion_response_from_payload(payload: Dict[str, Any]) -> ExpansionArtifactResponse:
+    expansion_brief = normalize_expansion_brief(payload.get("expansion_brief") or {})
+    expansion_report = payload.get("expansion_report")
+    return ExpansionArtifactResponse(
+        id=int(payload.get("id") or 0),
+        workspace_id=int(payload.get("workspace_id") or 0),
+        status=str(payload.get("status") or "not_generated"),
+        warning=payload.get("warning"),
+        generated_at=payload.get("generated_at"),
+        confirmed_at=payload.get("confirmed_at"),
+        deep_research_handoff=(
+            payload.get("deep_research_handoff")
+            if isinstance(payload.get("deep_research_handoff"), dict)
+            else {}
+        ),
+        expansion_inputs=[
+            item
+            for item in (payload.get("expansion_inputs") or [])
+            if isinstance(item, dict)
+        ],
+        expansion_brief=(
+            ExpansionBriefResponse.model_validate(expansion_brief)
+            if expansion_brief
+            else None
+        ),
+        expansion_report=(
+            ReportArtifactResponse.model_validate(expansion_report)
+            if isinstance(expansion_report, dict)
+            else None
+        ),
+    )
 
 
 async def _get_company_profile(db: AsyncSession, workspace_id: int) -> Optional[CompanyProfile]:
@@ -1304,7 +1376,6 @@ async def _sync_company_context_graph(
     company_context_pack.graph_sync_error = sync_result.get("error")
     company_context_pack.graph_synced_at = datetime.utcnow()
     company_context_pack.sourcing_brief_json = payload.get("sourcing_brief") or company_context_pack.sourcing_brief_json or {}
-    company_context_pack.expansion_brief_json = payload.get("expansion_brief") or company_context_pack.expansion_brief_json or {}
     payload["graph_status"] = sync_status
     payload["graph_warning"] = sync_result.get("error")
     payload["graph_synced_at"] = company_context_pack.graph_synced_at
@@ -1333,7 +1404,6 @@ async def _ensure_company_context_pack(
     company_context_pack = CompanyContextPack(
         workspace_id=workspace_id,
         sourcing_brief_json=company_context_payload.get("sourcing_brief") or {},
-        expansion_brief_json=company_context_payload.get("expansion_brief") or {},
         taxonomy_nodes_json=company_context_payload.get("taxonomy_nodes") or [],
         taxonomy_edges_json=company_context_payload.get("taxonomy_edges") or [],
         lens_seeds_json=company_context_payload.get("lens_seeds") or [],
@@ -1365,7 +1435,10 @@ async def _run_company_context_refresh_inline(workspace_id: int) -> None:
         try:
             refreshed = build_company_context_artifacts(profile)
             company_context_pack.sourcing_brief_json = refreshed.get("sourcing_brief") or {}
-            company_context_pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
+            company_context_pack.expansion_brief_json = {}
+            company_context_pack.expansion_status = "not_generated"
+            company_context_pack.expansion_error = None
+            company_context_pack.expansion_generated_at = None
             company_context_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
             company_context_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
             company_context_pack.lens_seeds_json = refreshed.get("lens_seeds") or []
@@ -1379,6 +1452,41 @@ async def _run_company_context_refresh_inline(workspace_id: int) -> None:
             company_context_pack.graph_sync_status = "failed"
             company_context_pack.graph_sync_error = "Inline sourcing refresh failed"
             company_context_pack.graph_synced_at = datetime.utcnow()
+            company_context_pack.updated_at = datetime.utcnow()
+        await db.commit()
+
+
+async def _run_expansion_refresh_inline(workspace_id: int) -> None:
+    async with async_session_maker() as db:
+        profile = await _get_company_profile(db, workspace_id)
+        if not profile:
+            logger.warning("expansion_refresh_inline_missing_profile workspace_id=%s", workspace_id)
+            return
+        company_context_pack = await _ensure_company_context_pack(
+            db,
+            workspace_id,
+            profile=profile,
+        )
+        try:
+            sourcing_brief = company_context_pack.sourcing_brief_json or {}
+            taxonomy_nodes = company_context_pack.taxonomy_nodes_json or []
+            if not isinstance(sourcing_brief, dict) or not sourcing_brief:
+                raise ValueError("Sourcing brief must exist before expansion generation")
+            refreshed = build_expansion_artifacts(
+                profile,
+                sourcing_brief=sourcing_brief,
+                taxonomy_nodes=taxonomy_nodes,
+            )
+            company_context_pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
+            company_context_pack.expansion_status = "ready"
+            company_context_pack.expansion_error = None
+            company_context_pack.expansion_generated_at = refreshed.get("generated_at") or datetime.utcnow()
+            company_context_pack.updated_at = datetime.utcnow()
+            logger.info("expansion_refresh_inline_completed workspace_id=%s", workspace_id)
+        except Exception as exc:
+            logger.exception("expansion_refresh_inline_failed workspace_id=%s", workspace_id)
+            company_context_pack.expansion_status = "failed"
+            company_context_pack.expansion_error = str(exc)[:500] or "Expansion generation failed"
             company_context_pack.updated_at = datetime.utcnow()
         await db.commit()
 
@@ -2238,7 +2346,7 @@ async def get_company_context(workspace_id: int, db: AsyncSession = Depends(get_
     payload["context_pack_v2"] = full_context_pack_v2
     payload["expansion_inputs"] = build_expansion_inputs(
         payload.get("context_pack_v2") or {},
-        comparator_seed_urls=[],
+        comparator_seed_urls=profile.comparator_seed_urls or [],
         buyer_url=profile.buyer_company_url or ((payload.get("sourcing_brief") or {}).get("source_company") or {}).get("website"),
     )
     payload["workspace_id"] = workspace_id
@@ -2260,10 +2368,12 @@ async def update_company_context(
         workspace_id,
         profile=profile,
     )
+    source_changed = False
     if data.source_summary is not None:
         sourcing_brief = company_context_pack.sourcing_brief_json if isinstance(company_context_pack.sourcing_brief_json, dict) else {}
         sourcing_brief["source_summary"] = str(data.source_summary or "").strip()[:8000] or None
         company_context_pack.sourcing_brief_json = sourcing_brief
+        source_changed = True
     if data.taxonomy_nodes is not None:
         normalized_nodes = normalize_taxonomy_nodes([item.model_dump() for item in data.taxonomy_nodes])
         (
@@ -2291,18 +2401,24 @@ async def update_company_context(
             "confirmed_at": company_context_pack.confirmed_at.isoformat() if company_context_pack.confirmed_at else None,
         }
         company_context_pack.sourcing_brief_json["open_questions"] = normalize_open_questions(rebuilt_open_questions)
+        source_changed = True
     if data.confirmed is not None:
         company_context_pack.confirmed_at = datetime.utcnow() if data.confirmed else None
     sourcing_brief = company_context_pack.sourcing_brief_json if isinstance(company_context_pack.sourcing_brief_json, dict) else {}
     sourcing_brief["confirmed_at"] = company_context_pack.confirmed_at.isoformat() if company_context_pack.confirmed_at else None
     company_context_pack.sourcing_brief_json = sourcing_brief
+    if source_changed:
+        company_context_pack.expansion_brief_json = {}
+        company_context_pack.expansion_status = "not_generated"
+        company_context_pack.expansion_error = None
+        company_context_pack.expansion_generated_at = None
     company_context_pack.updated_at = datetime.utcnow()
     payload = await _sync_company_context_graph(company_context_pack, profile)
     await db.commit()
     await db.refresh(company_context_pack)
     payload["expansion_inputs"] = build_expansion_inputs(
         payload.get("context_pack_v2") or {},
-        comparator_seed_urls=[],
+        comparator_seed_urls=profile.comparator_seed_urls or [],
         buyer_url=profile.buyer_company_url or ((payload.get("sourcing_brief") or {}).get("source_company") or {}).get("website"),
     )
     payload["workspace_id"] = workspace_id
@@ -2347,6 +2463,62 @@ async def refresh_company_context(
     payload["workspace_id"] = workspace_id
     payload["id"] = company_context_pack.id
     return _company_context_refresh_response_from_payload(payload)
+
+
+@router.get("/{workspace_id}/expansion-brief", response_model=ExpansionArtifactResponse)
+async def get_expansion_brief(workspace_id: int, db: AsyncSession = Depends(get_db)):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    company_context_pack = await _ensure_company_context_pack(
+        db,
+        workspace_id,
+        profile=profile,
+    )
+    if _is_stale_expansion_generation(company_context_pack):
+        company_context_pack.expansion_status = "failed"
+        company_context_pack.expansion_error = "Previous expansion generation stalled"
+        company_context_pack.updated_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(company_context_pack)
+    return _expansion_response_from_payload(
+        _expansion_payload_from_pack(company_context_pack, profile=profile)
+    )
+
+
+@router.post("/{workspace_id}/expansion-brief:generate", response_model=ExpansionArtifactResponse)
+async def generate_expansion_brief(workspace_id: int, db: AsyncSession = Depends(get_db)):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    company_context_pack = await _ensure_company_context_pack(
+        db,
+        workspace_id,
+        profile=profile,
+    )
+    if not isinstance(company_context_pack.sourcing_brief_json, dict) or not company_context_pack.sourcing_brief_json:
+        raise HTTPException(status_code=409, detail="Generate the sourcing brief before expansion.")
+    if _is_stale_expansion_generation(company_context_pack):
+        company_context_pack.expansion_status = "failed"
+        company_context_pack.expansion_error = "Previous expansion generation stalled"
+        company_context_pack.updated_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(company_context_pack)
+    if company_context_pack.expansion_status == "generating":
+        return _expansion_response_from_payload(
+            _expansion_payload_from_pack(company_context_pack, profile=profile)
+        )
+
+    company_context_pack.expansion_status = "generating"
+    company_context_pack.expansion_error = None
+    company_context_pack.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(company_context_pack)
+    asyncio.create_task(_run_expansion_refresh_inline(workspace_id))
+    logger.info("expansion_refresh_inline_scheduled workspace_id=%s", workspace_id)
+    return _expansion_response_from_payload(
+        _expansion_payload_from_pack(company_context_pack, profile=profile)
+    )
 
 # ============================================================================
 # Scope Review
@@ -4766,7 +4938,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
                 f"Evidence pattern coverage too low ({covered}/{len(required_groups)})"
             )
         context_pack_ready = bool(
-            has_company_or_brief
+            has_company
             and (
                 str(sourcing_brief.get("source_summary") or "").strip()
                 or sourcing_brief.get("customer_nodes")

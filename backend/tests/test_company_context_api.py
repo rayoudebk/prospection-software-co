@@ -109,6 +109,84 @@ def _seed_company_profile(session_maker: async_sessionmaker[AsyncSession], works
     asyncio.run(seed())
 
 
+def _seed_expansion_brief(session_maker: async_sessionmaker[AsyncSession], workspace_id: int) -> None:
+    from app.services.company_context import build_company_context_artifacts, build_expansion_artifacts
+
+    async def seed() -> None:
+        async with session_maker() as session:
+            profile_result = await session.execute(
+                select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
+            )
+            profile = profile_result.scalar_one()
+            pack_result = await session.execute(
+                select(CompanyContextPack).where(CompanyContextPack.workspace_id == workspace_id)
+            )
+            pack = pack_result.scalar_one_or_none()
+            if pack is None:
+                sourcing_payload = build_company_context_artifacts(profile)
+                pack = CompanyContextPack(
+                    workspace_id=workspace_id,
+                    sourcing_brief_json=sourcing_payload.get("sourcing_brief") or {},
+                    taxonomy_nodes_json=sourcing_payload.get("taxonomy_nodes") or [],
+                    taxonomy_edges_json=sourcing_payload.get("taxonomy_edges") or [],
+                    lens_seeds_json=sourcing_payload.get("lens_seeds") or [],
+                )
+                session.add(pack)
+                await session.flush()
+            expansion_payload = build_expansion_artifacts(
+                profile,
+                sourcing_brief=pack.sourcing_brief_json or {},
+                taxonomy_nodes=pack.taxonomy_nodes_json or [],
+            )
+            expansion_brief = expansion_payload.get("expansion_brief") or {}
+            if not expansion_brief.get("adjacent_capabilities"):
+                expansion_brief["adjacent_capabilities"] = [
+                    {
+                        "id": "expansion_adjacent_reporting",
+                        "label": "Client reporting",
+                        "expansion_type": "adjacent_capability",
+                        "status": "corroborated_expansion",
+                        "confidence": 0.62,
+                        "why_it_matters": "Common adjacent workflow for adjacent discovery.",
+                        "evidence_urls": ["https://comp-one.example.com/reporting"],
+                        "supporting_node_ids": [],
+                        "source_entity_names": ["Comp One"],
+                        "market_importance": "medium",
+                        "operational_centrality": "meaningful",
+                        "workflow_criticality": "medium",
+                        "daily_operator_usage": "medium",
+                        "switching_cost_intensity": "medium",
+                        "priority_tier": "meaningful_adjacent",
+                    }
+                ]
+            if not expansion_brief.get("named_account_anchors"):
+                expansion_brief["named_account_anchors"] = [
+                    {
+                        "id": "expansion_account_northwind",
+                        "label": "Northwind Capital",
+                        "expansion_type": "named_account_anchor",
+                        "status": "source_grounded",
+                        "confidence": 0.74,
+                        "why_it_matters": "Named account anchor from source-company proof.",
+                        "evidence_urls": ["https://acme.example.com/customers"],
+                        "supporting_node_ids": [],
+                        "source_entity_names": ["Acme"],
+                        "market_importance": "medium",
+                        "operational_centrality": "meaningful",
+                        "workflow_criticality": "medium",
+                        "daily_operator_usage": "medium",
+                        "switching_cost_intensity": "medium",
+                        "priority_tier": "meaningful_adjacent",
+                    }
+                ]
+            pack.expansion_brief_json = expansion_brief
+            pack.expansion_status = "ready"
+            pack.expansion_generated_at = expansion_payload.get("generated_at")
+            await session.commit()
+
+    asyncio.run(seed())
+
+
 def test_company_context_bootstrap_update_and_adjustment_contract(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         "app.services.company_context._reason_sourcing_brief",
@@ -135,13 +213,12 @@ def test_company_context_bootstrap_update_and_adjustment_contract(tmp_path: Path
     assert company_context_payload["buyer_evidence"]["status"] == "sufficient"
     assert company_context_payload["graph_status"] in {"success", "not_configured", "failed"}
     assert "sourcing_brief" in company_context_payload
-    assert "expansion_brief" in company_context_payload
     assert company_context_payload["sourcing_report"]["artifact_type"] == "report_artifact"
     assert company_context_payload["sourcing_report"]["report_kind"] == "sourcing_brief"
-    assert company_context_payload["expansion_report"]["report_kind"] == "expansion_brief"
     assert "taxonomy_nodes" in company_context_payload
     assert "lens_seeds" in company_context_payload
-    assert any(item["label"] == "Northwind Capital" for item in company_context_payload["expansion_brief"]["named_account_anchors"])
+    assert "expansion_brief" not in company_context_payload
+    assert "expansion_report" not in company_context_payload
 
     patch_response = client.patch(
         f"/workspaces/{workspace_id}/company-context",
@@ -212,6 +289,8 @@ def test_scope_review_contract_updates_and_confirms_scope(tmp_path: Path, monkey
     assert create_response.status_code == 200
     workspace_id = create_response.json()["id"]
     _seed_company_profile(session_maker, workspace_id)
+    client.get(f"/workspaces/{workspace_id}/company-context")
+    _seed_expansion_brief(session_maker, workspace_id)
 
     scope_response = client.get(f"/workspaces/{workspace_id}/scope-review")
     assert scope_response.status_code == 200
@@ -273,6 +352,34 @@ def test_company_context_refresh_schedules_inline_task_and_returns_refreshing(tm
 
     assert payload["graph_status"] == "refreshing"
     assert "_run_company_context_refresh_inline" in scheduled
+
+
+def test_expansion_generate_schedules_inline_task_and_returns_generating(tmp_path: Path, monkeypatch):
+    client, session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Expansion workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+    _seed_company_profile(session_maker, workspace_id)
+    client.get(f"/workspaces/{workspace_id}/company-context")
+
+    scheduled: list[str] = []
+
+    def _fake_create_task(coro):
+        scheduled.append(getattr(getattr(coro, "cr_code", None), "co_name", "unknown"))
+        coro.close()
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(None)
+        return future
+
+    monkeypatch.setattr("app.api.workspaces.asyncio.create_task", _fake_create_task)
+
+    response = client.post(f"/workspaces/{workspace_id}/expansion-brief:generate")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["status"] == "generating"
+    assert "_run_expansion_refresh_inline" in scheduled
 
 
 def test_company_context_refresh_resets_stale_refreshing_state(tmp_path: Path, monkeypatch):

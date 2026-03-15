@@ -106,6 +106,7 @@ export function useUpdateCompanyContextPack(workspaceId: number) {
     }) => workspaceApi.updateCompanyContext(workspaceId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["company-context", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["expansion-brief", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
     },
@@ -118,6 +119,31 @@ export function useRefreshCompanyContextPack(workspaceId: number) {
     mutationFn: () => workspaceApi.refreshCompanyContext(workspaceId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["company-context", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["expansion-brief", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
+    },
+  });
+}
+
+export function useExpansionBrief(workspaceId: number) {
+  return useQuery({
+    queryKey: ["expansion-brief", workspaceId],
+    queryFn: () => workspaceApi.getExpansionBrief(workspaceId),
+    enabled: !!workspaceId,
+    refetchInterval: (query) => {
+      const status = (query.state.data as { status?: string } | undefined)?.status;
+      return status === "generating" ? 3000 : false;
+    },
+  });
+}
+
+export function useGenerateExpansionBrief(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => workspaceApi.generateExpansionBrief(workspaceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["expansion-brief", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
     },
@@ -140,6 +166,7 @@ export function useUpdateScopeReview(workspaceId: number) {
       workspaceApi.updateScopeReview(workspaceId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["expansion-brief", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
     },
   });
@@ -152,6 +179,7 @@ export function useConfirmScopeReview(workspaceId: number) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["company-context", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["expansion-brief", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
     },
   });

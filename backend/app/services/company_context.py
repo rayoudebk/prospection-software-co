@@ -3611,12 +3611,6 @@ def build_company_context_artifacts(
         source_pills=source_pills,
         override_nodes=override_nodes,
     )
-    expansion_inputs = build_expansion_inputs(
-        full_context_pack_v2,
-        comparator_seed_urls=profile.comparator_seed_urls or [],
-        buyer_url=profile.buyer_company_url,
-    )
-
     source_summary = str(
         source_summary_override
         or ((sourcing_brief.get("source_summary") if isinstance(sourcing_brief, dict) else None) or "")
@@ -3645,11 +3639,10 @@ def build_company_context_artifacts(
         "open_questions": final_open_questions,
         "confirmed_at": confirmed_at.isoformat() if confirmed_at else None,
     }
-    expansion_brief = build_expansion_brief(
-        profile=profile,
-        sourcing_brief=sourcing_brief,
-        taxonomy_nodes=taxonomy_nodes,
-        expansion_inputs=expansion_inputs,
+    expansion_inputs = build_expansion_inputs(
+        full_context_pack_v2,
+        comparator_seed_urls=profile.comparator_seed_urls or [],
+        buyer_url=profile.buyer_company_url,
     )
 
     return {
@@ -3660,10 +3653,42 @@ def build_company_context_artifacts(
         "taxonomy_edges": taxonomy_edges,
         "lens_seeds": lens_seeds,
         "sourcing_brief": sourcing_brief,
-        "expansion_brief": expansion_brief,
         "expansion_inputs": expansion_inputs,
         "generated_at": datetime.utcnow(),
         "confirmed_at": confirmed_at,
+    }
+
+
+def build_expansion_artifacts(
+    profile: CompanyProfile,
+    *,
+    sourcing_brief: Any,
+    taxonomy_nodes: Any,
+    confirmed_at: datetime | None = None,
+) -> dict[str, Any]:
+    full_context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
+    normalized_sourcing_brief = sourcing_brief if isinstance(sourcing_brief, dict) else {}
+    normalized_taxonomy_nodes = normalize_taxonomy_nodes(taxonomy_nodes or [])
+    expansion_inputs = build_expansion_inputs(
+        full_context_pack_v2,
+        comparator_seed_urls=profile.comparator_seed_urls or [],
+        buyer_url=profile.buyer_company_url,
+    )
+    expansion_brief = build_expansion_brief(
+        profile=profile,
+        sourcing_brief=normalized_sourcing_brief,
+        taxonomy_nodes=normalized_taxonomy_nodes,
+        expansion_inputs=expansion_inputs,
+    )
+    if confirmed_at:
+        expansion_brief = {
+            **normalize_expansion_brief(expansion_brief),
+            "confirmed_at": confirmed_at.isoformat(),
+        }
+    return {
+        "expansion_inputs": expansion_inputs,
+        "expansion_brief": normalize_expansion_brief(expansion_brief),
+        "generated_at": datetime.utcnow(),
     }
 
 

@@ -13,6 +13,7 @@ from migrations.migrate_company_profile_context_split_v1 import (
     migrate_company_profile_context_split_v1,
 )
 from migrations.migrate_expansion_brief_v1 import migrate_expansion_brief_v1
+from migrations.migrate_expansion_generation_v1 import migrate_expansion_generation_v1
 from migrations.migrate_remove_legacy_buyer_context_summary_v1 import (
     migrate_remove_legacy_buyer_context_summary_v1,
 )
@@ -37,6 +38,7 @@ def run_startup_migrations(database_url: str | None = None) -> None:
     migrate_remove_legacy_buyer_context_summary_v1(database_url=database_url)
     migrate_sourcing_brief_v1(database_url=database_url)
     migrate_expansion_brief_v1(database_url=database_url)
+    migrate_expansion_generation_v1(database_url=database_url)
     migrate_company_context_graph_v1(database_url=database_url)
     migrate_company_context_storage_v1(database_url=database_url)
     migrate_remove_company_context_bridge_fields_v1(database_url=database_url)
