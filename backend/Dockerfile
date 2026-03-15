@@ -1,7 +1,6 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -10,11 +9,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Chromium and OS deps for Playwright-backed rendering used by the crawler.
-RUN python -m playwright install --with-deps chromium
+COPY requirements.base.txt requirements.api.txt ./
+RUN pip install --no-cache-dir -r requirements.api.txt
 
 # Copy application code
 COPY . .
