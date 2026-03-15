@@ -21,7 +21,7 @@ import {
 } from "@/lib/api";
 
 function sourceChipLabel(source: ReportArtifactSourcePill): string {
-  return source.publisher || source.label || "Source";
+  return source.label || source.publisher || "Source";
 }
 
 function SourceDrawer({

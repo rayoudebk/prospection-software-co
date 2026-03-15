@@ -3667,30 +3667,47 @@ def build_company_context_artifacts(
     }
 
 
+def _pretty_source_host_label(host: str) -> str:
+    host = host.removeprefix("www.")
+    brand = host.split(".", 1)[0]
+    if not brand:
+        return "Source"
+    tokens = [token for token in re.split(r"[-_]+", brand) if token]
+    normalized_tokens: list[str] = []
+    for token in tokens:
+        if any(ch.isdigit() for ch in token):
+            normalized_tokens.append("".join(ch.upper() if ch.isalpha() else ch for ch in token))
+        elif len(token) <= 4:
+            normalized_tokens.append(token.upper())
+        else:
+            normalized_tokens.append(token.capitalize())
+    pretty = " ".join(normalized_tokens).strip()
+    return pretty or "Source"
+
+
+def _normalize_report_label_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"(?:https?://)?(?:www\.)?[a-z0-9.-]+\.[a-z]{2,}(?:/.*)?", text.lower()):
+        host = normalize_domain(text)
+        if host:
+            return _pretty_source_host_label(host)
+    return text
+
+
 def _report_source_label(url: str, *, publisher: Any = None, fallback: Any = None) -> str:
-    publisher_text = str(publisher or "").strip()
+    publisher_text = _normalize_report_label_text(publisher)
     if publisher_text:
         return publisher_text[:120]
-    fallback_text = str(fallback or "").strip()
+    fallback_text = _normalize_report_label_text(fallback)
     if fallback_text:
         return fallback_text[:120]
     host = normalize_domain(url)
     if host:
-        host = host.removeprefix("www.")
-        brand = host.split(".", 1)[0]
-        if brand:
-            tokens = [token for token in re.split(r"[-_]+", brand) if token]
-            normalized_tokens: list[str] = []
-            for token in tokens:
-                if any(ch.isdigit() for ch in token):
-                    normalized_tokens.append("".join(ch.upper() if ch.isalpha() else ch for ch in token))
-                elif len(token) <= 4:
-                    normalized_tokens.append(token.upper())
-                else:
-                    normalized_tokens.append(token.capitalize())
-            pretty = " ".join(normalized_tokens).strip()
-            if pretty:
-                return pretty[:120]
+        pretty = _pretty_source_host_label(host)
+        if pretty:
+            return pretty[:120]
     return "Source"
 
 
