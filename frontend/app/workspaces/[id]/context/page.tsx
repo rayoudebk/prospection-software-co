@@ -366,6 +366,8 @@ export default function SourcingBriefPage() {
   const updateProfile = useUpdateContextPack(workspaceId);
   const updateCompanyContext = useUpdateCompanyContextPack(workspaceId);
   const refreshCompanyContext = useRefreshCompanyContextPack(workspaceId);
+  const isCompanyContextRefreshing =
+    refreshCompanyContext.isPending || companyContext?.graph_status === "refreshing";
 
   const [buyerUrl, setBuyerUrl] = useState("");
   const [referenceUrls, setReferenceUrls] = useState<string[]>([]);
@@ -781,15 +783,17 @@ export default function SourcingBriefPage() {
                 await saveProfileInputs();
                 await refreshCompanyContext.mutateAsync();
               }}
-              disabled={updateProfile.isPending || refreshCompanyContext.isPending}
+              disabled={updateProfile.isPending || isCompanyContextRefreshing}
               className="btn-secondary w-full gap-1.5 disabled:opacity-50"
             >
-              {refreshCompanyContext.isPending ? (
+              {isCompanyContextRefreshing ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
                 <RefreshCw className="h-3 w-3" />
               )}
-              Re-run reasoning on current crawl
+              {companyContext?.graph_status === "refreshing"
+                ? "Refreshing sourcing brief..."
+                : "Re-run reasoning on current crawl"}
             </button>
           ) : null}
         </div>

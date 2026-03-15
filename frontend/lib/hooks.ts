@@ -89,6 +89,10 @@ export function useCompanyContextPack(workspaceId: number) {
     queryKey: ["company-context", workspaceId],
     queryFn: () => workspaceApi.getCompanyContext(workspaceId),
     enabled: !!workspaceId,
+    refetchInterval: (query) => {
+      const status = (query.state.data as { graph_status?: string } | undefined)?.graph_status;
+      return status === "refreshing" ? 3000 : false;
+    },
   });
 }
 

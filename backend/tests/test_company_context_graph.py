@@ -284,9 +284,12 @@ def test_secondary_queries_include_one_customer_query_per_named_customer(monkeyp
 
     customer_queries = [query for query in queries if query.get("query_type") == "customer_corroboration"]
     customer_query_texts = {str(query.get("query_text") or "") for query in customer_queries}
-    assert any('"4TPM" "BNP Paribas"' == text for text in customer_query_texts)
-    assert any('"4TPM" "Allianz Bank"' == text for text in customer_query_texts)
-    assert any('"4TPM" "SwissLife"' == text for text in customer_query_texts)
+    assert '"4TPM" "BNP Paribas"' in customer_query_texts
+    assert '"4TPM" "Allianz Bank"' in customer_query_texts
+    assert '"4TPM" "SwissLife"' in customer_query_texts
+    assert all("crunchbase.com" in (query.get("domain_blocklist") or []) for query in customer_queries)
+    partner_queries = [query for query in queries if query.get("query_type") == "partner_corroboration"]
+    assert all("REST API" not in str(query.get("query_text") or "") for query in partner_queries)
 
 
 def test_secondary_company_graph_uses_secondary_specific_provider_order(monkeypatch):
@@ -303,11 +306,21 @@ def test_secondary_company_graph_uses_secondary_specific_provider_order(monkeypa
 
     captured: dict[str, object] = {}
 
-    def _fake_search(queries, *, provider_order, per_query_cap, total_cap, per_domain_cap, cache=None):
+    def _fake_search(
+        queries,
+        *,
+        provider_order,
+        per_query_cap,
+        total_cap,
+        per_domain_cap,
+        max_seconds=None,
+        cache=None,
+    ):
         captured["provider_order"] = provider_order
         captured["per_query_cap"] = per_query_cap
         captured["total_cap"] = total_cap
         captured["per_domain_cap"] = per_domain_cap
+        captured["max_seconds"] = max_seconds
         return {"results": [], "provider_mix": {}, "errors": []}
 
     monkeypatch.setattr("app.services.company_context_graph.run_external_search_queries", _fake_search)
@@ -315,8 +328,9 @@ def test_secondary_company_graph_uses_secondary_specific_provider_order(monkeypa
 
     build_company_context_graph(profile, payload=build_company_context_artifacts(profile))
 
-    assert captured["provider_order"] == ["serpapi", "brave"]
+    assert captured["provider_order"] == ["serper", "brave"]
     assert captured["per_query_cap"] == 4
+    assert captured["max_seconds"] == 30
 
 
 def test_company_profile_secondary_result_is_kept_as_other_context(monkeypatch):
@@ -363,3 +377,46 @@ def test_company_profile_secondary_result_is_kept_as_other_context(monkeypatch):
         "crunchbase.com" in str(item.get("url") or "")
         for item in payload["sourcing_brief"]["other_secondary_context"]
     )
+
+
+def test_company_profile_result_is_not_treated_as_customer_corroboration(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.company_context_graph.run_external_search_queries",
+        lambda *args, **kwargs: {
+            "results": [
+                {
+                    "url": "https://www.crunchbase.com/organization/4tpm",
+                    "title": "4TPM - Crunchbase Company Profile & Funding",
+                    "snippet": "Crunchbase profile for 4TPM mentioning BNP Paribas.",
+                    "query_type": "customer_corroboration",
+                }
+            ],
+            "provider_mix": {"serpapi": 1},
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.company_context_graph.fetch_page_fast",
+        lambda url: {
+            "url": url,
+            "content": "4TPM company profile mentioning BNP Paribas.",
+            "provider": "jina_reader",
+            "error": None,
+        },
+    )
+    profile = _build_profile()
+
+    payload = build_company_context_payload(build_company_context_artifacts(profile), profile)
+
+    assert payload["sourcing_brief"]["customer_partner_corroboration"] == []
+    assert payload["sourcing_brief"]["secondary_evidence_proof"] == []

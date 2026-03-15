@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
+import time
 from typing import Any, Dict, List, Optional
 
 from app.config import get_settings
@@ -49,6 +50,7 @@ def run_external_search_queries(
     per_query_cap: int,
     total_cap: int,
     per_domain_cap: int,
+    max_seconds: Optional[int] = None,
     cache: Optional[RetrievalCache] = None,
 ) -> dict[str, Any]:
     settings = get_settings()
@@ -59,12 +61,20 @@ def run_external_search_queries(
     query_counts: dict[str, int] = {}
     effective_per_query_cap = max(1, int(per_query_cap))
     effective_total_cap = max(1, int(total_cap))
+    deadline = (
+        time.monotonic() + max(1, int(max_seconds))
+        if max_seconds is not None and int(max_seconds) > 0
+        else None
+    )
 
     for provider in provider_order:
         provider_key = str(provider or "").strip().lower()
         if not provider_key:
             continue
         for query_meta in queries:
+            if deadline is not None and time.monotonic() >= deadline:
+                errors.append("search_budget_exceeded")
+                break
             query_text = str(query_meta.get("query_text") or "").strip()
             if not query_text:
                 continue
@@ -134,6 +144,8 @@ def run_external_search_queries(
 
             if effective_total_cap and len(raw_results) >= effective_total_cap * 2:
                 break
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         if effective_total_cap and len(raw_results) >= effective_total_cap * 2:
             break
 

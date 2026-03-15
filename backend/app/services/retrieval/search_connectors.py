@@ -201,6 +201,39 @@ def _search_tavily(query: str, cap: int) -> List[Dict[str, Any]]:
     return results
 
 
+def _search_serper(query: str, cap: int) -> List[Dict[str, Any]]:
+    settings = get_settings()
+    if not settings.serper_api_key:
+        return []
+    payload = {
+        "q": query,
+        "num": max(1, min(cap, 10)),
+    }
+    with httpx.Client(timeout=15) as client:
+        resp = client.post(
+            "https://google.serper.dev/search",
+            headers={
+                "X-API-KEY": settings.serper_api_key,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    results: List[Dict[str, Any]] = []
+    for item in data.get("organic", [])[:cap]:
+        if not isinstance(item, dict):
+            continue
+        results.append(
+            {
+                "title": item.get("title"),
+                "url": item.get("link"),
+                "snippet": item.get("snippet"),
+            }
+        )
+    return results
+
+
 def _search_serpapi(query: str, cap: int) -> List[Dict[str, Any]]:
     settings = get_settings()
     if not settings.serpapi_api_key:
@@ -241,12 +274,17 @@ def discover_candidates_from_external_search(
         return cached
 
     tavily_items: List[Dict[str, Any]] = []
+    serper_items: List[Dict[str, Any]] = []
     serpapi_items: List[Dict[str, Any]] = []
     errors: List[str] = []
     try:
         tavily_items = _search_tavily(query, cap)
     except Exception as exc:
         errors.append(f"tavily:{exc}")
+    try:
+        serper_items = _search_serper(query, cap)
+    except Exception as exc:
+        errors.append(f"serper:{exc}")
     try:
         serpapi_items = _search_serpapi(query, cap)
     except Exception as exc:
@@ -255,6 +293,7 @@ def discover_candidates_from_external_search(
     output = {
         "query": query,
         "candidates": _to_candidate_rows(tavily_items, "tavily_search")
+        + _to_candidate_rows(serper_items, "serper_search")
         + _to_candidate_rows(serpapi_items, "serpapi_search"),
         "errors": errors[:8],
     }
@@ -294,6 +333,8 @@ def provider_results_for_query(
         return _search_brave(query, cap)
     if name == "tavily":
         return _search_tavily(query, cap)
+    if name == "serper":
+        return _search_serper(query, cap)
     if name == "serpapi":
         return _search_serpapi(query, cap)
     return []

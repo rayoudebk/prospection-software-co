@@ -73,6 +73,8 @@ export default function ScopeReviewPage() {
   const { data: gates } = useGates(workspaceId);
   const confirmScopeReview = useConfirmScopeReview(workspaceId);
   const refreshCompanyContext = useRefreshCompanyContextPack(workspaceId);
+  const isCompanyContextRefreshing =
+    refreshCompanyContext.isPending || companyContext?.graph_status === "refreshing";
 
   if (isLoading) {
     return (
@@ -115,7 +117,9 @@ export default function ScopeReviewPage() {
       {companyContext?.expansion_report ? (
         <ReportArtifactRenderer
           artifact={companyContext.expansion_report}
-          onRegenerate={() => refreshCompanyContext.mutate()}
+          onRegenerate={() => {
+            if (!isCompanyContextRefreshing) refreshCompanyContext.mutate();
+          }}
         />
       ) : null}
 

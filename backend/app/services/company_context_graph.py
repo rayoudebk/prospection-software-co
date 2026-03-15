@@ -66,6 +66,27 @@ COMPANY_PROFILE_HOST_TOKENS = (
     "verif.com",
     "rubypayeur.com",
 )
+COMPANY_PROFILE_HOSTS = (
+    "crunchbase.com",
+    "zoominfo.com",
+    "verif.com",
+    "rubypayeur.com",
+)
+GENERIC_INTEGRATION_NAME_TOKENS = (
+    "api",
+    "rest",
+    "rest api",
+    "webhook",
+    "webhooks",
+    "sso",
+    "oauth",
+    "sdk",
+    "documentation",
+    "fix",
+    "swift",
+    "ftp",
+    "sftp",
+)
 SECONDARY_QUERY_TYPE_BUCKETS = {
     "directory_category": ("directory", "category_positioning"),
     "customer_corroboration": ("press_release", "deployment_announcement"),
@@ -916,6 +937,27 @@ def _secondary_company_identity_terms(
     return values
 
 
+def _secondary_entity_query_text(
+    company_name: str,
+    entity_name: str,
+    *,
+    qualifier: Optional[str] = None,
+    relationship_terms: Iterable[str] = (),
+) -> str:
+    parts: List[str] = []
+    quoted = _quoted_query_terms(company_name, entity_name)
+    if quoted:
+        parts.append(quoted)
+    qualifier_phrase = _clean_phrase(qualifier)
+    if qualifier_phrase:
+        parts.append(qualifier_phrase)
+    for term in relationship_terms:
+        token = _clean_phrase(term)
+        if token:
+            parts.append(token)
+    return " ".join(parts).strip()
+
+
 def _normalized_identity_tokens(company_name: str, company_domain: str) -> List[str]:
     values: List[str] = []
     company_token = _normalize_taxonomy_identity(company_name).replace(" ", "")
@@ -971,6 +1013,21 @@ def _top_graph_node_names(primary_graph: Dict[str, Any], labels: set[str], limit
     return values
 
 
+def _is_counterparty_like_name(name: str) -> bool:
+    phrase = _clean_phrase(name).lower()
+    if not phrase:
+        return False
+    compact = re.sub(r"[^a-z0-9]+", " ", phrase).strip()
+    if not compact:
+        return False
+    if compact in GENERIC_INTEGRATION_NAME_TOKENS:
+        return False
+    tokens = compact.split()
+    if any(token in GENERIC_INTEGRATION_NAME_TOKENS for token in tokens):
+        return False
+    return True
+
+
 def _build_secondary_queries(primary_graph: Dict[str, Any], comparator_urls: Iterable[str]) -> List[Dict[str, Any]]:
     settings = get_settings()
     company = next((node for node in primary_graph.get("nodes", []) if node.get("label") == "Company"), None)
@@ -979,10 +1036,15 @@ def _build_secondary_queries(primary_graph: Dict[str, Any], comparator_urls: Ite
     query_cap = max(8, int(settings.company_context_secondary_query_cap))
     top_phrases = _top_graph_node_names(primary_graph, {"Capability", "Workflow", "CustomerArchetype"}, 4)
     customer_names = _top_graph_node_names(primary_graph, {"CustomerEntity"}, 8)
-    partner_names = _top_graph_node_names(primary_graph, {"PartnerEntity"}, 4)
+    partner_names = [
+        name
+        for name in _top_graph_node_names(primary_graph, {"PartnerEntity"}, 8)
+        if _is_counterparty_like_name(name)
+    ][:4]
     qualifier_terms = _secondary_context_anchor_terms(primary_graph, 2)
     identity_terms = _secondary_company_identity_terms(company_name, domain, qualifier_terms)
     identity_query = _quoted_query_terms(*identity_terms[:2]) or _quoted_query_terms(company_name)
+    company_profile_blocklist = list(COMPANY_PROFILE_HOSTS)
     queries: List[Dict[str, Any]] = []
     query_keys: set[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = set()
 
@@ -999,26 +1061,32 @@ def _build_secondary_queries(primary_graph: Dict[str, Any], comparator_urls: Ite
         queries.append(query)
 
     for customer_name in customer_names:
-        customer_phrase = _quoted_query_terms(company_name, customer_name)
+        customer_phrase = _secondary_entity_query_text(
+            company_name,
+            customer_name,
+        )
         _append_query(
             {
                 "query_id": _stable_id("secondary_query_customer", company_name, customer_name),
                 "query_text": customer_phrase,
                 "query_type": "customer_corroboration",
                 "must_include_terms": [company_name, customer_name],
-                "domain_blocklist": [domain] if domain else [],
+                "domain_blocklist": ([domain] if domain else []) + company_profile_blocklist,
             }
         )
 
     for partner_name in partner_names:
-        partner_phrase = _quoted_query_terms(company_name, partner_name)
+        partner_phrase = _secondary_entity_query_text(
+            company_name,
+            partner_name,
+        )
         _append_query(
             {
                 "query_id": _stable_id("secondary_query_partner", company_name, partner_name),
                 "query_text": partner_phrase,
                 "query_type": "partner_corroboration",
                 "must_include_terms": [company_name, partner_name],
-                "domain_blocklist": [domain] if domain else [],
+                "domain_blocklist": ([domain] if domain else []) + company_profile_blocklist,
             }
         )
 
@@ -1030,7 +1098,7 @@ def _build_secondary_queries(primary_graph: Dict[str, Any], comparator_urls: Ite
                 "query_type": "directory_category",
                 "must_include_terms": identity_terms[:2] or [company_name],
                 "domain_allowlist": [host],
-                "domain_blocklist": [domain] if domain else [],
+                "domain_blocklist": ([domain] if domain else []) + company_profile_blocklist,
             }
         )
 
@@ -1106,6 +1174,7 @@ def _secondary_signal_quality(
     company_name: str,
     source_type: str,
     claim_type: str,
+    query_type: str,
     matched_customers: List[str],
     matched_partners: List[str],
     matched_context_terms: List[str],
@@ -1121,6 +1190,8 @@ def _secondary_signal_quality(
     if any(token in text_blob for token in LOW_SIGNAL_SECONDARY_TEXT_TOKENS):
         return "document_only"
     if _secondary_company_profile_identity_match(url, title, company_name, company_domain):
+        if query_type in {"customer_corroboration", "partner_corroboration", "directory_category"}:
+            return "document_only"
         return "strong"
     identity_strength = _company_identity_match_strength(
         company_name=company_name,
@@ -1167,6 +1238,7 @@ def _build_secondary_company_graph(
         per_query_cap=max(2, int(settings.company_context_secondary_per_query_cap)),
         total_cap=max(4, int(settings.company_context_secondary_result_cap)),
         per_domain_cap=max(1, int(settings.company_context_secondary_per_domain_cap)),
+        max_seconds=max(5, int(settings.company_context_secondary_max_seconds)),
     )
     if not retrieval.get("results"):
         graph["graph_stats"]["secondary_evidence_count"] = 0
@@ -1245,6 +1317,7 @@ def _build_secondary_company_graph(
             company_name=company_name,
             source_type=source_type,
             claim_type=claim_type,
+            query_type=query_type,
             matched_customers=matched_customers,
             matched_partners=matched_partners,
             matched_context_terms=context_terms,

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # Optional external retrieval connectors
     tavily_api_key: str = ""
     exa_api_key: str = ""
+    serper_api_key: str = ""
     serpapi_api_key: str = ""
     firecrawl_api_key: str = ""
     jina_api_key: str = ""
@@ -102,11 +103,12 @@ class Settings(BaseSettings):
     discovery_retrieval_total_cap: int = 60
     discovery_retrieval_per_domain_cap: int = 3
     discovery_retrieval_similar_seed_cap: int = 4
-    company_context_secondary_provider_order: str = "serpapi,brave"
+    company_context_secondary_provider_order: str = "serper,brave"
     company_context_secondary_per_query_cap: int = 4
     company_context_secondary_query_cap: int = 18
     company_context_secondary_result_cap: int = 36
     company_context_secondary_per_domain_cap: int = 2
+    company_context_secondary_max_seconds: int = 30
 
     # App
     debug: bool = True

@@ -1,6 +1,6 @@
 """Workspace API routes - Full CRUD and workflow endpoints."""
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel, Field
@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import math
 
-from app.models.base import get_db
+from app.models.base import async_session_maker, get_db
 from app.models.workspace import Workspace, CompanyProfile
 from app.models.company_context import CompanyContextPack
 from app.models.company import Company, CompanyDossier, CompanyStatus
@@ -1142,6 +1142,37 @@ def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyCo
     )
 
 
+def _company_context_refresh_response_from_payload(payload: Dict[str, Any]) -> CompanyContextPackResponse:
+    return CompanyContextPackResponse(
+        id=int(payload.get("id") or 0),
+        workspace_id=int(payload.get("workspace_id") or 0),
+        company_context_graph_ref=payload.get("company_context_graph_ref"),
+        graph_status=str(payload.get("graph_status") or "not_synced"),
+        graph_warning=payload.get("graph_warning"),
+        graph_synced_at=payload.get("graph_synced_at"),
+        graph_stats=payload.get("graph_stats") if isinstance(payload.get("graph_stats"), dict) else {},
+        company_context_graph=None,
+        deep_research_handoff={},
+        buyer_evidence=(
+            BuyerEvidenceDiagnosticsResponse.model_validate(payload.get("buyer_evidence"))
+            if isinstance(payload.get("buyer_evidence"), dict)
+            else None
+        ),
+        context_pack_v2=None,
+        source_documents=[],
+        expansion_inputs=[],
+        taxonomy_nodes=[],
+        taxonomy_edges=[],
+        lens_seeds=[],
+        sourcing_brief=None,
+        expansion_brief=None,
+        sourcing_report=None,
+        expansion_report=None,
+        generated_at=payload.get("generated_at"),
+        confirmed_at=payload.get("confirmed_at"),
+    )
+
+
 def _scope_review_response_from_payload(
     workspace_id: int,
     payload: Dict[str, Any],
@@ -1301,6 +1332,35 @@ async def _run_context_pack_inline(job_id: int) -> None:
     from app.workers.workspace_tasks import generate_context_pack_v2
 
     await asyncio.to_thread(generate_context_pack_v2, job_id)
+
+
+async def _run_company_context_refresh_inline(workspace_id: int) -> None:
+    async with async_session_maker() as db:
+        profile = await _get_company_profile(db, workspace_id)
+        if not profile:
+            return
+        company_context_pack = await _ensure_company_context_pack(
+            db,
+            workspace_id,
+            profile=profile,
+        )
+        try:
+            refreshed = build_company_context_artifacts(profile)
+            company_context_pack.sourcing_brief_json = refreshed.get("sourcing_brief") or {}
+            company_context_pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
+            company_context_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
+            company_context_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
+            company_context_pack.lens_seeds_json = refreshed.get("lens_seeds") or []
+            company_context_pack.generated_at = refreshed.get("generated_at")
+            company_context_pack.confirmed_at = None
+            company_context_pack.updated_at = datetime.utcnow()
+            await _sync_company_context_graph(company_context_pack, profile)
+        except Exception as exc:
+            company_context_pack.graph_sync_status = "failed"
+            company_context_pack.graph_sync_error = str(exc)[:1000]
+            company_context_pack.graph_synced_at = datetime.utcnow()
+            company_context_pack.updated_at = datetime.utcnow()
+        await db.commit()
 
 
 def _source_from_evidence(evidence: Optional[SourceEvidence]) -> Optional[SourcePill]:
@@ -2227,38 +2287,35 @@ async def update_company_context(
 
 
 @router.post("/{workspace_id}/company-context:refresh", response_model=CompanyContextPackResponse)
-async def refresh_company_context(workspace_id: int, db: AsyncSession = Depends(get_db)):
+async def refresh_company_context(
+    workspace_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    full_context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
     company_context_pack = await _ensure_company_context_pack(
         db,
         workspace_id,
         profile=profile,
     )
-    refreshed = build_company_context_artifacts(profile)
-    company_context_pack.sourcing_brief_json = refreshed.get("sourcing_brief") or {}
-    company_context_pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
-    company_context_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
-    company_context_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
-    company_context_pack.lens_seeds_json = refreshed.get("lens_seeds") or []
-    company_context_pack.generated_at = refreshed.get("generated_at")
-    company_context_pack.confirmed_at = None
-    company_context_pack.updated_at = datetime.utcnow()
+    if company_context_pack.graph_sync_status == "refreshing":
+        payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
+        payload["workspace_id"] = workspace_id
+        payload["id"] = company_context_pack.id
+        return _company_context_refresh_response_from_payload(payload)
 
-    payload = await _sync_company_context_graph(company_context_pack, profile)
+    company_context_pack.graph_sync_status = "refreshing"
+    company_context_pack.graph_sync_error = None
+    company_context_pack.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(company_context_pack)
-    payload["context_pack_v2"] = full_context_pack_v2
-    payload["expansion_inputs"] = build_expansion_inputs(
-        payload.get("context_pack_v2") or {},
-        comparator_seed_urls=[],
-        buyer_url=profile.buyer_company_url or ((payload.get("sourcing_brief") or {}).get("source_company") or {}).get("website"),
-    )
+    background_tasks.add_task(_run_company_context_refresh_inline, workspace_id)
+    payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
     payload["workspace_id"] = workspace_id
     payload["id"] = company_context_pack.id
-    return _company_context_response_from_payload(payload)
+    return _company_context_refresh_response_from_payload(payload)
 
 # ============================================================================
 # Scope Review
