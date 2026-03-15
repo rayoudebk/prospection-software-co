@@ -196,11 +196,11 @@ def test_resolve_identities_canonicalizes_redirected_first_party_domain(monkeypa
 
 def test_build_first_party_hint_url_map_uses_evidence_urls_and_path_company_urls():
     profile = SimpleNamespace(
-        reference_evidence_urls=[
+        supporting_evidence_urls=[
             "https://upvest.co/blog/zopa-bank-partners-with-upvest",
             "https://upvest.co/blog/boerse-stuttgart-and-upvest/",
         ],
-        reference_company_urls=[
+        comparator_seed_urls=[
             "https://upvest.co/blog/liqid-enters-partnership-with-upvest-for-its-eltif-offering",
             "https://upvest.co",  # root URL should be ignored for path-required vendor hints
         ],
@@ -771,10 +771,9 @@ def test_resolve_buyer_employee_estimate_prefers_policy_override():
         }
     )
     profile = SimpleNamespace(
-        manual_brief_text="We are a team of 19 employees.",
-        context_pack_markdown="",
+        context_pack_markdown="We are a team of 19 employees.",
         context_pack_json={},
-        reference_summaries={},
+        comparator_seed_summaries={},
     )
 
     assert workspace_tasks._resolve_buyer_employee_estimate(workspace, profile) == 42
@@ -783,10 +782,9 @@ def test_resolve_buyer_employee_estimate_prefers_policy_override():
 def test_resolve_buyer_employee_estimate_reads_context_text():
     workspace = SimpleNamespace(decision_policy_json={})
     profile = SimpleNamespace(
-        manual_brief_text="Independent fintech team with 55 employees across product and ops.",
-        context_pack_markdown="",
+        context_pack_markdown="Independent fintech team with 55 employees across product and ops.",
         context_pack_json={},
-        reference_summaries={},
+        comparator_seed_summaries={},
     )
 
     assert workspace_tasks._resolve_buyer_employee_estimate(workspace, profile) == 55

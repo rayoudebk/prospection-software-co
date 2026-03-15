@@ -4,12 +4,13 @@ Evidence-first acquisition target discovery for software markets. The product is
 
 ## V1 Product Flow
 
-`Market Map Brief -> Search Lanes -> Universe -> Cards`
+`Source Brief -> Expansion Brief -> Scope Review -> Universe -> Cards`
 
-1. `Market Map Brief`: Start from a source company website, add comparable companies or supporting proof links, crawl the relevant sources, and generate a source-scoped market map brief.
-2. `Search Lanes`: Review the derived core and adjacent lanes that will steer sourcing.
-3. `Universe`: Build and curate a candidate longlist with evidence-backed fit rationale.
-4. `Cards`: Generate immutable snapshot cards with:
+1. `Source Brief`: Start from a source company website, add comparable companies or supporting proof links, crawl the relevant sources, and generate a source-scoped market brief.
+2. `Expansion Brief`: Run bounded deep research from the normalized graph plus source brief to surface adjacent capabilities, customer segments, named accounts, and geographies.
+3. `Scope Review`: Review the expanded nodes, keep/remove/deprioritize them, and confirm the approved discovery scope.
+4. `Universe`: Build and curate a candidate longlist with evidence-backed fit rationale.
+5. `Cards`: Generate immutable snapshot cards with:
 - compete/complement lens scores
 - source-backed claims with inline source pills
 - filing metrics only when reliable evidence exists
@@ -58,6 +59,45 @@ Phase 1 now produces four generic artifacts that stay reusable across different 
    - `same_product_different_customer`
    - `different_product_different_customer_within_market_box`
 
+## Company Context Graph
+
+Phase 1 is now graph-first.
+
+- Canonical phase-1 model: `CompanyContextGraph`
+- Canonical API/UI surface: `company-context`
+- Canonical evidence tiers:
+  - `first_party`
+  - `external_public`
+  - `inferred`
+
+Storage model:
+- Neo4j AuraDB is the canonical graph store for phase-1 company context
+- PostgreSQL keeps workspace metadata, job state, and a lightweight graph cache / sync status bridge
+
+Graph structure:
+- node labels:
+  - `Company`
+  - `CustomerEntity`
+  - `CustomerArchetype`
+  - `Workflow`
+  - `Capability`
+  - `DeliveryIntegration`
+  - `PartnerEntity`
+  - `Category`
+  - `SourceDocument`
+  - `Claim`
+- relationship types:
+  - `OFFERS_CAPABILITY`
+  - `SUPPORTS_WORKFLOW`
+  - `SERVES_CUSTOMER_ENTITY`
+  - `SERVES_CUSTOMER_ARCHETYPE`
+  - `INTEGRATES_WITH`
+  - `LISTED_IN_CATEGORY`
+  - `ANNOUNCED_BY_CUSTOMER`
+  - `SUPPORTED_BY`
+  - `CONTRADICTED_BY`
+  - `MENTIONS`
+
 ## Crawl And Extraction Strategy
 
 - Buyer/source sites are crawled more deeply than comparator sites.
@@ -90,7 +130,7 @@ Phase 1 now produces four generic artifacts that stay reusable across different 
 - Frontend: Next.js 14 (App Router) + Tailwind + React Query
 - Backend: FastAPI + SQLAlchemy (async)
 - Workers: Celery + Redis
-- Database: PostgreSQL
+- Databases: PostgreSQL + Neo4j AuraDB
 - Research/enrichment: OpenAI/Gemini orchestration + structured first-party crawling + Playwright-backed rendering for interactive pages
 
 ## Quick Start
@@ -112,6 +152,10 @@ TAVILY_API_KEY=your-api-key
 SERPAPI_API_KEY=your-api-key
 FIRECRAWL_API_KEY=your-api-key
 JINA_API_KEY=your-api-key
+NEO4J_URI=neo4j+s://your-aura-host.databases.neo4j.io
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your-password
+NEO4J_DATABASE=neo4j
 ```
 
 Minimum practical setup for local sourcing:
@@ -147,15 +191,15 @@ Services:
 - `POST /workspaces/{workspace_id}/context-pack:refresh`
 - `POST /workspaces/{workspace_id}/context-pack:export`
 
-### Market Map Brief + Search Lanes
+### Source Brief + Scope Review
 
-- `GET /workspaces/{workspace_id}/thesis-pack`
-- `PATCH /workspaces/{workspace_id}/thesis-pack`
-- `POST /workspaces/{workspace_id}/thesis-pack:refresh`
-- `POST /workspaces/{workspace_id}/thesis-pack:apply-adjustment`
-- `GET /workspaces/{workspace_id}/search-lanes`
-- `PATCH /workspaces/{workspace_id}/search-lanes`
-- `POST /workspaces/{workspace_id}/search-lanes:confirm`
+- `GET /workspaces/{workspace_id}/company-context`
+- `PATCH /workspaces/{workspace_id}/company-context`
+- `POST /workspaces/{workspace_id}/company-context:refresh`
+- `POST /workspaces/{workspace_id}/company-context:apply-adjustment`
+- `GET /workspaces/{workspace_id}/scope-review`
+- `PATCH /workspaces/{workspace_id}/scope-review`
+- `POST /workspaces/{workspace_id}/scope-review:confirm`
 
 ### Universe
 
@@ -205,6 +249,34 @@ Services:
 - Source-backed claims/metrics include source pill metadata (`label`, `url`, `captured_at`, optional `document_id`).
 - Export APIs return payloads only; arbitrary server-side file path writes are not allowed.
 - `rich_json` export includes both `kept` and `rejected` screening decisions with auditable reasons, ICP/product/customer evidence, numeric ranges, and source pills.
+
+## Neo4j CLI
+
+CLI-first graph operations are supported via `cypher-shell`.
+
+Install locally:
+
+```bash
+brew install cypher-shell
+```
+
+Apply graph schema:
+
+```bash
+backend/scripts/neo4j_apply_schema.sh
+```
+
+Inspect one company graph:
+
+```bash
+backend/scripts/neo4j_inspect_graph.sh workspace-8-4tpm
+```
+
+The CLI scripts use:
+- `NEO4J_URI`
+- `NEO4J_USERNAME`
+- `NEO4J_PASSWORD`
+- `NEO4J_DATABASE`
 
 ## Phase 1 Design Docs
 

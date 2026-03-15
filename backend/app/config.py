@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # Optional registry API keys
     companies_house_api_key: str = ""
 
+    # Neo4j company-context graph
+    neo4j_uri: str = ""
+    neo4j_username: str = ""
+    neo4j_password: str = ""
+    neo4j_database: str = "neo4j"
+
     # LLM model routing (provider:model, comma-separated)
     llm_stage_discovery_models: str = "gemini:gemini-2.0-flash,openai:gpt-4.1-mini,anthropic:claude-3-5-haiku-latest"
     llm_stage_adjudication_models: str = "anthropic:claude-3-7-sonnet-latest,openai:gpt-4.1,gemini:gemini-2.0-flash"
@@ -34,6 +40,7 @@ class Settings(BaseSettings):
     llm_stage_summary_models: str = "anthropic:claude-3-7-sonnet-latest,gemini:gemini-2.0-flash,openai:gpt-4.1-mini"
     llm_stage_crawler_triage_models: str = "gemini:gemini-2.0-flash,openai:gpt-4.1-mini,anthropic:claude-3-5-haiku-latest"
     llm_stage_market_map_models: str = "anthropic:claude-3-7-sonnet-latest,openai:gpt-4.1-mini,gemini:gemini-2.0-flash"
+    llm_stage_expansion_models: str = "gemini:gemini-2.0-flash,anthropic:claude-3-7-sonnet-latest,openai:gpt-4.1-mini"
 
     # Stage budgets and retry policy
     stage_seed_ingest_timeout_seconds: int = 240
@@ -95,6 +102,11 @@ class Settings(BaseSettings):
     discovery_retrieval_total_cap: int = 60
     discovery_retrieval_per_domain_cap: int = 3
     discovery_retrieval_similar_seed_cap: int = 4
+    company_context_secondary_provider_order: str = "serpapi,brave"
+    company_context_secondary_per_query_cap: int = 4
+    company_context_secondary_query_cap: int = 18
+    company_context_secondary_result_cap: int = 36
+    company_context_secondary_per_domain_cap: int = 2
 
     # App
     debug: bool = True
@@ -123,12 +135,14 @@ class Settings(BaseSettings):
             "context_summary": self.llm_stage_summary_models,
             "crawler_triage": self.llm_stage_crawler_triage_models,
             "market_map_reasoning": self.llm_stage_market_map_models,
+            "expansion_brief_reasoning": self.llm_stage_expansion_models,
         }
         return self._parse_provider_models(mapping.get(stage_name, self.llm_stage_discovery_models))
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 @lru_cache

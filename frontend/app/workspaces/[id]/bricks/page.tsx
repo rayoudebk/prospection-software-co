@@ -1,170 +1,75 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import {
-  useConfirmSearchLanes,
+  useCompanyContextPack,
+  useConfirmScopeReview,
   useGates,
-  useSearchLanes,
-  useThesisPack,
-  useUpdateSearchLanes,
+  useScopeReview,
 } from "@/lib/hooks";
-import { SearchLane } from "@/lib/api";
+import { ScopeReviewItem } from "@/lib/api";
 import {
   AlertCircle,
   Check,
   CheckCircle,
-  Layers,
   Loader2,
-  Save,
   Sparkles,
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
 import clsx from "clsx";
 
-function listToTextarea(values: string[]) {
-  return (values || []).join("\n");
+function StatusBadge({ status }: { status: string }) {
+  const tone =
+    status === "confirmed" || status === "source_grounded" || status === "user_kept"
+      ? "border-success/40 bg-success/10 text-success"
+      : status === "user_removed" || status === "user_deprioritized"
+        ? "border-warning/40 bg-warning/10 text-warning"
+        : "border-steel-300 bg-steel-100 text-steel-700";
+  return <span className={clsx("px-2 py-1 text-xs border", tone)}>{status}</span>;
 }
 
-function textareaToList(value: string) {
-  return value
-    .split("\n")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function LaneEditor({
-  lane,
-  onChange,
+function ScopeItemSection({
+  title,
+  items,
 }: {
-  lane: SearchLane;
-  onChange: (patch: Partial<SearchLane>) => void;
+  title: string;
+  items: ScopeReviewItem[];
 }) {
+  if (!items.length) return null;
   return (
-    <div className="bg-steel-50 border border-steel-200 p-6 space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-xs uppercase tracking-wide text-steel-500 mb-1">{lane.lane_type} lane</div>
-          <h2 className="text-lg font-semibold text-oxford">{lane.title}</h2>
-        </div>
-        <span
-          className={clsx(
-            "px-2 py-1 text-xs border",
-            lane.status === "confirmed"
-              ? "border-success/40 bg-success/10 text-success"
-              : "border-warning/40 bg-warning/10 text-warning"
-          )}
-        >
-          {lane.status}
-        </span>
-      </div>
-
-      <div>
-        <label className="label">Title</label>
-        <input
-          value={lane.title}
-          onChange={(event) => onChange({ title: event.target.value })}
-          className="input"
-        />
-      </div>
-
-      <div>
-        <label className="label">Intent</label>
-        <textarea
-          value={lane.intent || ""}
-          onChange={(event) => onChange({ intent: event.target.value })}
-          className="w-full min-h-[96px] border border-steel-300 px-3 py-2 text-sm bg-white"
-        />
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <label className="label">Capabilities</label>
-          <textarea
-            value={listToTextarea(lane.capabilities)}
-            onChange={(event) => onChange({ capabilities: textareaToList(event.target.value) })}
-            className="w-full min-h-[120px] border border-steel-300 px-3 py-2 text-sm bg-white"
-            placeholder="One per line"
-          />
-        </div>
-        <div>
-          <label className="label">Customer Tags</label>
-          <textarea
-            value={listToTextarea(lane.customer_tags)}
-            onChange={(event) => onChange({ customer_tags: textareaToList(event.target.value) })}
-            className="w-full min-h-[120px] border border-steel-300 px-3 py-2 text-sm bg-white"
-            placeholder="One per line"
-          />
-        </div>
-        <div>
-          <label className="label">Must-Include Terms</label>
-          <textarea
-            value={listToTextarea(lane.must_include_terms)}
-            onChange={(event) => onChange({ must_include_terms: textareaToList(event.target.value) })}
-            className="w-full min-h-[120px] border border-steel-300 px-3 py-2 text-sm bg-white"
-            placeholder="One per line"
-          />
-        </div>
-        <div>
-          <label className="label">Must-Exclude Terms</label>
-          <textarea
-            value={listToTextarea(lane.must_exclude_terms)}
-            onChange={(event) => onChange({ must_exclude_terms: textareaToList(event.target.value) })}
-            className="w-full min-h-[120px] border border-steel-300 px-3 py-2 text-sm bg-white"
-            placeholder="One per line"
-          />
-        </div>
-      </div>
-
-      <div>
-        <label className="label">Seed URLs</label>
-        <textarea
-          value={listToTextarea(lane.seed_urls)}
-          onChange={(event) => onChange({ seed_urls: textareaToList(event.target.value) })}
-          className="w-full min-h-[120px] border border-steel-300 px-3 py-2 text-sm bg-white"
-          placeholder="High-confidence comparator URLs, one per line"
-        />
+    <div className="bg-steel-50 border border-steel-200 p-5 space-y-3">
+      <h2 className="text-base font-semibold text-oxford">{title}</h2>
+      <div className="space-y-3">
+        {items.map((item) => (
+          <div key={item.id} className="border border-steel-200 bg-white px-4 py-3 space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-oxford">{item.label}</div>
+                <div className="text-xs text-steel-500">
+                  {item.scope_item_type}
+                  {item.priority_tier ? ` · ${item.priority_tier}` : ""}
+                </div>
+              </div>
+              <StatusBadge status={item.status} />
+            </div>
+            {item.why_it_matters && (
+              <p className="text-sm text-steel-700 leading-relaxed">{item.why_it_matters}</p>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-export default function SearchLanesPage() {
+export default function ScopeReviewPage() {
   const params = useParams();
   const workspaceId = Number(params.id);
 
-  const { data: searchLanes, isLoading } = useSearchLanes(workspaceId);
-  const { data: thesisPack } = useThesisPack(workspaceId);
+  const { data: scopeReview, isLoading } = useScopeReview(workspaceId);
+  const { data: companyContext } = useCompanyContextPack(workspaceId);
   const { data: gates } = useGates(workspaceId);
-  const updateSearchLanes = useUpdateSearchLanes(workspaceId);
-  const confirmSearchLanes = useConfirmSearchLanes(workspaceId);
-
-  const [lanes, setLanes] = useState<SearchLane[]>([]);
-
-  useEffect(() => {
-    if (searchLanes?.lanes) {
-      setLanes(
-        [...searchLanes.lanes].sort((left, right) =>
-          left.lane_type === right.lane_type ? 0 : left.lane_type === "core" ? -1 : 1
-        )
-      );
-    }
-  }, [searchLanes]);
-
-  const updateLane = (laneType: string, patch: Partial<SearchLane>) => {
-    setLanes((current) =>
-      current.map((lane) => (lane.lane_type === laneType ? { ...lane, ...patch } : lane))
-    );
-  };
-
-  const handleSave = async () => {
-    await updateSearchLanes.mutateAsync({ lanes });
-  };
-
-  const handleConfirm = async () => {
-    await updateSearchLanes.mutateAsync({ lanes });
-    await confirmSearchLanes.mutateAsync();
-  };
+  const confirmScopeReview = useConfirmScopeReview(workspaceId);
 
   if (isLoading) {
     return (
@@ -178,68 +83,63 @@ export default function SearchLanesPage() {
     <div className="space-y-6">
       <StepHeader
         step={2}
-        title="Search Lanes"
-        subtitle="Review the suggested sourcing lanes derived from the brief. Core captures direct-fit companies. Adjacent captures neighboring workflows, extensions, and capability edges worth sourcing separately."
+        title="Scope Review"
+        subtitle="Review the source-backed and expansion-backed nodes before universe discovery."
       />
 
       {gates && (
         <div
           className={clsx(
             "p-4 border",
-            gates.search_lanes ? "bg-success/10 border-success" : "bg-warning/10 border-warning"
+            gates.scope_review ? "bg-success/10 border-success" : "bg-warning/10 border-warning"
           )}
         >
           <div className="flex items-center gap-2">
-            {gates.search_lanes ? (
+            {gates.scope_review ? (
               <CheckCircle className="w-5 h-5 text-success" />
             ) : (
               <AlertCircle className="w-5 h-5 text-warning" />
             )}
-            <span className={gates.search_lanes ? "text-success font-medium" : "text-warning font-medium"}>
-              {gates.search_lanes
-                ? "Search lanes confirmed — you can proceed to Universe"
-                : gates.missing_items.search_lanes?.join(", ") || "Confirm search lanes to continue"}
+            <span className={gates.scope_review ? "text-success font-medium" : "text-warning font-medium"}>
+              {gates.scope_review
+                ? "Scope confirmed — you can proceed to Universe"
+                : gates.missing_items.scope_review?.join(", ") || "Confirm scope review to continue"}
             </span>
           </div>
         </div>
       )}
 
-      {thesisPack?.summary && (
+      {companyContext?.market_map_brief?.source_summary && (
         <div className="bg-oxford text-white border border-oxford-dark p-5">
           <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-steel-400 mb-2">
             <Sparkles className="w-4 h-4" />
-            Derived From Sourcing Brief
+            Source Brief
           </div>
-          <p className="text-sm text-steel-100 leading-relaxed">{thesisPack.summary}</p>
+          <p className="text-sm text-steel-100 leading-relaxed">
+            {companyContext.market_map_brief.source_summary}
+          </p>
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {lanes.map((lane) => (
-          <LaneEditor
-            key={lane.lane_type}
-            lane={lane}
-            onChange={(patch) => updateLane(lane.lane_type, patch)}
-          />
-        ))}
-      </div>
+      {scopeReview && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <ScopeItemSection title="Source Capabilities" items={scopeReview.source_capabilities} />
+          <ScopeItemSection title="Source Customer Segments" items={scopeReview.source_customer_segments} />
+          <ScopeItemSection title="Adjacent Capabilities" items={scopeReview.adjacent_capabilities} />
+          <ScopeItemSection title="Adjacent Customer Segments" items={scopeReview.adjacent_customer_segments} />
+          <ScopeItemSection title="Named Account Anchors" items={scopeReview.named_account_anchors} />
+          <ScopeItemSection title="Geography Expansions" items={scopeReview.geography_expansions} />
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-3">
         <button
-          onClick={handleSave}
-          disabled={updateSearchLanes.isPending}
-          className="btn-secondary flex items-center gap-2 disabled:opacity-50"
-        >
-          {updateSearchLanes.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          Save Lanes
-        </button>
-        <button
-          onClick={handleConfirm}
-          disabled={confirmSearchLanes.isPending || lanes.length === 0}
+          onClick={() => confirmScopeReview.mutate()}
+          disabled={confirmScopeReview.isPending || !scopeReview}
           className="btn-primary flex items-center gap-2 disabled:opacity-50"
         >
-          {confirmSearchLanes.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-          Confirm Lanes
+          {confirmScopeReview.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+          Confirm Scope
         </button>
       </div>
     </div>

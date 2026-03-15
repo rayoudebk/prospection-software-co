@@ -20,7 +20,7 @@ const navItems = [
   },
   {
     href: "bricks",
-    label: "Search Lanes",
+    label: "Scope Review",
     step: 2,
     gateKey: "context_pack",
   },
@@ -28,7 +28,7 @@ const navItems = [
     href: "universe",
     label: "Universe",
     step: 3,
-    gateKey: "search_lanes",
+    gateKey: "scope_review",
   },
   {
     href: "validation",
@@ -61,7 +61,7 @@ export default function WorkspaceLayout({
   const completedSteps = gates
     ? [
         gates.context_pack,
-        gates.search_lanes,
+        gates.scope_review,
         gates.universe,
         gates.segmentation,
         gates.enrichment,

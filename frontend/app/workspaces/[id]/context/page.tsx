@@ -24,17 +24,17 @@ import { JobRunSummary } from "@/components/JobRunSummary";
 import {
   ContextPackV2,
   ContextPackEvidenceItem,
+  SourceDocument,
   TaxonomyNode,
-  ThesisSourcePill,
   workspaceApi,
 } from "@/lib/api";
 import {
   useContextPack,
+  useCompanyContextPack,
   useGates,
-  useRefreshThesisPack,
-  useThesisPack,
+  useRefreshCompanyContextPack,
   useUpdateContextPack,
-  useUpdateThesisPack,
+  useUpdateCompanyContextPack,
   useWorkspaceJobs,
   useWorkspaceJobWithPolling,
 } from "@/lib/hooks";
@@ -57,7 +57,7 @@ const LAYER_DESCRIPTIONS: Record<string, string> = {
     "How the product is delivered or connected into the stack, such as APIs, documentation, or integration surfaces.",
 };
 
-type SourceDrawerItem = ThesisSourcePill & {
+type SourceDrawerItem = SourceDocument & {
   hostname: string;
   displayUrl: string;
   badge: string | null;
@@ -162,7 +162,7 @@ function SourcesDrawer({
             {sources.map((source) => (
               <a
                 key={source.id}
-                href={source.url}
+                href={source.url || "#"}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="group block rounded-2xl border border-white/10 bg-white/[0.03] p-4 transition-colors hover:border-white/20 hover:bg-white/[0.06]"
@@ -185,7 +185,7 @@ function SourcesDrawer({
                     </div>
 
                     <div className="text-base font-semibold leading-snug text-white">
-                      {source.label}
+                      {source.name}
                     </div>
                     <div className="mt-1 break-all text-sm text-white/58">
                       {source.displayUrl}
@@ -359,16 +359,14 @@ export default function MarketMapBriefPage() {
   const workspaceId = Number(params.id);
 
   const { data: profile, isLoading } = useContextPack(workspaceId);
-  const { data: thesisPack } = useThesisPack(workspaceId);
+  const { data: companyContext } = useCompanyContextPack(workspaceId);
   const { data: gates } = useGates(workspaceId);
   const { data: contextJobs } = useWorkspaceJobs(workspaceId, "context_pack");
   const updateProfile = useUpdateContextPack(workspaceId);
-  const updateThesisPack = useUpdateThesisPack(workspaceId);
-  const refreshThesisPack = useRefreshThesisPack(workspaceId);
+  const updateCompanyContext = useUpdateCompanyContextPack(workspaceId);
+  const refreshCompanyContext = useRefreshCompanyContextPack(workspaceId);
 
   const [buyerUrl, setBuyerUrl] = useState("");
-  const [entryMode, setEntryMode] = useState<"company" | "thesis">("company");
-  const [briefText, setBriefText] = useState("");
   const [referenceUrls, setReferenceUrls] = useState<string[]>([]);
   const [newReferenceUrl, setNewReferenceUrl] = useState("");
   const [referenceUrlError, setReferenceUrlError] = useState<string | null>(null);
@@ -382,34 +380,26 @@ export default function MarketMapBriefPage() {
   useEffect(() => {
     if (!profile) return;
     setBuyerUrl(profile.buyer_company_url || "");
-    setEntryMode(
-      profile.buyer_company_url
-        ? "company"
-        : profile.manual_brief_text
-        ? "thesis"
-        : "company"
-    );
-    setBriefText(profile.buyer_company_url ? "" : profile.manual_brief_text || "");
-    setReferenceUrls(profile.reference_company_urls || []);
-    setEvidenceUrls(profile.reference_evidence_urls || []);
+    setReferenceUrls(profile.comparator_seed_urls || []);
+    setEvidenceUrls(profile.supporting_evidence_urls || []);
   }, [profile]);
 
   useEffect(() => {
     setDraftSummary(
-      thesisPack?.market_map_brief?.source_summary || thesisPack?.summary || ""
+      companyContext?.market_map_brief?.source_summary || ""
     );
-  }, [thesisPack?.market_map_brief?.source_summary, thesisPack?.summary]);
+  }, [companyContext?.market_map_brief?.source_summary]);
 
   useEffect(() => {
     const nextDrafts: Record<string, TaxonomyDraft> = {};
-    for (const node of thesisPack?.taxonomy_nodes || []) {
+    for (const node of companyContext?.taxonomy_nodes || []) {
       nextDrafts[node.id] = {
         phrase: node.phrase || "",
         aliases: (node.aliases || []).join(", "),
       };
     }
     setTaxonomyDrafts(nextDrafts);
-  }, [thesisPack?.taxonomy_nodes]);
+  }, [companyContext?.taxonomy_nodes]);
 
   useEffect(() => {
     if (!isSourcesDrawerOpen) return;
@@ -433,7 +423,7 @@ export default function MarketMapBriefPage() {
     workspaceId,
     () => workspaceApi.refreshContextPack(workspaceId),
     () => {
-      refreshThesisPack.mutate();
+      refreshCompanyContext.mutate();
     },
     (jobId) => workspaceApi.cancelJob(workspaceId, jobId)
   );
@@ -451,16 +441,16 @@ export default function MarketMapBriefPage() {
 
   const sourceDrawerItems = useMemo(
     () =>
-      (thesisPack?.source_pills || []).map((pill) => ({
+      (companyContext?.source_documents || []).map((pill) => ({
         ...pill,
-        hostname: getSourceHostname(pill.url),
-        displayUrl: getSourceDisplayUrl(pill.url),
-        badge: getSourceBadge(pill.label),
+        hostname: getSourceHostname(pill.url || ""),
+        displayUrl: getSourceDisplayUrl(pill.url || ""),
+        badge: getSourceBadge(pill.name),
       })),
-    [thesisPack?.source_pills]
+    [companyContext?.source_documents]
   );
 
-  const contextPack = (thesisPack?.context_pack_v2 ||
+  const contextPack = (companyContext?.context_pack_v2 ||
     profile?.context_pack_json ||
     null) as ContextPackV2 | null;
 
@@ -475,57 +465,47 @@ export default function MarketMapBriefPage() {
 
   const taxonomyByLayer = useMemo(() => {
     const grouped = new Map<string, TaxonomyNode[]>();
-    for (const node of thesisPack?.taxonomy_nodes || []) {
+    for (const node of companyContext?.taxonomy_nodes || []) {
       if (node.scope_status === "removed") continue;
       const bucket = grouped.get(node.layer) || [];
       bucket.push(node);
       grouped.set(node.layer, bucket);
     }
     return grouped;
-  }, [thesisPack?.taxonomy_nodes]);
+  }, [companyContext?.taxonomy_nodes]);
 
-  const buyerEvidence = thesisPack?.buyer_evidence || null;
-  const showBuyerEvidenceWarning =
-    entryMode === "company" && buyerEvidence?.status === "insufficient";
+  const buyerEvidence = companyContext?.buyer_evidence || null;
+  const showBuyerEvidenceWarning = buyerEvidence?.status === "insufficient";
   const crawlButtonLabel = profile?.context_pack_generated_at
     ? "Recrawl and update map"
     : "Generate map from website";
-  const thesisButtonLabel = thesisPack?.generated_at
-    ? "Regenerate map from thesis"
-    : "Generate map from thesis";
-  const outputMetaLine = thesisPack?.generated_at
+  const outputMetaLine = companyContext?.generated_at
     ? [
-        `Last generated ${new Date(thesisPack.generated_at).toLocaleString()}`,
+        `Last generated ${new Date(companyContext.generated_at).toLocaleString()}`,
         contextPack?.crawl_coverage?.total_pages
           ? `${contextPack.crawl_coverage.total_pages} pages analyzed`
           : null,
       ]
         .filter(Boolean)
         .join(" · ")
-    : "Generate a market-map brief from a company website or thesis to populate this panel";
+    : "Generate a market-map brief from a company website to populate this panel";
+  const secondaryEvidenceCount =
+    typeof companyContext?.graph_stats?.secondary_evidence_count === "number"
+      ? companyContext.graph_stats.secondary_evidence_count
+      : null;
 
   const saveProfileInputs = async () => {
-    const shouldClearThesisBrief =
-      entryMode === "company" &&
-      !profile?.buyer_company_url &&
-      Boolean(briefText.trim());
     await updateProfile.mutateAsync({
-      buyer_company_url: entryMode === "company" ? buyerUrl : "",
-      manual_brief_text:
-        entryMode === "thesis"
-          ? briefText
-          : shouldClearThesisBrief
-          ? ""
-          : undefined,
-      reference_company_urls: referenceUrls,
-      reference_evidence_urls: evidenceUrls,
+      buyer_company_url: buyerUrl,
+      comparator_seed_urls: referenceUrls,
+      supporting_evidence_urls: evidenceUrls,
     });
   };
 
   const patchTaxonomyNodes = async (updater: (nodes: TaxonomyNode[]) => TaxonomyNode[]) => {
-    if (!thesisPack) return;
-    await updateThesisPack.mutateAsync({
-      taxonomy_nodes: updater(thesisPack.taxonomy_nodes || []),
+    if (!companyContext) return;
+    await updateCompanyContext.mutateAsync({
+      taxonomy_nodes: updater(companyContext.taxonomy_nodes || []),
     });
   };
 
@@ -565,13 +545,13 @@ export default function MarketMapBriefPage() {
   };
 
   const saveSummary = async () => {
-    await updateThesisPack.mutateAsync({
-      summary: draftSummary.trim() || null,
+    await updateCompanyContext.mutateAsync({
+      source_summary: draftSummary.trim() || null,
     });
   };
 
   const confirmBrief = async () => {
-    await updateThesisPack.mutateAsync({ confirmed: true });
+    await updateCompanyContext.mutateAsync({ confirmed: true });
   };
 
   const handleAddReference = () => {
@@ -650,74 +630,25 @@ export default function MarketMapBriefPage() {
 
       <div className="space-y-5 border border-steel-200 bg-white p-6">
         <div>
-          <p className="mb-2 text-[11px] font-medium uppercase tracking-widest text-steel-400">
-            Entry point
-          </p>
-          <div className="flex border border-steel-200">
-            <button
-              type="button"
-              onClick={() => setEntryMode("company")}
-              className={clsx(
-                "flex-1 px-3 py-2 text-sm font-medium transition-colors",
-                entryMode === "company"
-                  ? "bg-oxford text-white"
-                  : "bg-white text-steel-600 hover:text-oxford"
-              )}
-            >
+          <label className="mb-1.5 flex items-center justify-between">
+            <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
               Source company website
-            </button>
-            <button
-              type="button"
-              onClick={() => setEntryMode("thesis")}
-              className={clsx(
-                "flex-1 border-l border-steel-200 px-3 py-2 text-sm font-medium transition-colors",
-                entryMode === "thesis"
-                  ? "bg-oxford text-white"
-                  : "bg-white text-steel-600 hover:text-oxford"
-              )}
-            >
-              Investment thesis
-            </button>
-          </div>
+            </span>
+            <span className="text-[11px] text-warning">Required</span>
+          </label>
+          <input
+            type="url"
+            value={buyerUrl}
+            onChange={(event) => setBuyerUrl(event.target.value)}
+            placeholder="https://company.com"
+            className="input"
+          />
         </div>
-
-        {entryMode === "company" ? (
-          <div>
-            <label className="mb-1.5 flex items-center justify-between">
-              <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-                Source company website
-              </span>
-              <span className="text-[11px] text-warning">Required</span>
-            </label>
-            <input
-              type="url"
-              value={buyerUrl}
-              onChange={(event) => setBuyerUrl(event.target.value)}
-              placeholder="https://company.com"
-              className="input"
-            />
-          </div>
-        ) : (
-          <div>
-            <label className="mb-1.5 flex items-center justify-between">
-              <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-                Thesis or sourcing note
-              </span>
-              <span className="text-[11px] text-warning">Required</span>
-            </label>
-            <textarea
-              value={briefText}
-              onChange={(event) => setBriefText(event.target.value)}
-              placeholder="Asset managers who buy front-office PMS/OMS often also buy adjacent workflows such as voting-rights software, reporting, and compliance tooling..."
-              className="min-h-[148px] w-full resize-none border border-steel-200 bg-white px-3 py-2 text-sm text-steel-900 placeholder:text-steel-400 focus:border-oxford focus:outline-none focus:ring-1 focus:ring-oxford/20"
-            />
-          </div>
-        )}
 
         <div>
           <label className="mb-1.5 flex items-center justify-between">
             <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-              Comparable companies
+              Comparator seeds
             </span>
             <span className="text-[11px] text-steel-400">Optional</span>
           </label>
@@ -833,21 +764,16 @@ export default function MarketMapBriefPage() {
             type="button"
             onClick={async () => {
               await saveProfileInputs();
-              if (entryMode === "company") {
-                jobRunner.run();
-              } else {
-                await refreshThesisPack.mutateAsync();
-              }
+              jobRunner.run();
             }}
             disabled={
               updateProfile.isPending ||
-              (entryMode === "company"
-                ? jobRunner.isRunning || !buyerUrl.trim()
-                : refreshThesisPack.isPending || !briefText.trim())
+              jobRunner.isRunning ||
+              !buyerUrl.trim()
             }
             className="btn-primary w-full gap-2 disabled:opacity-50"
           >
-            {entryMode === "company" && jobRunner.isRunning ? (
+            {jobRunner.isRunning ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Running... {Math.round(jobRunner.progress * 100)}%
@@ -855,22 +781,22 @@ export default function MarketMapBriefPage() {
             ) : (
               <>
                 <RefreshCw className="h-4 w-4" />
-                {entryMode === "company" ? crawlButtonLabel : thesisButtonLabel}
+                {crawlButtonLabel}
               </>
             )}
           </button>
 
-          {entryMode === "company" && hasGeneratedContextPack ? (
+          {hasGeneratedContextPack ? (
             <button
               type="button"
               onClick={async () => {
                 await saveProfileInputs();
-                await refreshThesisPack.mutateAsync();
+                await refreshCompanyContext.mutateAsync();
               }}
-              disabled={updateProfile.isPending || refreshThesisPack.isPending}
+              disabled={updateProfile.isPending || refreshCompanyContext.isPending}
               className="btn-secondary w-full gap-1.5 disabled:opacity-50"
             >
-              {refreshThesisPack.isPending ? (
+              {refreshCompanyContext.isPending ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
                 <RefreshCw className="h-3 w-3" />
@@ -880,7 +806,7 @@ export default function MarketMapBriefPage() {
           ) : null}
         </div>
 
-        {entryMode === "company" && jobRunner.isRunning ? (
+        {jobRunner.isRunning ? (
           <JobProgressPanel
             job={
               jobRunner.job ?? {
@@ -909,7 +835,7 @@ export default function MarketMapBriefPage() {
           />
         ) : null}
 
-        {entryMode === "company" && !jobRunner.isRunning ? (
+        {!jobRunner.isRunning ? (
           <JobRunSummary job={latestCompletedContextJob} />
         ) : null}
 
@@ -943,6 +869,22 @@ export default function MarketMapBriefPage() {
             </button>
           </div>
         ) : null}
+
+        <div className="flex flex-wrap gap-2 text-xs text-steel-600">
+          <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1">
+            Graph status: {companyContext?.graph_status || "not_synced"}
+          </span>
+          {companyContext?.graph_synced_at ? (
+            <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1">
+              Synced {new Date(companyContext.graph_synced_at).toLocaleString()}
+            </span>
+          ) : null}
+          {secondaryEvidenceCount !== null ? (
+            <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1">
+      Secondary evidence: {secondaryEvidenceCount}
+            </span>
+          ) : null}
+        </div>
 
         {showBuyerEvidenceWarning ? (
           <div className="rounded-2xl border border-warning/30 bg-warning/10 p-4">
@@ -984,38 +926,38 @@ export default function MarketMapBriefPage() {
               <button
                 type="button"
                 onClick={saveSummary}
-                disabled={updateThesisPack.isPending}
+                disabled={updateCompanyContext.isPending}
                 className="inline-flex items-center gap-1 text-xs font-medium text-oxford transition-colors hover:text-oxford-light disabled:opacity-50"
               >
                 <Save className="h-3.5 w-3.5" />
-                {updateThesisPack.isPending ? "Saving..." : "Save"}
+                {updateCompanyContext.isPending ? "Saving..." : "Save"}
               </button>
             </div>
-            {thesisPack?.market_map_brief?.reasoning_status &&
-            thesisPack.market_map_brief.reasoning_status !== "success" ? (
+            {companyContext?.market_map_brief?.reasoning_status &&
+            companyContext.market_map_brief.reasoning_status !== "success" ? (
               <div className="mb-3 rounded-2xl border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-warning-dark">
                 <div className="flex items-start gap-2">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                   <div>
                     <div className="font-medium">
-                      {thesisPack.market_map_brief.reasoning_status === "not_applicable"
+                      {companyContext.market_map_brief.reasoning_status === "not_applicable"
                         ? "Reasoning not run yet"
                         : "Reasoning degraded"}
                     </div>
                     <div className="mt-1 text-warning-dark/80">
-                      {thesisPack.market_map_brief.reasoning_warning ||
+                      {companyContext.market_map_brief.reasoning_warning ||
                         "Showing a fallback summary from the source evidence graph."}
                     </div>
                   </div>
                 </div>
               </div>
-            ) : thesisPack?.market_map_brief?.reasoning_provider ? (
+            ) : companyContext?.market_map_brief?.reasoning_provider ? (
               <div className="mb-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
                 Reasoning succeeded via{" "}
                 <span className="font-medium">
-                  {thesisPack.market_map_brief.reasoning_provider}
-                  {thesisPack.market_map_brief.reasoning_model
-                    ? ` · ${thesisPack.market_map_brief.reasoning_model}`
+                  {companyContext.market_map_brief.reasoning_provider}
+                  {companyContext.market_map_brief.reasoning_model
+                    ? ` · ${companyContext.market_map_brief.reasoning_model}`
                     : ""}
                 </span>
                 .
@@ -1064,7 +1006,7 @@ export default function MarketMapBriefPage() {
               Strongest Evidence Buckets
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              {(thesisPack?.market_map_brief?.strongest_evidence_buckets || []).map((bucket) => (
+              {(companyContext?.market_map_brief?.strongest_evidence_buckets || []).map((bucket) => (
                 <span
                   key={bucket.label}
                   className="rounded-full border border-steel-200 bg-steel-50 px-3 py-1 text-xs text-steel-600"
@@ -1106,7 +1048,7 @@ export default function MarketMapBriefPage() {
                           }
                         }
                         evidenceItems={evidenceForIds(node.evidence_ids)}
-                        isPending={updateThesisPack.isPending}
+                        isPending={updateCompanyContext.isPending}
                         onDraftChange={(nextDraft) =>
                           setTaxonomyDrafts((current) => ({
                             ...current,
@@ -1134,8 +1076,8 @@ export default function MarketMapBriefPage() {
               Named Customer Proof
             </div>
             <div className="mt-3 space-y-3">
-              {(thesisPack?.market_map_brief?.named_customer_proof || []).length ? (
-                thesisPack?.market_map_brief?.named_customer_proof.map((item) => (
+              {(companyContext?.market_map_brief?.named_customer_proof || []).length ? (
+                companyContext?.market_map_brief?.named_customer_proof.map((item) => (
                   <div key={`${item.name}-${item.source_url || item.evidence_id || ""}`} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
                     <div className="text-sm font-semibold text-oxford">{item.name}</div>
                     {item.context ? (
@@ -1167,11 +1109,11 @@ export default function MarketMapBriefPage() {
 
           <div className="rounded-2xl border border-steel-200 bg-white p-4">
             <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-              Integration / Partner Proof
+              Partner / Integration Proof
             </div>
             <div className="mt-3 space-y-3">
-              {(thesisPack?.market_map_brief?.integration_partner_proof || []).length ? (
-                thesisPack?.market_map_brief?.integration_partner_proof.map((item) => (
+              {(companyContext?.market_map_brief?.partner_integration_proof || []).length ? (
+                companyContext?.market_map_brief?.partner_integration_proof.map((item) => (
                   <div key={`${item.name}-${item.source_url || item.evidence_id || ""}`} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
                     <div className="text-sm font-semibold text-oxford">{item.name}</div>
                     <EvidenceLinks
@@ -1199,6 +1141,124 @@ export default function MarketMapBriefPage() {
           </div>
         </div>
 
+        <div className="rounded-2xl border border-steel-200 bg-white p-4">
+          <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+            Expansion Inputs
+          </div>
+          <p className="mt-1 text-sm text-steel-500">
+            Adjacent-market company signals are kept separate from source-company truth and passed downstream as expansion inputs.
+          </p>
+          <div className="mt-3 space-y-3">
+            {(companyContext?.expansion_inputs || []).length ? (
+              companyContext?.expansion_inputs.map((item) => (
+                <div key={`${item.name}-${item.website}`} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-oxford">{item.name}</div>
+                      <a
+                        href={item.website}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 inline-flex items-center gap-1.5 text-xs font-medium text-oxford hover:underline"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        {item.website}
+                      </a>
+                    </div>
+                    <div className="rounded-full border border-steel-200 bg-white px-2.5 py-1 text-[11px] text-steel-500">
+                      {(item.taxonomy_nodes || []).length} taxonomy nodes
+                    </div>
+                  </div>
+                  {item.source_summary ? (
+                    <p className="mt-3 text-sm text-steel-600">{item.source_summary}</p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-steel-500">
+                    <span className="rounded-full border border-steel-200 bg-white px-2.5 py-1">
+                      Customers: {(item.named_customer_proof || []).length}
+                    </span>
+                    <span className="rounded-full border border-steel-200 bg-white px-2.5 py-1">
+                      Partners: {(item.partner_integration_proof || []).length}
+                    </span>
+                    <span className="rounded-full border border-steel-200 bg-white px-2.5 py-1">
+                      Pages: {Number((item.crawl_coverage as { total_pages?: number } | undefined)?.total_pages || 0)}
+                    </span>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-2xl border border-dashed border-steel-200 bg-steel-50 px-4 py-5 text-sm text-steel-500">
+                No expansion inputs have been attached yet.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-steel-200 bg-white p-4">
+          <div className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+            Secondary Evidence
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1 text-[11px] text-steel-500">
+              Customer / partner corroboration: {companyContext?.market_map_brief?.customer_partner_corroboration?.length || 0}
+            </span>
+            <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1 text-[11px] text-steel-500">
+              Directory / category context: {companyContext?.market_map_brief?.directory_category_context?.length || 0}
+            </span>
+            <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1 text-[11px] text-steel-500">
+              Other secondary context: {companyContext?.market_map_brief?.other_secondary_context?.length || 0}
+            </span>
+          </div>
+          <div className="mt-3 space-y-3">
+            {(companyContext?.market_map_brief?.secondary_evidence_proof || []).length ? (
+              companyContext?.market_map_brief?.secondary_evidence_proof.map((item) => (
+                <div key={item.id} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-oxford">
+                        {item.title || item.publisher || item.publisher_channel}
+                      </div>
+                      <div className="mt-1 text-xs uppercase tracking-[0.18em] text-steel-400">
+                        {item.publisher_channel} · {item.claim_type}
+                      </div>
+                    </div>
+                    <span className="rounded-full border border-steel-200 bg-white px-2.5 py-1 text-[11px] text-steel-500">
+                      {Math.round((item.confidence || 0) * 100)}%
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-steel-700">
+                    {item.evidence_snippet || item.claim_text}
+                  </p>
+                  {item.entity_mentions?.length ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {item.entity_mentions.map((mention) => (
+                        <span
+                          key={`${item.id}-${mention}`}
+                          className="rounded-full border border-steel-200 bg-white px-2.5 py-1 text-[11px] text-steel-500"
+                        >
+                          {mention}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <a
+                    href={item.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-oxford hover:underline"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    Open source
+                  </a>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-2xl border border-dashed border-steel-200 bg-steel-50 px-4 py-5 text-sm text-steel-500">
+                No secondary context has been attached yet.
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="grid gap-5 lg:grid-cols-2">
           <div className="rounded-2xl border border-steel-200 bg-white p-4">
             <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-widest text-steel-400">
@@ -1206,8 +1266,8 @@ export default function MarketMapBriefPage() {
               Recommended Lenses
             </div>
             <div className="mt-3 space-y-3">
-              {(thesisPack?.market_map_brief?.active_lenses || thesisPack?.lens_seeds || []).length ? (
-                (thesisPack?.market_map_brief?.active_lenses || thesisPack?.lens_seeds || []).map((lens) => (
+              {(companyContext?.market_map_brief?.active_lenses || companyContext?.lens_seeds || []).length ? (
+                (companyContext?.market_map_brief?.active_lenses || companyContext?.lens_seeds || []).map((lens) => (
                   <div key={lens.id} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-sm font-semibold text-oxford">{lens.label}</div>
@@ -1238,8 +1298,8 @@ export default function MarketMapBriefPage() {
               Adjacency Hypotheses
             </div>
             <div className="mt-3 space-y-3">
-              {(thesisPack?.market_map_brief?.adjacency_hypotheses || []).length ? (
-                thesisPack?.market_map_brief?.adjacency_hypotheses.map((item) => (
+              {(companyContext?.market_map_brief?.adjacency_hypotheses || []).length ? (
+                companyContext?.market_map_brief?.adjacency_hypotheses.map((item) => (
                   <div key={item.id} className="rounded-2xl border border-steel-200 bg-steel-50 p-3">
                     <div className="text-sm text-steel-700">{item.text}</div>
                     <div className="mt-2 text-xs text-steel-500">
@@ -1263,8 +1323,8 @@ export default function MarketMapBriefPage() {
               Confidence Gaps
             </div>
             <div className="mt-3 space-y-2">
-              {(thesisPack?.market_map_brief?.confidence_gaps || []).length ? (
-                thesisPack?.market_map_brief?.confidence_gaps.map((gap) => (
+              {(companyContext?.market_map_brief?.confidence_gaps || []).length ? (
+                companyContext?.market_map_brief?.confidence_gaps.map((gap) => (
                   <div
                     key={gap}
                     className="rounded-2xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm text-steel-700"
@@ -1285,7 +1345,7 @@ export default function MarketMapBriefPage() {
               Open Questions
             </div>
             <div className="mt-3 space-y-2">
-              {(thesisPack?.market_map_brief?.open_questions || thesisPack?.open_questions || []).map((question) => (
+              {(companyContext?.market_map_brief?.open_questions || []).map((question) => (
                 <div
                   key={question}
                   className="rounded-2xl border border-steel-200 bg-steel-50 px-3 py-2 text-sm text-steel-700"
@@ -1299,14 +1359,14 @@ export default function MarketMapBriefPage() {
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-steel-100 pt-4">
           <div className="text-sm text-steel-500">
-            {thesisPack?.confirmed_at
-              ? `Brief confirmed ${new Date(thesisPack.confirmed_at).toLocaleString()}`
+            {companyContext?.confirmed_at
+              ? `Brief confirmed ${new Date(companyContext.confirmed_at).toLocaleString()}`
               : "Confirm this brief once the taxonomy and lenses match the market map you want to search."}
           </div>
           <button
             type="button"
             onClick={confirmBrief}
-            disabled={updateThesisPack.isPending}
+            disabled={updateCompanyContext.isPending}
             className="btn-primary gap-2 disabled:opacity-50"
           >
             <Check className="h-4 w-4" />

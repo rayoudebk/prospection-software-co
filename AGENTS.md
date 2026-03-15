@@ -27,6 +27,14 @@
 - Prefer one in-flight deploy per service at a time, then verify whether it reaches `SUCCESS` before retrying.
 - When a deployment backlog exists, stop creating new deployments and wait for the queue to drain unless there is a clear way to cancel older ones.
 - Treat repeated manual `railway deployment up` calls as a last resort because they can create a deploy queue that hides whether the latest code is actually serving traffic.
+- Before deploying, prefer `railway deployment list --service <name>` or `railway service status --all` to confirm there is only one active in-flight deployment.
+- Treat `railway down` as unreliable for clearing stuck builds. Verify the deployment list after using it instead of assuming the in-flight build was cancelled.
+- Keep Railway service Dockerfile selection explicit via `RAILWAY_DOCKERFILE_PATH`; do not rely on Railway inferring the correct Dockerfile in a multi-service repo.
+- Production Dockerfile mapping:
+  `api` -> `backend/Dockerfile`
+  `worker` -> `backend/Dockerfile` while `CHROME_MCP_ENABLED=false`
+  `worker` -> `backend/Dockerfile.worker` only when production intentionally enables local Playwright/Chromium browser fallback
+- Prefer the lean Dockerfile for production services unless browser rendering is explicitly required in that service. Heavy browser installs should be opt-in because they materially increase deploy time and make cache misses much more expensive.
 
 ## Git Workflow
 

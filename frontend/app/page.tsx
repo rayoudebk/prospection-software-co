@@ -185,17 +185,17 @@ export default function WorkspacesPage() {
                       <AlertCircle className="w-4 h-4 text-steel-300" />
                     )}
                     <span className={workspace.has_context_pack ? "text-success" : "text-steel-400"}>
-                      Thesis
+                      Sourcing
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
-                    {workspace.has_confirmed_search_lanes ? (
+                    {workspace.has_confirmed_scope_review ? (
                       <CheckCircle className="w-4 h-4 text-success" />
                     ) : (
                       <AlertCircle className="w-4 h-4 text-steel-300" />
                     )}
-                    <span className={workspace.has_confirmed_search_lanes ? "text-success" : "text-steel-400"}>
-                      Lanes
+                    <span className={workspace.has_confirmed_scope_review ? "text-success" : "text-steel-400"}>
+                      Scope
                     </span>
                   </div>
                   <div className="flex items-center gap-1">

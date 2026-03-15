@@ -1,11 +1,8 @@
 """
-Migration script for market-map brief artifacts.
+Migration script for expansion-brief artifacts.
 
 Adds:
-- buyer_thesis_packs.market_map_brief_json
-- buyer_thesis_packs.taxonomy_nodes_json
-- buyer_thesis_packs.taxonomy_edges_json
-- buyer_thesis_packs.lens_seeds_json
+- company_context_packs.expansion_brief_json
 """
 import json
 import sys
@@ -38,7 +35,7 @@ def _add_column_if_missing(conn, table_name: str, column_sql: str, column_name: 
     conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}"))
 
 
-def migrate_market_map_brief_v1(database_url: str | None = None) -> None:
+def migrate_expansion_brief_v1(database_url: str | None = None) -> None:
     engine = create_engine(database_url or settings.database_url_sync, echo=True)
     with engine.begin() as conn:
         table_name = _resolve_company_context_table(conn)
@@ -47,45 +44,23 @@ def migrate_market_map_brief_v1(database_url: str | None = None) -> None:
         _add_column_if_missing(
             conn,
             table_name,
-            "market_map_brief_json JSON",
-            "market_map_brief_json",
-        )
-        _add_column_if_missing(
-            conn,
-            table_name,
-            "taxonomy_nodes_json JSON",
-            "taxonomy_nodes_json",
-        )
-        _add_column_if_missing(
-            conn,
-            table_name,
-            "taxonomy_edges_json JSON",
-            "taxonomy_edges_json",
-        )
-        _add_column_if_missing(
-            conn,
-            table_name,
-            "lens_seeds_json JSON",
-            "lens_seeds_json",
+            "expansion_brief_json JSON",
+            "expansion_brief_json",
         )
         conn.execute(
             text(
                 f"""
                 UPDATE {table_name}
-                SET market_map_brief_json = COALESCE(market_map_brief_json, :empty_object),
-                    taxonomy_nodes_json = COALESCE(taxonomy_nodes_json, :empty_list),
-                    taxonomy_edges_json = COALESCE(taxonomy_edges_json, :empty_list),
-                    lens_seeds_json = COALESCE(lens_seeds_json, :empty_list)
+                SET expansion_brief_json = COALESCE(expansion_brief_json, :empty_object)
                 """
             ),
             {
                 "empty_object": json.dumps({}),
-                "empty_list": json.dumps([]),
             },
         )
 
 
 if __name__ == "__main__":
-    print("Starting market map brief migration (v1)...")
-    migrate_market_map_brief_v1()
+    print("Starting expansion brief migration (v1)...")
+    migrate_expansion_brief_v1()
     print("✅ Migration complete")

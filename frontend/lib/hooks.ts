@@ -5,10 +5,7 @@ import {
   workspaceApi,
   Job,
   GeoScope,
-  ThesisClaim,
-  ThesisSourcePill,
   TaxonomyNode,
-  SearchLane,
 } from "./api";
 import { useEffect, useRef, useState } from "react";
 
@@ -65,10 +62,8 @@ export function useUpdateContextPack(workspaceId: number) {
   return useMutation({
     mutationFn: (data: {
       buyer_company_url?: string | null;
-      manual_brief_text?: string | null;
-      generated_context_summary?: string | null;
-      reference_company_urls?: string[];
-      reference_evidence_urls?: string[];
+      comparator_seed_urls?: string[];
+      supporting_evidence_urls?: string[];
       geo_scope?: GeoScope;
     }) => workspaceApi.updateContextPack(workspaceId, data),
     onSuccess: () => {
@@ -88,87 +83,71 @@ export function useRefreshContextPack(workspaceId: number) {
   });
 }
 
-// Thesis Pack
-export function useThesisPack(workspaceId: number) {
+// Company Context
+export function useCompanyContextPack(workspaceId: number) {
   return useQuery({
-    queryKey: ["thesis-pack", workspaceId],
-    queryFn: () => workspaceApi.getThesisPack(workspaceId),
+    queryKey: ["company-context", workspaceId],
+    queryFn: () => workspaceApi.getCompanyContext(workspaceId),
     enabled: !!workspaceId,
   });
 }
 
-export function useUpdateThesisPack(workspaceId: number) {
+export function useUpdateCompanyContextPack(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (data: {
-      summary?: string | null;
-      claims?: ThesisClaim[];
-      source_pills?: ThesisSourcePill[];
-      open_questions?: string[];
+      source_summary?: string | null;
       taxonomy_nodes?: TaxonomyNode[];
       confirmed?: boolean;
-    }) => workspaceApi.updateThesisPack(workspaceId, data),
+    }) => workspaceApi.updateCompanyContext(workspaceId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
-      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["company-context", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
     },
   });
 }
 
-export function useRefreshThesisPack(workspaceId: number) {
+export function useRefreshCompanyContextPack(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => workspaceApi.refreshThesisPack(workspaceId),
+    mutationFn: () => workspaceApi.refreshCompanyContext(workspaceId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
-      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["company-context", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
     },
   });
 }
 
-export function useApplyThesisAdjustment(workspaceId: number) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: { message?: string; operations?: Array<Record<string, unknown>> }) =>
-      workspaceApi.applyThesisAdjustment(workspaceId, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
-      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
-      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
-    },
-  });
-}
-
-// Search Lanes
-export function useSearchLanes(workspaceId: number) {
+// Scope Review
+export function useScopeReview(workspaceId: number) {
   return useQuery({
-    queryKey: ["search-lanes", workspaceId],
-    queryFn: () => workspaceApi.getSearchLanes(workspaceId),
+    queryKey: ["scope-review", workspaceId],
+    queryFn: () => workspaceApi.getScopeReview(workspaceId),
     enabled: !!workspaceId,
   });
 }
 
-export function useUpdateSearchLanes(workspaceId: number) {
+export function useUpdateScopeReview(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { lanes: SearchLane[] }) =>
-      workspaceApi.updateSearchLanes(workspaceId, data),
+    mutationFn: (data: { decisions: Array<{ id: string; status: string }> }) =>
+      workspaceApi.updateScopeReview(workspaceId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
     },
   });
 }
 
-export function useConfirmSearchLanes(workspaceId: number) {
+export function useConfirmScopeReview(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => workspaceApi.confirmSearchLanes(workspaceId),
+    mutationFn: () => workspaceApi.confirmScopeReview(workspaceId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
-      queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["company-context", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
     },
   });
@@ -485,8 +464,8 @@ export function useWorkspaceJobWithPolling(
       setIsRunning(false);
       if (jobQuery.data?.state === "completed") {
         queryClient.invalidateQueries({ queryKey: ["context-pack", workspaceId] });
-        queryClient.invalidateQueries({ queryKey: ["thesis-pack", workspaceId] });
-        queryClient.invalidateQueries({ queryKey: ["search-lanes", workspaceId] });
+        queryClient.invalidateQueries({ queryKey: ["company-context", workspaceId] });
+        queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
         onComplete?.();

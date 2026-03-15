@@ -30,7 +30,7 @@ export interface Workspace {
   created_at: string;
   company_count: number;
   has_context_pack: boolean;
-  has_confirmed_search_lanes: boolean;
+  has_confirmed_scope_review: boolean;
 }
 
 export interface GeoScope {
@@ -43,11 +43,9 @@ export interface CompanyProfile {
   id: number;
   workspace_id: number;
   buyer_company_url: string | null;
-  manual_brief_text: string | null;
-  generated_context_summary: string | null;
-  reference_company_urls: string[];
-  reference_evidence_urls: string[];
-  reference_summaries: Record<string, string>;
+  comparator_seed_urls: string[];
+  supporting_evidence_urls: string[];
+  comparator_seed_summaries: Record<string, string>;
   geo_scope: GeoScope;
   context_pack_markdown: string | null;
   context_pack_generated_at: string | null;
@@ -146,32 +144,6 @@ export interface CitationSummaryV1 {
   source_pills: CitationSourcePill[];
 }
 
-export interface ThesisClaim {
-  id: string;
-  section:
-    | "core_capability"
-    | "adjacent_capability"
-    | "business_model"
-    | "customer_profile"
-    | "deployment_model"
-    | "size_signal"
-    | "geography"
-    | "include_constraint"
-    | "exclude_constraint"
-    | string;
-  value: string;
-  rendering: "fact" | "hypothesis" | string;
-  confidence: number;
-  source_pill_ids: string[];
-  user_status: "system" | "confirmed" | "edited" | "removed" | string;
-}
-
-export interface ThesisSourcePill {
-  id: string;
-  label: string;
-  url: string;
-}
-
 export interface BuyerEvidenceDiagnostics {
   mode: string;
   status: string;
@@ -239,7 +211,87 @@ export interface MarketMapBrief {
   capability_nodes: TaxonomyNode[];
   delivery_or_integration_nodes: TaxonomyNode[];
   named_customer_proof: ContextPackNamedCustomer[];
-  integration_partner_proof: ContextPackIntegration[];
+  partner_integration_proof: ContextPackIntegration[];
+  secondary_evidence_proof: Array<{
+    id: string;
+    publisher_channel: string;
+    publisher_type?: string | null;
+    claim_scope?: string | null;
+    subject_company?: string | null;
+    claim_type: string;
+    publisher?: string | null;
+    published_at?: string | null;
+    claim_text: string;
+    evidence_snippet?: string | null;
+    url: string;
+    title?: string | null;
+    entity_mentions: string[];
+    supports_node_ids: string[];
+    supports_edge_ids: string[];
+    confidence: number;
+    freshness?: string | null;
+    evidence_tier?: string | null;
+  }>;
+  customer_partner_corroboration: Array<{
+    id: string;
+    publisher_channel: string;
+    publisher_type?: string | null;
+    claim_scope?: string | null;
+    subject_company?: string | null;
+    claim_type: string;
+    publisher?: string | null;
+    published_at?: string | null;
+    claim_text: string;
+    evidence_snippet?: string | null;
+    url: string;
+    title?: string | null;
+    entity_mentions: string[];
+    supports_node_ids: string[];
+    supports_edge_ids: string[];
+    confidence: number;
+    freshness?: string | null;
+    evidence_tier?: string | null;
+  }>;
+  directory_category_context: Array<{
+    id: string;
+    publisher_channel: string;
+    publisher_type?: string | null;
+    claim_scope?: string | null;
+    subject_company?: string | null;
+    claim_type: string;
+    publisher?: string | null;
+    published_at?: string | null;
+    claim_text: string;
+    evidence_snippet?: string | null;
+    url: string;
+    title?: string | null;
+    entity_mentions: string[];
+    supports_node_ids: string[];
+    supports_edge_ids: string[];
+    confidence: number;
+    freshness?: string | null;
+    evidence_tier?: string | null;
+  }>;
+  other_secondary_context: Array<{
+    id: string;
+    publisher_channel: string;
+    publisher_type?: string | null;
+    claim_scope?: string | null;
+    subject_company?: string | null;
+    claim_type: string;
+    publisher?: string | null;
+    published_at?: string | null;
+    claim_text: string;
+    evidence_snippet?: string | null;
+    url: string;
+    title?: string | null;
+    entity_mentions: string[];
+    supports_node_ids: string[];
+    supports_edge_ids: string[];
+    confidence: number;
+    freshness?: string | null;
+    evidence_tier?: string | null;
+  }>;
   active_lenses: LensSeed[];
   adjacency_hypotheses: Array<{
     id: string;
@@ -254,19 +306,61 @@ export interface MarketMapBrief {
   }>;
   confidence_gaps: string[];
   open_questions: string[];
+  unknowns_not_publicly_resolvable: string[];
   crawl_coverage?: ContextPackV2["crawl_coverage"];
   confirmed_at?: string | null;
 }
 
-export interface BuyerThesisPack {
+export interface SourceDocument {
+  id: string;
+  name: string;
+  url?: string | null;
+  publisher?: string | null;
+  snippet?: string | null;
+  publisher_channel: string;
+  publisher_type?: string | null;
+  claim_scope?: string | null;
+  subject_company?: string | null;
+  evidence_tier: string;
+  evidence_type: string;
+}
+
+export interface CompanyContextGraph {
+  graph_ref: string;
+  workspace_id: number;
+  generated_at?: string | null;
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+  source_documents?: SourceDocument[];
+  secondary_evidence_proof?: MarketMapBrief["secondary_evidence_proof"];
+  graph_stats?: Record<string, unknown>;
+}
+
+export interface ExpansionInput {
+  name: string;
+  website: string;
+  source_summary?: string | null;
+  taxonomy_nodes?: TaxonomyNode[];
+  taxonomy_edges?: TaxonomyEdge[];
+  named_customer_proof?: ContextPackNamedCustomer[];
+  partner_integration_proof?: ContextPackIntegration[];
+  crawl_coverage?: Record<string, unknown>;
+}
+
+export interface CompanyContextPack {
   id: number;
   workspace_id: number;
-  summary: string | null;
-  claims: ThesisClaim[];
-  source_pills: ThesisSourcePill[];
-  open_questions: string[];
+  company_context_graph_ref?: string | null;
+  graph_status: string;
+  graph_warning?: string | null;
+  graph_synced_at?: string | null;
+  graph_stats: Record<string, unknown>;
+  company_context_graph?: CompanyContextGraph | null;
+  deep_research_handoff?: Record<string, unknown> | null;
   buyer_evidence?: BuyerEvidenceDiagnostics | null;
   context_pack_v2?: ContextPackV2 | null;
+  source_documents: SourceDocument[];
+  expansion_inputs: ExpansionInput[];
   taxonomy_nodes: TaxonomyNode[];
   taxonomy_edges: TaxonomyEdge[];
   lens_seeds: LensSeed[];
@@ -275,29 +369,38 @@ export interface BuyerThesisPack {
   confirmed_at: string | null;
 }
 
-export interface SearchLane {
-  id?: number | null;
-  workspace_id?: number | null;
-  lane_type: "core" | "adjacent" | string;
-  title: string;
-  intent: string | null;
-  capabilities: string[];
-  customer_tags: string[];
-  must_include_terms: string[];
-  must_exclude_terms: string[];
-  seed_urls: string[];
-  status: "draft" | "confirmed" | string;
-  confirmed_at?: string | null;
+export interface ScopeReviewItem {
+  id: string;
+  label: string;
+  scope_item_type: string;
+  origin: string;
+  status: string;
+  confidence: number;
+  evidence_ids: string[];
+  evidence_urls: string[];
+  supporting_node_ids: string[];
+  source_entity_names: string[];
+  why_it_matters?: string | null;
+  priority_tier?: string | null;
+  market_importance?: string | null;
+  operational_centrality?: string | null;
+  workflow_criticality?: string | null;
+  daily_operator_usage?: string | null;
+  switching_cost_intensity?: string | null;
 }
 
-export interface SearchLanes {
+export interface ScopeReview {
   workspace_id: number;
-  lanes: SearchLane[];
-}
-
-export interface ThesisAdjustmentResult {
-  thesis_pack: BuyerThesisPack;
-  applied_operations: Array<Record<string, unknown>>;
+  workspace_geo_scope: Record<string, unknown>;
+  confirmed_at?: string | null;
+  source_capabilities: ScopeReviewItem[];
+  source_customer_segments: ScopeReviewItem[];
+  source_workflows: ScopeReviewItem[];
+  source_delivery_or_integration: ScopeReviewItem[];
+  adjacent_capabilities: ScopeReviewItem[];
+  adjacent_customer_segments: ScopeReviewItem[];
+  named_account_anchors: ScopeReviewItem[];
+  geography_expansions: ScopeReviewItem[];
 }
 
 export interface WhyRelevant {
@@ -344,7 +447,6 @@ export interface Company {
   first_party_hint_urls_used_count?: number;
   first_party_hint_pages_crawled_total?: number;
   unresolved_contradictions_count?: number;
-  lane_types?: string[];
   why_fit_bullets?: Array<{ text: string; citation_url?: string | null }>;
   business_model_signal?: string | null;
   customer_proof?: string[];
@@ -476,7 +578,7 @@ export interface Job {
 
 export interface Gates {
   context_pack: boolean;
-  search_lanes: boolean;
+  scope_review: boolean;
   universe: boolean;
   segmentation: boolean;
   enrichment: boolean;
@@ -699,10 +801,8 @@ export const workspaceApi = {
     id: number,
     data: {
       buyer_company_url?: string | null;
-      manual_brief_text?: string | null;
-      generated_context_summary?: string | null;
-      reference_company_urls?: string[];
-      reference_evidence_urls?: string[];
+      comparator_seed_urls?: string[];
+      supporting_evidence_urls?: string[];
       geo_scope?: GeoScope;
     }
   ) =>
@@ -716,60 +816,44 @@ export const workspaceApi = {
       method: "POST",
     }),
 
-  // Thesis Pack
-  getThesisPack: (id: number) =>
-    fetchJSON<BuyerThesisPack>(`/workspaces/${id}/thesis-pack`),
+  // Company Context
+  getCompanyContext: (id: number) =>
+    fetchJSON<CompanyContextPack>(`/workspaces/${id}/company-context`),
 
-  updateThesisPack: (
+  updateCompanyContext: (
     id: number,
     data: {
-      summary?: string | null;
-      claims?: ThesisClaim[];
-      source_pills?: ThesisSourcePill[];
-      open_questions?: string[];
+      source_summary?: string | null;
       taxonomy_nodes?: TaxonomyNode[];
       confirmed?: boolean;
     }
   ) =>
-    fetchJSON<BuyerThesisPack>(`/workspaces/${id}/thesis-pack`, {
+    fetchJSON<CompanyContextPack>(`/workspaces/${id}/company-context`, {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
 
-  refreshThesisPack: (id: number) =>
-    fetchJSON<BuyerThesisPack>(`/workspaces/${id}/thesis-pack:refresh`, {
+  refreshCompanyContext: (id: number) =>
+    fetchJSON<CompanyContextPack>(`/workspaces/${id}/company-context:refresh`, {
       method: "POST",
     }),
+  // Scope Review
+  getScopeReview: (id: number) =>
+    fetchJSON<ScopeReview>(`/workspaces/${id}/scope-review`),
 
-  applyThesisAdjustment: (
+  updateScopeReview: (
     id: number,
     data: {
-      message?: string;
-      operations?: Array<Record<string, unknown>>;
+      decisions: Array<{ id: string; status: string }>;
     }
   ) =>
-    fetchJSON<ThesisAdjustmentResult>(`/workspaces/${id}/thesis-pack:apply-adjustment`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-
-  // Search Lanes
-  getSearchLanes: (id: number) =>
-    fetchJSON<SearchLanes>(`/workspaces/${id}/search-lanes`),
-
-  updateSearchLanes: (
-    id: number,
-    data: {
-      lanes: SearchLane[];
-    }
-  ) =>
-    fetchJSON<SearchLanes>(`/workspaces/${id}/search-lanes`, {
+    fetchJSON<ScopeReview>(`/workspaces/${id}/scope-review`, {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
 
-  confirmSearchLanes: (id: number) =>
-    fetchJSON<SearchLanes>(`/workspaces/${id}/search-lanes:confirm`, {
+  confirmScopeReview: (id: number) =>
+    fetchJSON<ScopeReview>(`/workspaces/${id}/scope-review:confirm`, {
       method: "POST",
     }),
 

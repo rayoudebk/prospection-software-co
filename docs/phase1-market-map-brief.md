@@ -54,7 +54,7 @@ No fresh web reasoning should happen in this step.
       "evidence_id": "evidence_xxx"
     }
   ],
-  "integration_partner_proof": [
+  "partner_integration_proof": [
     {
       "name": "BP2S",
       "source_url": "https://source.example/integrations",
@@ -156,7 +156,7 @@ Do not use:
 ## Evidence Rules
 
 - Every surfaced node must keep `evidence_ids`.
-- `named_customer_proof` and `integration_partner_proof` must stay separate.
+- `named_customer_proof` and `partner_integration_proof` must stay separate.
 - Fact-style claims must be source-backed.
 - Hypotheses may combine multiple weak signals, but must still be tied to evidence in the reasoning layer.
 - The brief should prefer source-company evidence over comparator evidence.

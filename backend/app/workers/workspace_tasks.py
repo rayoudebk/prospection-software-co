@@ -22,7 +22,7 @@ from celery import chain
 from app.workers.celery_app import celery_app
 from app.config import get_settings
 from app.models.workspace import Workspace, CompanyProfile
-from app.models.thesis import SearchLane
+from app.models.company_context import CompanyContextPack
 from app.models.company import Company, CompanyDossier, CompanyStatus
 from app.models.job import DB_ACTIVE_JOB_STATES, Job, JobType, JobState
 from app.models.source_evidence import SourceEvidence
@@ -41,10 +41,6 @@ from app.services.comparator_sources import (
     SOURCE_REGISTRY,
     ingest_source,
     resolve_external_website_from_profile,
-)
-from app.services.company_profile_context import (
-    get_generated_context_summary,
-    get_manual_brief_text,
 )
 from app.services.reporting import (
     DISCOVERY_COUNTRIES,
@@ -3138,13 +3134,11 @@ def _resolve_buyer_employee_estimate(workspace: Workspace, profile: CompanyProfi
             if parsed_text is not None:
                 return parsed_text
 
-    text_candidates = [
-        get_manual_brief_text(profile),
-        get_generated_context_summary(profile),
-        profile.context_pack_markdown,
-    ]
-    reference_summaries = profile.reference_summaries if isinstance(profile.reference_summaries, dict) else {}
-    text_candidates.extend([str(value) for value in reference_summaries.values()])
+    text_candidates = [profile.context_pack_markdown]
+    comparator_seed_summaries = (
+        profile.comparator_seed_summaries if isinstance(profile.comparator_seed_summaries, dict) else {}
+    )
+    text_candidates.extend([str(value) for value in comparator_seed_summaries.values()])
     for text in text_candidates:
         if not isinstance(text, str):
             continue
@@ -4800,7 +4794,7 @@ def _should_add_wealth_benchmark_seeds(
     mentions: list[dict[str, Any]],
 ) -> bool:
     text_chunks: list[str] = []
-    for item in [get_manual_brief_text(profile), get_generated_context_summary(profile), profile.context_pack_markdown]:
+    for item in [profile.context_pack_markdown]:
         normalized = str(item or "").strip()
         if normalized:
             text_chunks.append(normalized[:4000])
@@ -4955,7 +4949,7 @@ def _normalize_query_entries(values: Any, max_items: int = 6) -> list[dict[str, 
             query_text = item.strip()
             if not query_text:
                 continue
-            entries.append({"query_text": query_text[:220], "query_intent": None, "brick_name": None, "lane_type": None})
+            entries.append({"query_text": query_text[:220], "query_intent": None, "brick_name": None, "scope_bucket": None})
         elif isinstance(item, dict):
             query_text = str(item.get("query") or item.get("query_text") or item.get("text") or "").strip()
             if not query_text:
@@ -4965,7 +4959,7 @@ def _normalize_query_entries(values: Any, max_items: int = 6) -> list[dict[str, 
                     "query_text": query_text[:220],
                     "query_intent": str(item.get("query_intent") or item.get("intent") or "").strip() or None,
                     "brick_name": str(item.get("brick_name") or "").strip() or None,
-                    "lane_type": str(item.get("lane_type") or "").strip().lower() or None,
+                    "scope_bucket": str(item.get("scope_bucket") or "").strip().lower() or None,
                 }
             )
         if len(entries) >= max_items:
@@ -4973,65 +4967,31 @@ def _normalize_query_entries(values: Any, max_items: int = 6) -> list[dict[str, 
     return entries
 
 
-def _normalize_search_lane_payloads(search_lanes: Any) -> list[dict[str, Any]]:
-    payloads: list[dict[str, Any]] = []
-    if not isinstance(search_lanes, list):
-        return payloads
-    for lane in search_lanes:
-        if isinstance(lane, SearchLane):
-            payload = {
-                "lane_type": lane.lane_type,
-                "title": lane.title,
-                "intent": lane.intent,
-                "capabilities": lane.capabilities_json or [],
-                "customer_tags": lane.customer_tags_json or [],
-                "must_include_terms": lane.must_include_terms_json or [],
-                "must_exclude_terms": lane.must_exclude_terms_json or [],
-                "seed_urls": lane.seed_urls_json or [],
-                "status": lane.status or "draft",
-            }
-        elif isinstance(lane, dict):
-            payload = lane
-        else:
-            continue
-        lane_type = str(payload.get("lane_type") or "").strip().lower()
-        if lane_type not in {"core", "adjacent"}:
-            continue
-        payloads.append(
-            {
-                "lane_type": lane_type,
-                "title": str(payload.get("title") or f"{lane_type.title()} sourcing lane").strip()[:255],
-                "intent": str(payload.get("intent") or "").strip()[:500] or None,
-                "capabilities": _normalize_string_list(payload.get("capabilities"), max_items=10, max_len=140),
-                "customer_tags": _normalize_string_list(payload.get("customer_tags"), max_items=8, max_len=120),
-                "must_include_terms": _normalize_string_list(payload.get("must_include_terms"), max_items=10, max_len=80),
-                "must_exclude_terms": _normalize_string_list(payload.get("must_exclude_terms"), max_items=10, max_len=80),
-                "seed_urls": _normalize_string_list(payload.get("seed_urls"), max_items=8, max_len=220),
-                "status": str(payload.get("status") or "draft").strip().lower() or "draft",
-            }
-        )
-    confirmed = [payload for payload in payloads if payload["status"] == "confirmed"]
-    return confirmed or payloads
+def _normalize_scope_hints(scope_hints: Any) -> dict[str, Any]:
+    payload = scope_hints if isinstance(scope_hints, dict) else {}
+    return {
+        "source_capabilities": _normalize_string_list(payload.get("source_capabilities"), max_items=10, max_len=140),
+        "adjacent_capabilities": _normalize_string_list(payload.get("adjacent_capabilities"), max_items=10, max_len=140),
+        "source_customer_segments": _normalize_string_list(payload.get("source_customer_segments"), max_items=8, max_len=120),
+        "adjacent_customer_segments": _normalize_string_list(payload.get("adjacent_customer_segments"), max_items=8, max_len=120),
+        "named_account_anchors": _normalize_string_list(payload.get("named_account_anchors"), max_items=8, max_len=120),
+        "comparator_seed_urls": _normalize_string_list(payload.get("comparator_seed_urls"), max_items=8, max_len=220),
+        "confirmed": bool(payload.get("confirmed")),
+    }
 
 
-def _taxonomy_compatible_hints_from_search_lanes(
-    search_lanes: list[dict[str, Any]],
+def _taxonomy_compatible_hints_from_scope_hints(
+    scope_hints: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    normalized_scope = _normalize_scope_hints(scope_hints)
     capability_hints = _dedupe_strings(
-        [
-            str(capability)
-            for lane in (search_lanes or [])
-            for capability in (lane.get("capabilities") or [])
-            if str(capability).strip()
-        ]
+        (normalized_scope.get("source_capabilities") or [])
+        + (normalized_scope.get("adjacent_capabilities") or [])
     )
     segment_hints = _dedupe_strings(
-        [
-            str(value)
-            for lane in (search_lanes or [])
-            for value in ((lane.get("customer_tags") or []) + (lane.get("must_include_terms") or []))
-            if str(value).strip()
-        ]
+        (normalized_scope.get("source_customer_segments") or [])
+        + (normalized_scope.get("adjacent_customer_segments") or [])
+        + (normalized_scope.get("named_account_anchors") or [])
     )
     return ([{"name": name} for name in capability_hints], segment_hints)
 
@@ -5040,29 +5000,29 @@ def _default_discovery_query_plan(
     taxonomy_bricks: list[dict[str, Any]],
     geo_scope: dict[str, Any],
     vertical_focus: list[str],
-    search_lanes: Optional[list[dict[str, Any]]] = None,
+    scope_hints: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    normalized_lanes = _normalize_search_lane_payloads(search_lanes)
+    normalized_scope = _normalize_scope_hints(scope_hints)
     brick_names = [str(b.get("name") or "").strip() for b in (taxonomy_bricks or []) if str(b.get("name") or "").strip()]
     region = str((geo_scope or {}).get("region") or "EU+UK")
-    if normalized_lanes:
-        core_lane = next((lane for lane in normalized_lanes if lane["lane_type"] == "core"), normalized_lanes[0])
-        adjacent_lane = next((lane for lane in normalized_lanes if lane["lane_type"] == "adjacent"), None)
-        customer_hint = ", ".join((core_lane.get("customer_tags") or [])[:2]) or "B2B software"
-        core_capabilities = core_lane.get("capabilities") or ["core workflow"]
-        adjacent_capabilities = adjacent_lane.get("capabilities") or ["adjacent workflow"] if adjacent_lane else ["adjacent workflow"]
+    if normalized_scope.get("source_capabilities") or normalized_scope.get("adjacent_capabilities"):
+        customer_hint = ", ".join(
+            ((normalized_scope.get("source_customer_segments") or []) + (normalized_scope.get("adjacent_customer_segments") or []))[:2]
+        ) or "B2B software"
+        core_capabilities = normalized_scope.get("source_capabilities") or ["core workflow"]
+        adjacent_capabilities = normalized_scope.get("adjacent_capabilities") or ["adjacent workflow"]
         precision_queries = [
             {
                 "query_text": f"{customer_hint} {core_capabilities[0]} software company {region}",
                 "query_intent": "capability_discovery",
                 "brick_name": core_capabilities[0],
-                "lane_type": "core",
+                "scope_bucket": "core",
             },
             {
                 "query_text": f"{customer_hint} {core_capabilities[min(1, len(core_capabilities) - 1)]} platform {region}",
                 "query_intent": "competitor_discovery",
                 "brick_name": core_capabilities[min(1, len(core_capabilities) - 1)],
-                "lane_type": "core",
+                "scope_bucket": "core",
             },
         ]
         recall_queries = [
@@ -5070,26 +5030,19 @@ def _default_discovery_query_plan(
                 "query_text": f"{customer_hint} {adjacent_capabilities[0]} software {region}",
                 "query_intent": "adjacent",
                 "brick_name": adjacent_capabilities[0],
-                "lane_type": "adjacent",
+                "scope_bucket": "adjacent",
             }
         ]
         return {
             "precision_queries": precision_queries,
             "recall_queries": recall_queries,
-            "seed_urls": _dedupe_strings(
-                [str(url) for lane in normalized_lanes for url in (lane.get("seed_urls") or []) if str(url).strip()]
-            )[:8],
+            "seed_urls": _dedupe_strings(normalized_scope.get("comparator_seed_urls") or [])[:8],
             "must_include_terms": _dedupe_strings(
-                [
-                    str(term)
-                    for lane in normalized_lanes
-                    for term in ((lane.get("must_include_terms") or []) + (lane.get("customer_tags") or []))
-                    if str(term).strip()
-                ]
+                (normalized_scope.get("source_customer_segments") or [])
+                + (normalized_scope.get("adjacent_customer_segments") or [])
+                + (normalized_scope.get("named_account_anchors") or [])
             )[:10],
-            "must_exclude_terms": _dedupe_strings(
-                [str(term) for lane in normalized_lanes for term in (lane.get("must_exclude_terms") or []) if str(term).strip()]
-            )[:10],
+            "must_exclude_terms": [],
             "preferred_countries": [],
             "preferred_languages": [],
             "domain_allowlist": [],
@@ -5100,12 +5053,12 @@ def _default_discovery_query_plan(
     brick_hint = ", ".join(brick_names[:2]) if brick_names else "core workflow"
 
     precision_queries = [
-        {"query_text": f"{vertical_hint} {brick_hint} company {region}", "query_intent": "capability_discovery", "brick_name": brick_names[0] if brick_names else None, "lane_type": "core"},
-        {"query_text": f"{vertical_hint} platform {region} {brick_hint}", "query_intent": "competitor_discovery", "brick_name": brick_names[1] if len(brick_names) > 1 else None, "lane_type": "core"},
+        {"query_text": f"{vertical_hint} {brick_hint} company {region}", "query_intent": "capability_discovery", "brick_name": brick_names[0] if brick_names else None, "scope_bucket": "core"},
+        {"query_text": f"{vertical_hint} platform {region} {brick_hint}", "query_intent": "competitor_discovery", "brick_name": brick_names[1] if len(brick_names) > 1 else None, "scope_bucket": "core"},
     ]
     recall_queries = [
-        {"query_text": f"{vertical_hint} SaaS {region}", "query_intent": "market_scan", "brick_name": None, "lane_type": "core"},
-        {"query_text": f"{vertical_hint} adjacent workflow software {region}", "query_intent": "adjacent", "brick_name": None, "lane_type": "adjacent"},
+        {"query_text": f"{vertical_hint} SaaS {region}", "query_intent": "market_scan", "brick_name": None, "scope_bucket": "core"},
+        {"query_text": f"{vertical_hint} adjacent workflow software {region}", "query_intent": "adjacent", "brick_name": None, "scope_bucket": "adjacent"},
     ]
     return {
         "precision_queries": precision_queries,
@@ -5126,9 +5079,9 @@ def _build_discovery_query_plan_prompt(
     geo_scope: dict[str, Any],
     vertical_focus: list[str],
     comparator_mentions: list[dict[str, Any]],
-    search_lanes: Optional[list[dict[str, Any]]] = None,
+    scope_hints: Optional[dict[str, Any]] = None,
 ) -> str:
-    normalized_lanes = _normalize_search_lane_payloads(search_lanes)
+    normalized_scope = _normalize_scope_hints(scope_hints)
     brick_names = [str(b.get("name") or "").strip() for b in (taxonomy_bricks or []) if str(b.get("name") or "").strip()]
     region = str((geo_scope or {}).get("region") or "EU+UK")
     include_countries = [str(c).strip() for c in ((geo_scope or {}).get("include_countries") or []) if str(c).strip()]
@@ -5147,10 +5100,10 @@ def _build_discovery_query_plan_prompt(
 Return ONLY valid JSON with this schema:
 {{
   "precision_queries": [
-    {{"query": "string", "query_intent": "competitors|capability|pricing|integrations|market_scan", "brick_name": "optional capability name", "lane_type": "core|adjacent"}}
+    {{"query": "string", "query_intent": "competitors|capability|pricing|integrations|market_scan", "brick_name": "optional capability name", "scope_bucket": "core|adjacent"}}
   ],
   "recall_queries": [
-    {{"query": "string", "query_intent": "market_scan|alternatives|adjacent", "brick_name": "optional capability name", "lane_type": "core|adjacent"}}
+    {{"query": "string", "query_intent": "market_scan|alternatives|adjacent", "brick_name": "optional capability name", "scope_bucket": "core|adjacent"}}
   ],
   "seed_urls": ["https://..."],
   "must_include_terms": ["string"],
@@ -5167,7 +5120,7 @@ Buyer context:
 Target filters:
 - Region: {region}
 - Include countries: {", ".join(include_countries) if include_countries else "auto"}
-- Search lanes: {json.dumps(normalized_lanes[:2], ensure_ascii=False) if normalized_lanes else "none confirmed yet"}
+- Approved scope hints: {json.dumps(normalized_scope, ensure_ascii=False) if normalized_scope else "none confirmed yet"}
 - Legacy vertical hints: {", ".join(verticals) if verticals else "generic software"}
 - Legacy capability hints: {", ".join(brick_names[:12]) if brick_names else "n/a"}
 
@@ -5251,7 +5204,7 @@ def _build_external_search_queries_from_plan(
                     "query_type": query_type,
                     "query_intent": entry.get("query_intent"),
                     "brick_name": entry.get("brick_name"),
-                    "lane_type": entry.get("lane_type"),
+                    "scope_bucket": entry.get("scope_bucket"),
                     "must_include_terms": include_terms,
                     "must_exclude_terms": exclude_terms,
                     "domain_allowlist": allowlist,
@@ -5265,8 +5218,12 @@ def _build_external_search_queries_from_plan(
     summary = {
         "precision_queries": len(precision_entries),
         "recall_queries": len(recall_entries),
-        "lane_types": _dedupe_strings(
-            [str(entry.get("lane_type")) for entry in precision_entries + recall_entries if str(entry.get("lane_type") or "").strip()]
+        "scope_buckets": _dedupe_strings(
+            [
+                str(entry.get("scope_bucket") or "")
+                for entry in precision_entries + recall_entries
+                if str(entry.get("scope_bucket") or "").strip()
+            ]
         ),
         "must_include_terms": include_terms,
         "must_exclude_terms": exclude_terms,
@@ -5316,7 +5273,7 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
                         "source_kind": "external_search_snippet",
                         "provider": row.get("provider"),
                         "query_id": row.get("query_id"),
-                        "lane_type": row.get("lane_type"),
+                        "scope_bucket": row.get("scope_bucket"),
                         "rank": row.get("rank"),
                     }
                 ],
@@ -5329,7 +5286,7 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
                         "metadata": {
                             "query_id": row.get("query_id"),
                             "query_type": row.get("query_type"),
-                            "lane_type": row.get("lane_type"),
+                            "scope_bucket": row.get("scope_bucket"),
                             "rank": row.get("rank"),
                         },
                     }
@@ -5345,9 +5302,9 @@ def _build_candidate_synthesis_prompt(
     taxonomy_bricks: list[dict[str, Any]],
     geo_scope: dict[str, Any],
     vertical_focus: list[str],
-    search_lanes: Optional[list[dict[str, Any]]] = None,
+    scope_hints: Optional[dict[str, Any]] = None,
 ) -> str:
-    normalized_lanes = _normalize_search_lane_payloads(search_lanes)
+    normalized_scope = _normalize_scope_hints(scope_hints)
     region = str((geo_scope or {}).get("region") or "EU+UK")
     brick_names = [str(b.get("name") or "").strip() for b in (taxonomy_bricks or []) if str(b.get("name") or "").strip()]
     verticals = [str(v).strip() for v in (vertical_focus or []) if str(v).strip()]
@@ -5374,7 +5331,7 @@ Buyer context:
 
 Target filters:
 - Region: {region}
-- Search lanes: {json.dumps(normalized_lanes[:2], ensure_ascii=False) if normalized_lanes else "none confirmed yet"}
+- Approved scope hints: {json.dumps(normalized_scope, ensure_ascii=False) if normalized_scope else "none confirmed yet"}
 - Legacy vertical hints: {", ".join(verticals) if verticals else "generic software"}
 - Legacy capability hints: {", ".join(brick_names[:12]) if brick_names else "n/a"}
 
@@ -5772,9 +5729,9 @@ def _build_first_party_hint_url_map(
         existing.append(normalized)
 
     if profile:
-        for url in (profile.reference_evidence_urls or []):
+        for url in (profile.supporting_evidence_urls or []):
             register(url)
-        for url in (profile.reference_company_urls or []):
+        for url in (profile.comparator_seed_urls or []):
             register(url, require_path=True)
 
     if include_benchmark_hints:
@@ -5836,9 +5793,9 @@ def _context_pack_start_urls_for_site(profile: CompanyProfile | None, site_url: 
             manual_urls.append(normalized)
 
     if is_buyer_site:
-        for url in profile.reference_evidence_urls or []:
+        for url in profile.supporting_evidence_urls or []:
             register(url)
-    for url in profile.reference_company_urls or []:
+    for url in profile.comparator_seed_urls or []:
         register(url)
 
     adaptive_hint_urls = _discover_adaptive_hint_urls_for_domain(
@@ -6378,7 +6335,7 @@ def _estimate_context_pack_site_progress(message: str) -> Optional[float]:
 def generate_context_pack_v2(job_id: int):
     """Generate context pack by crawling buyer and reference URLs."""
     from app.services.crawler import UnifiedCrawler
-    from app.services.thesis import bootstrap_thesis_payload, build_context_pack_v2
+    from app.services.company_context import build_company_context_artifacts, build_context_pack_v2
     
     db = SessionLocal()
     try:
@@ -6419,8 +6376,8 @@ def generate_context_pack_v2(job_id: int):
             if profile.buyer_company_url:
                 all_urls.append(profile.buyer_company_url)
             
-            if profile.reference_company_urls:
-                all_urls.extend(profile.reference_company_urls[:3])
+            if profile.comparator_seed_urls:
+                all_urls.extend(profile.comparator_seed_urls[:3])
             
             if not all_urls:
                 job.state = JobState.failed
@@ -6439,7 +6396,7 @@ def generate_context_pack_v2(job_id: int):
             
             combined_markdown = []
             product_pages_total = 0
-            reference_summaries = {}
+            comparator_seed_summaries = {}
             all_context_packs = []  # Store full context packs for JSON export
             buyer_context_pack = None
 
@@ -6498,7 +6455,7 @@ def generate_context_pack_v2(job_id: int):
                     # #endregion
                     
                     if url != profile.buyer_company_url:
-                        reference_summaries[url] = context_pack.summary
+                        comparator_seed_summaries[url] = context_pack.summary
                     
                     job.progress = site_end
                     job.progress_message = f"Completed {domain} ({len(context_pack.pages)} pages)"
@@ -6577,34 +6534,11 @@ def generate_context_pack_v2(job_id: int):
             profile.context_pack_json = build_context_pack_v2(combined_context_pack_json)
             profile.context_pack_generated_at = datetime.utcnow()
             profile.product_pages_found = product_pages_total
-            profile.reference_summaries = reference_summaries
+            profile.comparator_seed_summaries = comparator_seed_summaries
 
-            # Generate the source summary from the same phase-1 market-map reasoning path
             job.progress = 0.8
-            job.progress_message = "Generating summary..."
+            job.progress_message = "Preparing company context..."
             db.commit()
-
-            try:
-                if buyer_context_pack is not None and _context_pack_has_meaningful_content(buyer_context_pack):
-                    profile.generated_context_summary = None
-                    bootstrap_payload = bootstrap_thesis_payload(profile)
-                    generated_summary = str(
-                        ((bootstrap_payload.get("market_map_brief") or {}).get("source_summary"))
-                        or bootstrap_payload.get("summary")
-                        or ""
-                    ).strip()
-                    profile.generated_context_summary = generated_summary[:8000] if generated_summary else None
-                else:
-                    profile.generated_context_summary = (
-                        "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
-                        "Add supporting evidence or regenerate after improving the crawl target."
-                    )
-            except Exception as e:
-                print(f"Error generating phase-1 summary: {e}")
-                profile.generated_context_summary = (
-                    "Unable to generate the market map summary from the current source evidence. "
-                    "Review the crawl coverage and add stronger first-party product, customer, or integration pages."
-                )
             
             # #region agent log
             import json
@@ -7047,20 +6981,25 @@ def _run_discovery_universe_monolith(job_id: int):
             external_search_brick_yield: dict[str, int] = {}
             retrieval_results: list[dict[str, Any]] = []
 
-            search_lanes = (
-                db.query(SearchLane)
-                .filter(SearchLane.workspace_id == workspace.id)
-                .order_by(SearchLane.lane_type.asc(), SearchLane.id.asc())
-                .all()
+            from app.services.company_context import derive_discovery_scope_hints
+
+            company_context_pack = (
+                db.query(CompanyContextPack)
+                .filter(CompanyContextPack.workspace_id == workspace.id)
+                .first()
             )
-            normalized_search_lanes = _normalize_search_lane_payloads(search_lanes)
-            capability_hints, segment_hints = _taxonomy_compatible_hints_from_search_lanes(normalized_search_lanes)
+            normalized_scope_hints = _normalize_scope_hints(
+                derive_discovery_scope_hints(company_context_pack, profile)
+                if company_context_pack and profile
+                else {}
+            )
+            capability_hints, segment_hints = _taxonomy_compatible_hints_from_scope_hints(normalized_scope_hints)
 
             fallback_plan = _default_discovery_query_plan(
                 taxonomy_bricks=capability_hints,
                 geo_scope=profile.geo_scope or {},
                 vertical_focus=segment_hints,
-                search_lanes=normalized_search_lanes,
+                scope_hints=normalized_scope_hints,
             )
             query_plan = fallback_plan
             try:
@@ -7070,7 +7009,7 @@ def _run_discovery_universe_monolith(job_id: int):
                     geo_scope=profile.geo_scope or {},
                     vertical_focus=segment_hints,
                     comparator_mentions=mention_records[:120],
-                    search_lanes=normalized_search_lanes,
+                    scope_hints=normalized_scope_hints,
                 )
                 plan_response = LLMOrchestrator().run_stage(
                     LLMRequest(
@@ -7101,14 +7040,14 @@ def _run_discovery_universe_monolith(job_id: int):
                 for entry in search_queries
                 if str(entry.get("brick_name") or "").strip()
             }
-            query_lane_map = {
-                str(entry.get("query_id")): str(entry.get("lane_type") or "").strip().lower()
+            scope_bucket_map = {
+                str(entry.get("query_id")): str(entry.get("scope_bucket") or "").strip().lower()
                 for entry in search_queries
-                if str(entry.get("lane_type") or "").strip()
+                if str(entry.get("scope_bucket") or "").strip()
             }
 
             seed_urls = _normalize_string_list(query_plan.get("seed_urls"), max_items=8, max_len=220)
-            for url in (profile.reference_company_urls or [])[:6]:
+            for url in (profile.comparator_seed_urls or [])[:6]:
                 seed_urls.append(str(url))
             seed_urls = _dedupe_strings([normalize_url(url) for url in seed_urls if normalize_url(url)])
             high_confidence_seed_urls: list[str] = []
@@ -7129,7 +7068,7 @@ def _run_discovery_universe_monolith(job_id: int):
                             "query_type": "seed_similar",
                             "query_intent": "adjacent",
                             "seed_url": seed_url,
-                            "lane_type": "adjacent",
+                            "scope_bucket": "adjacent",
                             "must_include_terms": query_plan.get("must_include_terms") or [],
                             "must_exclude_terms": query_plan.get("must_exclude_terms") or [],
                             "domain_allowlist": query_plan.get("domain_allowlist") or [],
@@ -7241,7 +7180,7 @@ def _run_discovery_universe_monolith(job_id: int):
                         taxonomy_bricks=capability_hints,
                         geo_scope=profile.geo_scope or {},
                         vertical_focus=segment_hints,
-                        search_lanes=normalized_search_lanes,
+                        scope_hints=normalized_scope_hints,
                     )
                     synthesis_response = LLMOrchestrator().run_stage(
                         LLMRequest(
@@ -7303,7 +7242,7 @@ def _run_discovery_universe_monolith(job_id: int):
 
             seeded_candidates = _seed_candidates_from_mentions(mention_records)
             reference_seeded_candidates = _seed_candidates_from_reference_urls(
-                profile.reference_company_urls or []
+                profile.comparator_seed_urls or []
             )
             benchmark_seeded_candidates: list[dict[str, Any]] = []
             if _should_add_wealth_benchmark_seeds(profile, segment_hints, mention_records):
@@ -8053,26 +7992,26 @@ def _run_discovery_universe_monolith(job_id: int):
                     "screen_result:pass_enterprise_b2b" if passed_gate else "screen_result:reject_enterprise_b2b"
                 )
                 tags_custom = _dedupe_strings(tags_custom)
-                candidate_lane_types = _dedupe_strings(
+                candidate_scope_buckets = _dedupe_strings(
                     [
-                        str((origin.get("metadata") or {}).get("lane_type") or "").strip().lower()
+                        str((origin.get("metadata") or {}).get("scope_bucket") or "").strip().lower()
                         for origin in (entity.get("origins") or [])
                         if isinstance(origin, dict)
                         and isinstance(origin.get("metadata"), dict)
-                        and str((origin.get("metadata") or {}).get("lane_type") or "").strip()
+                        and str((origin.get("metadata") or {}).get("scope_bucket") or "").strip()
                     ]
                     + [
-                        str(query_lane_map.get(str((origin.get("metadata") or {}).get("query_id") or "")) or "").strip().lower()
+                        str(scope_bucket_map.get(str((origin.get("metadata") or {}).get("query_id") or "")) or "").strip().lower()
                         for origin in (entity.get("origins") or [])
                         if isinstance(origin, dict)
                         and isinstance(origin.get("metadata"), dict)
-                        and str(query_lane_map.get(str((origin.get("metadata") or {}).get("query_id") or "")) or "").strip()
+                        and str(scope_bucket_map.get(str((origin.get("metadata") or {}).get("query_id") or "")) or "").strip()
                     ]
                     + [
-                        str(reason.get("lane_type") or "").strip().lower()
+                        str(reason.get("scope_bucket") or "").strip().lower()
                         for reason in normalized_reasons
                         if isinstance(reason, dict)
-                        and str(reason.get("lane_type") or "").strip()
+                        and str(reason.get("scope_bucket") or "").strip()
                     ]
                 )
 
@@ -8283,8 +8222,7 @@ def _run_discovery_universe_monolith(job_id: int):
                         "aliases": entity.get("alias_names") or [],
                         "merge_rationale": entity.get("merge_reasons") or [],
                         "origin_types": entity.get("origin_types") or [],
-                        "lane_types": candidate_lane_types,
-                        "query_lane_types": candidate_lane_types,
+                        "scope_buckets": candidate_scope_buckets,
                         "registry_identity": entity.get("registry_identity") if isinstance(entity.get("registry_identity"), dict) else {},
                         "industry_signature": entity.get("industry_signature") if isinstance(entity.get("industry_signature"), dict) else {},
                         "registry_neighbors_with_first_party_website_count": registry_neighbors_with_first_party_website_count,
@@ -8881,11 +8819,21 @@ def stage_seed_ingest(self, job_id: int):
             raise RuntimeError("Job not found")
         workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
         profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == job.workspace_id).first()
-        search_lanes = (
-            db.query(SearchLane)
-            .filter(SearchLane.workspace_id == job.workspace_id)
-            .order_by(SearchLane.lane_type.asc(), SearchLane.id.asc())
-            .all()
+        company_context_pack = (
+            db.query(CompanyContextPack)
+            .filter(CompanyContextPack.workspace_id == job.workspace_id)
+            .first()
+        )
+        from app.services.company_context import derive_discovery_scope_hints, normalize_expansion_brief
+
+        scope_hints = (
+            derive_discovery_scope_hints(company_context_pack, profile)
+            if company_context_pack and profile
+            else {}
+        )
+        scope_review_confirmed = bool(
+            company_context_pack
+            and normalize_expansion_brief(company_context_pack.expansion_brief_json or {}).get("confirmed_at")
         )
         if not workspace or not profile:
             raise RuntimeError("Missing workspace/profile data")
@@ -8921,7 +8869,8 @@ def stage_seed_ingest(self, job_id: int):
             {
                 "workspace_id": job.workspace_id,
                 "profile_ready": bool(profile),
-                "search_lanes_ready": bool(search_lanes),
+                "scope_review_ready": scope_review_confirmed,
+                "scope_hints_ready": bool(scope_hints),
                 "buyer_employee_estimate": buyer_employee_estimate,
                 "pre_rerun_quality_audit_run_id": previous_run_id,
                 "pre_rerun_quality_validation_ready": pre_rerun_quality_validation_ready,
@@ -9515,10 +9464,10 @@ def _extract_reference_tokens(profile: CompanyProfile | None) -> set[str]:
     urls = []
     if profile.buyer_company_url:
         urls.append(profile.buyer_company_url)
-    if profile.reference_company_urls:
-        urls.extend(profile.reference_company_urls)
-    if profile.reference_evidence_urls:
-        urls.extend(profile.reference_evidence_urls)
+    if profile.comparator_seed_urls:
+        urls.extend(profile.comparator_seed_urls)
+    if profile.supporting_evidence_urls:
+        urls.extend(profile.supporting_evidence_urls)
 
     for url in urls:
         domain = normalize_domain(url)

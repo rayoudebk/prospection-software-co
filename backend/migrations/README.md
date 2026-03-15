@@ -24,13 +24,13 @@ docker-compose exec backend python -m migrations.migrate_canonical_entities
 
 ## migrate_remove_legacy_taxonomy_v1.py
 
-Removes the deprecated taxonomy schema after search lanes are in place.
+Removes the deprecated taxonomy schema after scope review is in place.
 
 ### What it does:
 
-1. Ensures `buyer_thesis_packs` and `search_lanes` exist
-2. Backfills missing thesis/search-lane data for older workspaces
-3. Normalizes `decision_policy_json` to use `search_lanes`
+1. Ensures `company_context_packs` exist
+2. Backfills missing company-context data for older workspaces
+3. Normalizes `decision_policy_json` to use `scope_review`
 4. Drops `brick_mappings`
 5. Drops `brick_taxonomies`
 6. Drops `vendors.tags_vertical`
@@ -211,21 +211,19 @@ cd backend
 python -m migrations.migrate_external_search_persistence_v1
 ```
 
-## migrate_thesis_sourcing_v1.py
+## migrate_company_context_backfill_v1.py
 
-Adds the thesis-first sourcing tables and backfills existing workspaces.
+Adds the company-context sourcing table and backfills existing workspaces.
 
 ### What it does:
 
-1. Creates `buyer_thesis_packs`
-2. Creates `search_lanes`
-3. Backfills missing thesis packs from `company_profiles`
-4. Backfills missing `core` and `adjacent` search lanes from the generated thesis pack
-5. Preserves existing thesis/search-lane rows if they already contain data
+1. Creates `company_context_packs`
+2. Backfills missing company-context packs from `company_profiles`
+3. Preserves existing company-context rows if they already contain data
 
 ### How to run:
 
 ```bash
 cd backend
-python -m migrations.migrate_thesis_sourcing_v1
+python -m migrations.migrate_company_context_backfill_v1
 ```

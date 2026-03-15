@@ -11,11 +11,12 @@ import app.models  # noqa: F401
 from app.api import workspaces
 from app.models.base import Base
 from app.models.job import Job, JobProvider, JobState, JobType
+from app.models.company_context import CompanyContextPack
 from app.models.workspace import CompanyProfile
 
 
 def _build_test_client(tmp_path: Path):
-    db_path = tmp_path / "thesis-pack-test.sqlite3"
+    db_path = tmp_path / "company-context-test.sqlite3"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", future=True)
     session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -44,12 +45,8 @@ def _seed_company_profile(session_maker: async_sessionmaker[AsyncSession], works
             )
             profile = result.scalar_one()
             profile.buyer_company_url = "https://acme.example.com"
-            profile.generated_context_summary = (
-                "Acme is a SaaS fund operations workflow platform with implementation services "
-                "and API integrations for private equity and fund teams."
-            )
-            profile.reference_company_urls = ["https://comp-one.example.com"]
-            profile.reference_evidence_urls = ["https://acme.example.com/customers"]
+            profile.comparator_seed_urls = ["https://comp-one.example.com"]
+            profile.supporting_evidence_urls = ["https://acme.example.com/customers"]
             profile.context_pack_markdown = "# Acme\n\nPortfolio analytics and reporting for fund operations teams."
             profile.product_pages_found = 4
             profile.context_pack_json = {
@@ -97,7 +94,17 @@ def _seed_company_profile(session_maker: async_sessionmaker[AsyncSession], works
     asyncio.run(seed())
 
 
-def test_thesis_pack_bootstrap_update_and_adjustment_contract(tmp_path: Path):
+def test_company_context_bootstrap_update_and_adjustment_contract(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context._reason_market_map_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
     client, session_maker = _build_test_client(tmp_path)
 
     create_response = client.post("/workspaces", json={"name": "Acme sourcing", "region_scope": "US"})
@@ -105,48 +112,40 @@ def test_thesis_pack_bootstrap_update_and_adjustment_contract(tmp_path: Path):
     workspace_id = create_response.json()["id"]
     _seed_company_profile(session_maker, workspace_id)
 
-    thesis_response = client.get(f"/workspaces/{workspace_id}/thesis-pack")
-    assert thesis_response.status_code == 200
-    thesis_payload = thesis_response.json()
-    assert thesis_payload["summary"]
-    assert thesis_payload["source_pills"]
-    assert thesis_payload["buyer_evidence"]["status"] == "sufficient"
-    assert any(claim["section"] == "core_capability" for claim in thesis_payload["claims"])
-    assert "market_map_brief" in thesis_payload
-    assert "taxonomy_nodes" in thesis_payload
-    assert "lens_seeds" in thesis_payload
+    company_context_response = client.get(f"/workspaces/{workspace_id}/company-context")
+    assert company_context_response.status_code == 200
+    company_context_payload = company_context_response.json()
+    assert company_context_payload["market_map_brief"]["source_summary"]
+    assert company_context_payload["source_documents"]
+    assert company_context_payload["buyer_evidence"]["status"] == "sufficient"
+    assert company_context_payload["graph_status"] in {"success", "not_configured", "failed"}
+    assert "market_map_brief" in company_context_payload
+    assert "expansion_brief" in company_context_payload
+    assert "taxonomy_nodes" in company_context_payload
+    assert "lens_seeds" in company_context_payload
+    assert any(item["label"] == "Northwind Capital" for item in company_context_payload["expansion_brief"]["named_account_anchors"])
 
-    first_claim = thesis_payload["claims"][0]
-    updated_claims = [
-        {
-            **claim,
-            "user_status": "confirmed" if claim["id"] == first_claim["id"] else claim["user_status"],
-        }
-        for claim in thesis_payload["claims"]
-    ]
     patch_response = client.patch(
-        f"/workspaces/{workspace_id}/thesis-pack",
-        json={"claims": updated_claims, "confirmed": True},
+        f"/workspaces/{workspace_id}/company-context",
+        json={"confirmed": True},
     )
     assert patch_response.status_code == 200
     patched_payload = patch_response.json()
-    patched_first_claim = next(claim for claim in patched_payload["claims"] if claim["id"] == first_claim["id"])
-    assert patched_first_claim["user_status"] == "confirmed"
     assert patched_payload["confirmed_at"] is not None
 
     taxonomy_patch_response = client.patch(
-        f"/workspaces/{workspace_id}/thesis-pack",
+        f"/workspaces/{workspace_id}/company-context",
         json={
             "taxonomy_nodes": [
                 *(
                     [
                         {
-                            **patched_payload["taxonomy_nodes"][0],
+                            **company_context_payload["taxonomy_nodes"][0],
                             "phrase": "Private equity operations team",
                             "aliases": ["fund operations team", "PE ops"],
                         }
                     ]
-                    if patched_payload["taxonomy_nodes"]
+                    if company_context_payload["taxonomy_nodes"]
                     else [
                         {
                             "id": "taxonomy_manual_customer",
@@ -169,76 +168,93 @@ def test_thesis_pack_bootstrap_update_and_adjustment_contract(tmp_path: Path):
         for node in taxonomy_payload["taxonomy_nodes"]
     )
 
-    adjustment_response = client.post(
-        f"/workspaces/{workspace_id}/thesis-pack:apply-adjustment",
-        json={
-            "operations": [
-                {"op": "add_claim", "section": "adjacent_capability", "value": "Voting rights workflow"},
-                {"op": "add_open_question", "value": "What company-size window matters most?"},
-            ]
+def test_scope_review_contract_updates_and_confirms_scope(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context._reason_market_map_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
         },
     )
-    assert adjustment_response.status_code == 200
-    adjustment_payload = adjustment_response.json()
-    assert adjustment_payload["applied_operations"]
-    assert any(
-        claim["value"] == "Voting rights workflow"
-        for claim in adjustment_payload["thesis_pack"]["claims"]
+    monkeypatch.setattr(
+        "app.services.company_context.get_settings",
+        lambda: type("S", (), {
+            "gemini_api_key": "",
+            "openai_api_key": "",
+            "anthropic_api_key": "",
+        })(),
     )
-    assert "What company-size window matters most?" in adjustment_payload["thesis_pack"]["open_questions"]
 
-
-def test_search_lanes_contract_supports_patch_and_confirm(tmp_path: Path):
     client, session_maker = _build_test_client(tmp_path)
 
-    create_response = client.post("/workspaces", json={"name": "Lane workspace", "region_scope": "US"})
+    create_response = client.post("/workspaces", json={"name": "Scope workspace", "region_scope": "EU+UK"})
     assert create_response.status_code == 200
     workspace_id = create_response.json()["id"]
     _seed_company_profile(session_maker, workspace_id)
 
-    lanes_response = client.get(f"/workspaces/{workspace_id}/search-lanes")
-    assert lanes_response.status_code == 200
-    lanes_payload = lanes_response.json()
-    assert {lane["lane_type"] for lane in lanes_payload["lanes"]} == {"core", "adjacent"}
+    scope_response = client.get(f"/workspaces/{workspace_id}/scope-review")
+    assert scope_response.status_code == 200
+    scope_payload = scope_response.json()
+    assert scope_payload["source_capabilities"]
+    assert scope_payload["named_account_anchors"]
 
-    patched_lanes = []
-    for lane in lanes_payload["lanes"]:
-        if lane["lane_type"] == "core":
-            patched_lanes.append(
-                {
-                    **lane,
-                    "capabilities": ["Portfolio analytics", "Fund reporting"],
-                    "must_include_terms": ["private equity", "SaaS"],
-                }
-            )
-        else:
-            patched_lanes.append(
-                {
-                    **lane,
-                    "capabilities": ["Voting rights workflow"],
-                    "must_exclude_terms": ["ERP"],
-                }
-            )
+    source_capability_id = scope_payload["source_capabilities"][0]["id"]
+    named_account_id = scope_payload["named_account_anchors"][0]["id"]
 
     patch_response = client.patch(
-        f"/workspaces/{workspace_id}/search-lanes",
-        json={"lanes": patched_lanes},
+        f"/workspaces/{workspace_id}/scope-review",
+        json={
+            "decisions": [
+                {"id": source_capability_id, "status": "user_removed"},
+                {"id": named_account_id, "status": "user_deprioritized"},
+            ]
+        },
     )
     assert patch_response.status_code == 200
     patched_payload = patch_response.json()
-    core_lane = next(lane for lane in patched_payload["lanes"] if lane["lane_type"] == "core")
-    assert "Fund reporting" in core_lane["capabilities"]
+    patched_source = next(item for item in patched_payload["source_capabilities"] if item["id"] == source_capability_id)
+    patched_account = next(item for item in patched_payload["named_account_anchors"] if item["id"] == named_account_id)
+    assert patched_source["status"] == "user_removed"
+    assert patched_account["status"] == "user_deprioritized"
 
-    confirm_response = client.post(f"/workspaces/{workspace_id}/search-lanes:confirm")
+    confirm_response = client.post(f"/workspaces/{workspace_id}/scope-review:confirm")
     assert confirm_response.status_code == 200
     confirmed_payload = confirm_response.json()
-    assert all(lane["status"] == "confirmed" for lane in confirmed_payload["lanes"])
+    assert confirmed_payload["confirmed_at"] is not None
 
     gates_response = client.get(f"/workspaces/{workspace_id}/gates")
     assert gates_response.status_code == 200
-    gates_payload = gates_response.json()
-    assert gates_payload["context_pack"] is True
-    assert gates_payload["search_lanes"] is True
+    assert gates_response.json()["scope_review"] is True
+
+
+def test_company_context_uses_graph_ref_from_cache_when_column_empty(tmp_path: Path):
+    pack = CompanyContextPack(
+        id=1,
+        workspace_id=42,
+        company_context_graph_ref=None,
+        company_context_graph_cache_json={
+            "graph_ref": "workspace-test-acme",
+            "source_documents": [],
+            "nodes": [],
+            "edges": [],
+        },
+        graph_sync_status="success",
+        graph_stats_json={},
+    )
+    profile = CompanyProfile(
+        workspace_id=42,
+        buyer_company_url="https://acme.example.com",
+        comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
+        context_pack_json={},
+    )
+
+    payload = workspaces._company_context_payload_from_pack(pack, profile=profile)
+    assert payload["company_context_graph_ref"] == "workspace-test-acme"
 
 
 def test_workspace_region_update_keeps_profile_geo_scope_in_sync(tmp_path: Path):
@@ -280,42 +296,54 @@ def test_workspace_region_update_keeps_profile_geo_scope_in_sync(tmp_path: Path)
     assert profile.geo_scope["exclude_countries"] == ["RU"]
 
 
-def test_investment_thesis_only_supports_context_gate_and_lane_bootstrap(tmp_path: Path):
-    client, _session_maker = _build_test_client(tmp_path)
+def test_company_context_response_preserves_expansion_inputs():
+    from app.api.workspaces import _company_context_response_from_payload
 
-    create_response = client.post("/workspaces", json={"name": "Thesis-only workspace", "region_scope": "EU+UK"})
-    assert create_response.status_code == 200
-    workspace_id = create_response.json()["id"]
-
-    patch_response = client.patch(
-        f"/workspaces/{workspace_id}/context-pack",
-        json={
-            "manual_brief_text": (
-                "I want to invest in companies in Europe that provide software to healthcare actors "
-                "such as hospitals and doctors, sold primarily as licences with no SaaS, under $10M in revenue, "
-                "with 30-50 employees."
-            )
+    payload = {
+        "id": 1,
+        "workspace_id": 7,
+        "graph_status": "success",
+        "graph_stats": {},
+        "deep_research_handoff": {"graph_ref": "workspace-7-4tpm"},
+        "source_documents": [],
+        "context_pack_v2": {"sites": []},
+        "expansion_inputs": [
+            {"name": "CWAN", "website": "https://cwan.com"},
+            {"name": "Wealth Dynamix", "website": "https://wealth-dynamix.com"},
+        ],
+        "taxonomy_nodes": [],
+        "taxonomy_edges": [],
+        "lens_seeds": [],
+        "market_map_brief": {
+            "source_company": {"name": "4TPM", "website": "https://4tpm.fr"},
+            "source_summary": "Summary",
+            "customer_nodes": [],
+            "workflow_nodes": [],
+            "capability_nodes": [],
+            "delivery_or_integration_nodes": [],
+            "named_customer_proof": [],
+            "partner_integration_proof": [],
+            "secondary_evidence_proof": [],
+            "customer_partner_corroboration": [],
+            "directory_category_context": [],
+            "other_secondary_context": [],
+            "active_lenses": [],
+            "adjacency_hypotheses": [],
+            "strongest_evidence_buckets": [],
+            "confidence_gaps": [],
+            "open_questions": [],
+            "unknowns_not_publicly_resolvable": [],
+            "crawl_coverage": {},
+            "confirmed_at": None,
         },
-    )
-    assert patch_response.status_code == 200
-    assert patch_response.json()["buyer_company_url"] is None
-    assert patch_response.json()["manual_brief_text"]
-    assert patch_response.json()["generated_context_summary"] is None
+    }
 
-    thesis_response = client.post(f"/workspaces/{workspace_id}/thesis-pack:refresh")
-    assert thesis_response.status_code == 200
-    thesis_payload = thesis_response.json()
-    assert thesis_payload["summary"]
-    assert any(claim["section"] == "core_capability" for claim in thesis_payload["claims"])
+    response = _company_context_response_from_payload(payload)
 
-    gates_response = client.get(f"/workspaces/{workspace_id}/gates")
-    assert gates_response.status_code == 200
-    assert gates_response.json()["context_pack"] is True
-
-    lanes_response = client.get(f"/workspaces/{workspace_id}/search-lanes")
-    assert lanes_response.status_code == 200
-    core_lane = next(lane for lane in lanes_response.json()["lanes"] if lane["lane_type"] == "core")
-    assert core_lane["capabilities"]
+    assert response.deep_research_handoff["graph_ref"] == "workspace-7-4tpm"
+    assert len(response.expansion_inputs) == 2
+    assert response.expansion_inputs[0]["name"] == "CWAN"
+    assert response.expansion_inputs[1]["name"] == "Wealth Dynamix"
 
 
 def test_context_pack_refresh_runs_inline_when_enqueue_fails(tmp_path: Path):

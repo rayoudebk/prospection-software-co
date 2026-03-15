@@ -52,35 +52,22 @@ def test_closed_world_candidate_validation_drops_unknown_url():
     assert stats["dropped_missing_url"] == 1
 
 
-def test_lane_driven_query_plan_overrides_legacy_brick_hints():
-    search_lanes = [
-        {
-            "lane_type": "core",
-            "title": "Core lane",
-            "capabilities": ["Portfolio analytics", "Fund reporting"],
-            "customer_tags": ["private equity"],
-            "must_include_terms": ["SaaS"],
-            "must_exclude_terms": ["ERP"],
-            "seed_urls": ["https://comp-one.example.com"],
-            "status": "confirmed",
-        },
-        {
-            "lane_type": "adjacent",
-            "title": "Adjacent lane",
-            "capabilities": ["Voting rights workflow"],
-            "customer_tags": ["fund ops"],
-            "must_include_terms": [],
-            "must_exclude_terms": [],
-            "seed_urls": [],
-            "status": "confirmed",
-        },
-    ]
+def test_scope_hints_driven_query_plan_overrides_legacy_brick_hints():
+    scope_hints = {
+        "source_capabilities": ["Portfolio analytics", "Fund reporting"],
+        "adjacent_capabilities": ["Voting rights workflow"],
+        "source_customer_segments": ["private equity"],
+        "adjacent_customer_segments": ["fund ops"],
+        "named_account_anchors": ["Northwind Capital"],
+        "comparator_seed_urls": ["https://comp-one.example.com"],
+        "confirmed": True,
+    }
 
     plan = workspace_tasks._default_discovery_query_plan(
         taxonomy_bricks=[{"name": "Legacy brick"}],
         geo_scope={"region": "US"},
         vertical_focus=["legacy_vertical"],
-        search_lanes=search_lanes,
+        scope_hints=scope_hints,
     )
 
     precision_texts = [entry["query_text"] for entry in plan["precision_queries"]]
@@ -90,7 +77,7 @@ def test_lane_driven_query_plan_overrides_legacy_brick_hints():
     assert all("Legacy brick" not in text for text in precision_texts)
 
     queries, summary = workspace_tasks._build_external_search_queries_from_plan(plan)
-    assert any(query["lane_type"] == "core" for query in queries)
-    assert any(query["lane_type"] == "adjacent" for query in queries)
+    assert any(query["scope_bucket"] == "core" for query in queries)
+    assert any(query["scope_bucket"] == "adjacent" for query in queries)
     assert "private equity" in queries[0]["must_include_terms"]
-    assert summary["lane_types"] == ["core", "adjacent"]
+    assert summary["scope_buckets"] == ["core", "adjacent"]

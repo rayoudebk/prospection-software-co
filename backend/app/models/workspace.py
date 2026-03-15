@@ -26,8 +26,7 @@ class Workspace(Base):
 
     # Relationships
     company_profile = relationship("CompanyProfile", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
-    thesis_pack = relationship("BuyerThesisPack", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
-    search_lanes = relationship("SearchLane", back_populates="workspace", cascade="all, delete-orphan")
+    company_context_pack = relationship("CompanyContextPack", back_populates="workspace", uselist=False, cascade="all, delete-orphan")
     companies = relationship("Company", back_populates="workspace", cascade="all, delete-orphan")
     evidence_items = relationship("SourceEvidence", back_populates="workspace", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="workspace", cascade="all, delete-orphan")
@@ -75,15 +74,13 @@ class CompanyProfile(Base):
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, unique=True)
     
-    # Buyer company
+    # Source company
     buyer_company_url = Column(String(500), nullable=True)
-    manual_brief_text = Column(Text, nullable=True)
-    generated_context_summary = Column(Text, nullable=True)
-    
-    # Reference companies (2-3 examples)
-    reference_company_urls = Column(JSON, default=list)  # ["https://company1.com", ...]
-    reference_evidence_urls = Column(JSON, default=list)  # ["https://vendor.com/blog/case-study", ...]
-    reference_summaries = Column(JSON, default=dict)  # {"url": "summary", ...}
+
+    # Comparator seeds and supporting evidence
+    comparator_seed_urls = Column(JSON, default=list)  # ["https://company1.com", ...]
+    supporting_evidence_urls = Column(JSON, default=list)  # ["https://vendor.com/blog/case-study", ...]
+    comparator_seed_summaries = Column(JSON, default=dict)  # {"url": "summary", ...}
     
     # Geographic scope
     geo_scope = Column(JSON, default=dict)  # {region: "EU+UK", include_countries: [], exclude_countries: []}

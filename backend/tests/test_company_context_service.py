@@ -1,11 +1,14 @@
+import json
+
 from app.models.workspace import CompanyProfile
-from app.services.llm.types import LLMOrchestrationError, ModelAttemptTrace
-from app.services.thesis import (
+from app.services.llm.types import LLMOrchestrationError, LLMResponse, LLMStage, ModelAttemptTrace
+from app.services.company_context import (
     _market_map_reasoning_prompt,
-    apply_thesis_adjustment_operations,
-    bootstrap_thesis_payload,
+    apply_scope_review_decisions,
+    build_company_context_artifacts,
     build_context_pack_v2,
-    derive_search_lane_payloads,
+    derive_discovery_scope_hints,
+    derive_scope_review_payload,
 )
 
 
@@ -13,13 +16,9 @@ def _build_profile() -> CompanyProfile:
     return CompanyProfile(
         workspace_id=1,
         buyer_company_url="https://acme.example.com",
-        generated_context_summary=(
-            "Acme is a SaaS portfolio analytics platform for private equity and fund operations teams. "
-            "The company also offers implementation services and API-based integrations."
-        ),
-        reference_company_urls=["https://comp-one.example.com"],
-        reference_evidence_urls=["https://acme.example.com/customers"],
-        reference_summaries={"https://comp-one.example.com": "Comparable analytics vendor."},
+        comparator_seed_urls=["https://comp-one.example.com"],
+        supporting_evidence_urls=["https://acme.example.com/customers"],
+        comparator_seed_summaries={"https://comp-one.example.com": "Comparable analytics vendor."},
         geo_scope={"region": "US", "include_countries": ["US"], "exclude_countries": ["RU"]},
         context_pack_json={
             "sites": [
@@ -65,111 +64,274 @@ def _build_profile() -> CompanyProfile:
     )
 
 
-def test_bootstrap_thesis_payload_generates_claims_and_source_pills():
-    payload = bootstrap_thesis_payload(_build_profile())
+def test_build_company_context_artifacts_generates_source_documents_and_brief():
+    payload = build_company_context_artifacts(_build_profile())
 
-    assert payload["summary"].startswith("Acme is a SaaS portfolio analytics platform")
     assert payload["source_pills"]
     assert payload["buyer_evidence"]["status"] == "sufficient"
     assert payload["buyer_evidence"]["used_for_inference"] is True
-    sections = {claim["section"] for claim in payload["claims"]}
-    assert "core_capability" in sections
-    assert "adjacent_capability" in sections
-    assert "business_model" in sections
-    assert "customer_profile" in sections
-    assert "geography" in sections
-    renderings = {claim["rendering"] for claim in payload["claims"]}
-    assert "fact" in renderings
-    assert "hypothesis" in renderings
     assert payload["context_pack_v2"]["version"] == "v2"
     assert "taxonomy_nodes" in payload
     assert "market_map_brief" in payload
+    assert "expansion_brief" in payload
+    assert payload["market_map_brief"]["source_summary"]
     assert payload["market_map_brief"]["named_customer_proof"]
     assert payload["lens_seeds"]
 
 
-def test_derive_search_lane_payloads_prefers_core_and_adjacent_claims():
+def test_derive_discovery_scope_hints_prefers_source_and_adjacent_scope():
     profile = _build_profile()
-    thesis_payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
 
-    lanes = derive_search_lane_payloads(thesis_payload, profile)
+    scope_hints = derive_discovery_scope_hints(payload, profile)
 
-    assert len(lanes) == 2
-    by_type = {lane["lane_type"]: lane for lane in lanes}
-    assert "Portfolio analytics" in by_type["core"]["capabilities"]
-    assert "Implementation services" in by_type["adjacent"]["capabilities"]
-    assert by_type["core"]["status"] == "draft"
-    assert "SaaS / subscription software" in by_type["core"]["must_include_terms"]
+    assert "Portfolio analytics" in scope_hints["source_capabilities"]
+    assert "Northwind Capital" in scope_hints["named_account_anchors"]
+    assert scope_hints["confirmed"] is False
 
 
-def test_apply_thesis_adjustment_operations_updates_claims_and_questions():
-    thesis_payload = bootstrap_thesis_payload(_build_profile())
-    first_claim = thesis_payload["claims"][0]
+def test_build_company_context_artifacts_builds_expansion_inputs_from_non_buyer_sites():
+    profile = _build_profile()
+    profile.comparator_seed_urls = []
+    profile.context_pack_json["sites"].append(
+        {
+            "url": "https://comp-one.example.com",
+            "company_name": "Comp One",
+            "summary": "Fund operations workflow software for institutional investors.",
+            "signals": [
+                {
+                    "type": "capability",
+                    "value": "Fund operations workflow",
+                    "source_url": "https://comp-one.example.com/platform",
+                }
+            ],
+            "customer_evidence": [],
+            "pages": [],
+        }
+    )
 
-    adjusted = apply_thesis_adjustment_operations(
-        thesis_payload,
+    payload = build_company_context_artifacts(profile)
+
+    assert len(payload["expansion_inputs"]) == 1
+    expansion_input = payload["expansion_inputs"][0]
+    assert expansion_input["name"] == "Comp One"
+    assert expansion_input["website"] == "https://comp-one.example.com"
+
+
+def test_build_company_context_artifacts_falls_back_when_seed_domains_do_not_match_sites():
+    profile = _build_profile()
+    profile.comparator_seed_urls = ["https://stale.example.com"]
+    profile.context_pack_json["sites"].append(
+        {
+            "url": "https://comp-one.example.com",
+            "company_name": "Comp One",
+            "summary": "Fund operations workflow software for institutional investors.",
+            "signals": [
+                {
+                    "type": "capability",
+                    "value": "Fund operations workflow",
+                    "source_url": "https://comp-one.example.com/platform",
+                }
+            ],
+            "customer_evidence": [],
+            "pages": [],
+        }
+    )
+
+    payload = build_company_context_artifacts(profile)
+
+    assert len(payload["expansion_inputs"]) == 1
+    expansion_input = payload["expansion_inputs"][0]
+    assert expansion_input["name"] == "Comp One"
+    assert expansion_input["website"] == "https://comp-one.example.com"
+
+
+def test_build_company_context_artifacts_derives_expansion_brief_from_comparators():
+    profile = _build_profile()
+    profile.geo_scope = {"region": "EU+UK", "include_countries": ["Belgium"], "exclude_countries": []}
+    profile.context_pack_json["sites"].append(
+        {
+            "url": "https://comp-one.example.com",
+            "company_name": "Comp One",
+            "summary": "Client reporting and proxy voting software for private banks and asset managers.",
+            "signals": [
+                {
+                    "type": "capability",
+                    "value": "Client reporting",
+                    "source_url": "https://comp-one.example.com/reporting",
+                },
+                {
+                    "type": "capability",
+                    "value": "Proxy voting",
+                    "source_url": "https://comp-one.example.com/voting",
+                },
+                {
+                    "type": "customer",
+                    "value": "Private bank",
+                    "source_url": "https://comp-one.example.com/clients",
+                },
+                {
+                    "type": "customer",
+                    "value": "Fund administrator",
+                    "source_url": "https://comp-one.example.com/clients",
+                },
+            ],
+            "customer_evidence": [],
+            "pages": [],
+        }
+    )
+
+    payload = build_company_context_artifacts(profile)
+    expansion = payload["expansion_brief"]
+
+    assert any(item["label"] == "Client reporting" for item in expansion["adjacent_capabilities"])
+    assert any(item["label"] == "Fund administrator" for item in expansion["adjacent_customer_segments"])
+    assert any(item["label"] == "Belgium" for item in expansion["geography_expansions"])
+
+
+def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monkeypatch):
+    profile = _build_profile()
+    profile.geo_scope = {"region": "EU+UK", "include_countries": ["Belgium"], "exclude_countries": []}
+
+    monkeypatch.setattr(
+        "app.services.company_context._reason_market_map_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    monkeypatch.setattr("app.services.company_context.get_settings", lambda: type("S", (), {
+        "gemini_api_key": "x",
+        "openai_api_key": "",
+        "anthropic_api_key": "",
+    })())
+
+    def _fake_run_stage(_self, request):
+        if request.stage == LLMStage.expansion_brief_reasoning:
+            return LLMResponse(
+                text=json.dumps(
+                    {
+                        "adjacent_capabilities": [
+                            {
+                                "label": "Voting rights / proxy voting",
+                                "why_it_matters": "Adjacent governance workflow around securities operations.",
+                                "evidence_urls": ["https://example.com/voting"],
+                                "source_entity_names": ["Comparator A"],
+                                "market_importance": "low",
+                                "operational_centrality": "peripheral",
+                                "confidence": 0.58,
+                            }
+                        ],
+                        "adjacent_customer_segments": [],
+                        "named_account_anchors": [],
+                        "geography_expansions": [],
+                    }
+                ),
+                provider="gemini",
+                model="gemini-2.0-flash",
+            )
+        if request.stage == LLMStage.structured_normalization:
+            return LLMResponse(
+                text=json.dumps(
+                    {
+                        "reasoning_status": "success",
+                        "reasoning_warning": None,
+                        "adjacent_capabilities": [
+                            {
+                                "id": "expansion_voting",
+                                "label": "Voting rights / proxy voting",
+                                "expansion_type": "adjacent_capability",
+                                "status": "hypothesis",
+                                "confidence": 0.58,
+                                "why_it_matters": "Adjacent governance workflow around securities operations.",
+                                "evidence_urls": ["https://example.com/voting"],
+                                "supporting_node_ids": [],
+                                "source_entity_names": ["Comparator A"],
+                                "market_importance": "low",
+                                "operational_centrality": "peripheral",
+                                "priority_tier": "edge_case",
+                            }
+                        ],
+                        "adjacent_customer_segments": [],
+                        "named_account_anchors": [],
+                        "geography_expansions": [],
+                    }
+                ),
+                provider="openai",
+                model="gpt-4.1-mini",
+            )
+        raise AssertionError(f"Unexpected stage: {request.stage}")
+
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator.run_stage", _fake_run_stage)
+
+    payload = build_company_context_artifacts(profile)
+    expansion = payload["expansion_brief"]
+
+    assert expansion["reasoning_status"] == "success"
+    assert expansion["adjacent_capabilities"][0]["label"] == "Voting rights / proxy voting"
+    assert expansion["adjacent_capabilities"][0]["market_importance"] == "low"
+    assert expansion["adjacent_capabilities"][0]["operational_centrality"] == "peripheral"
+    assert expansion["adjacent_capabilities"][0]["priority_tier"] == "edge_case"
+
+
+def test_scope_review_decisions_compile_scope_back_into_discovery_scope_hints():
+    profile = _build_profile()
+    profile.geo_scope = {"region": "EU+UK", "include_countries": ["Belgium"], "exclude_countries": []}
+    profile.context_pack_json["sites"].append(
+        {
+            "url": "https://comp-one.example.com",
+            "company_name": "Comp One",
+            "summary": "Client reporting and proxy voting software for private banks and fund administrators.",
+            "signals": [
+                {
+                    "type": "capability",
+                    "value": "Proxy voting",
+                    "source_url": "https://comp-one.example.com/voting",
+                },
+                {
+                    "type": "customer",
+                    "value": "Fund administrator",
+                    "source_url": "https://comp-one.example.com/clients",
+                },
+            ],
+            "customer_evidence": [],
+            "pages": [],
+        }
+    )
+
+    payload = build_company_context_artifacts(profile)
+    scope_review = derive_scope_review_payload(payload, profile)
+    source_capability = next(item for item in scope_review["source_capabilities"] if item["label"] == "Portfolio analytics")
+    adjacent_capability = next(
+        item for item in scope_review["adjacent_capabilities"] if item["label"] == "Proxy voting"
+    )
+
+    adjusted = apply_scope_review_decisions(
+        payload,
         [
-            {"op": "confirm_claim", "claim_id": first_claim["id"], "user_status": "confirmed"},
-            {"op": "add_claim", "section": "adjacent_capability", "value": "Voting rights workflow"},
-            {"op": "remove_claim", "claim_id": first_claim["id"]},
-            {"op": "add_open_question", "value": "What company-size window matters most?"},
+            {"id": source_capability["id"], "status": "user_removed"},
+            {"id": adjacent_capability["id"], "status": "user_kept"},
         ],
     )
 
-    by_id = {claim["id"]: claim for claim in adjusted["claims"]}
-    assert by_id[first_claim["id"]]["user_status"] == "removed"
-    assert any(claim["value"] == "Voting rights workflow" for claim in adjusted["claims"])
-    assert "What company-size window matters most?" in adjusted["open_questions"]
-    assert adjusted["applied_operations"]
+    scope_hints = derive_discovery_scope_hints(adjusted, profile)
+    adjusted_node = next(node for node in adjusted["taxonomy_nodes"] if node["id"] == source_capability["id"])
+
+    assert adjusted_node["scope_status"] == "removed"
+    assert "Proxy voting" in scope_hints["adjacent_capabilities"]
+    assert "Fund administrator" in scope_hints["adjacent_customer_segments"]
 
 
-def test_bootstrap_thesis_payload_supports_investment_thesis_only():
-    profile = CompanyProfile(
-        workspace_id=2,
-        buyer_company_url=None,
-        manual_brief_text=(
-            "I want to invest in companies in Europe that provide software to healthcare actors "
-            "(hospitals, doctors, etc) as licences with no SaaS, under $10M in revenue, and with 30-50 employees."
-        ),
-        reference_company_urls=[],
-        reference_evidence_urls=[],
-        reference_summaries={},
-        geo_scope={},
-        context_pack_json={},
-        product_pages_found=0,
-    )
-
-    payload = bootstrap_thesis_payload(profile)
-    claims_by_section = {}
-    for claim in payload["claims"]:
-        claims_by_section.setdefault(claim["section"], []).append(claim["value"])
-
-    assert "Software for healthcare actors" in claims_by_section["core_capability"]
-    assert "License-based software" in claims_by_section["business_model"]
-    assert "Exclude SaaS-first software companies" in claims_by_section["exclude_constraint"]
-    assert "Prefer companies under $10M revenue" in claims_by_section["include_constraint"]
-    assert "Employee estimate: 30-50 employees" in claims_by_section["size_signal"]
-    assert "Primary sourcing region: Europe" in claims_by_section["geography"]
-    assert "market_map_brief" in payload
-    assert isinstance(payload["market_map_brief"]["open_questions"], list)
-
-    lanes = derive_search_lane_payloads(payload, profile)
-    core_lane = next(lane for lane in lanes if lane["lane_type"] == "core")
-    assert "Software for healthcare actors" in core_lane["capabilities"]
-    assert core_lane["title"].startswith("Core: ")
-
-
-def test_bootstrap_thesis_payload_ignores_comparator_context_for_empty_buyer_site():
+def test_build_company_context_artifacts_ignores_comparator_context_for_empty_buyer_site():
     profile = CompanyProfile(
         workspace_id=3,
         buyer_company_url="https://4tpm.fr/",
-        generated_context_summary=(
-            "CWAN targets asset managers and wealth managers with a cloud-native SaaS platform "
-            "and managed services."
-        ),
-        reference_company_urls=["https://cwan.com/"],
-        reference_evidence_urls=[],
-        reference_summaries={
+        comparator_seed_urls=["https://cwan.com/"],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={
             "https://cwan.com/": (
                 "CWAN serves institutional investors with cloud deployment, integrations, "
                 "and implementation services."
@@ -220,19 +382,15 @@ def test_bootstrap_thesis_payload_ignores_comparator_context_for_empty_buyer_sit
         product_pages_found=0,
     )
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
 
     assert payload["buyer_evidence"]["status"] == "insufficient"
     assert payload["buyer_evidence"]["used_for_inference"] is False
-    assert payload["summary"].startswith("Buyer website crawled, but no first-party product or customer evidence was extracted yet.")
-    assert not any(claim["section"] == "customer_profile" for claim in payload["claims"])
-    assert not any(claim["section"] == "business_model" for claim in payload["claims"])
-    assert not any(claim["section"] == "deployment_model" for claim in payload["claims"])
-    assert not any(claim["section"] == "core_capability" for claim in payload["claims"])
-    assert any(
-        claim["section"] == "geography" and claim["value"] == "Primary sourcing region: EU+UK"
-        for claim in payload["claims"]
+    assert payload["market_map_brief"]["source_summary"].startswith(
+        "Buyer website crawled, but no first-party product or customer evidence was extracted yet."
     )
+    assert payload["market_map_brief"]["customer_nodes"] == []
+    assert payload["market_map_brief"]["capability_nodes"] == []
 
 
 def test_build_context_pack_v2_keeps_high_signal_job_pages():
@@ -322,14 +480,13 @@ def test_build_context_pack_v2_filters_noisy_customer_evidence_and_uses_raw_text
     assert "portfolio reporting" in [phrase.lower() for phrase in context_pack["extracted_raw_phrases"]]
 
 
-def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
+def test_build_company_context_artifacts_builds_taxonomy_from_spa_style_phrases():
     profile = CompanyProfile(
         workspace_id=4,
         buyer_company_url="https://4tpm.fr/",
-        generated_context_summary="4TPM supports wealth management workflows and API integrations.",
-        reference_company_urls=[],
-        reference_evidence_urls=[],
-        reference_summaries={},
+        comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
         geo_scope={"region": "EU+UK", "include_countries": [], "exclude_countries": []},
         context_pack_json={
             "version": "v2",
@@ -379,7 +536,7 @@ def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
         product_pages_found=4,
     )
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
     taxonomy_by_layer = {}
     for node in payload["taxonomy_nodes"]:
         taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
@@ -400,14 +557,13 @@ def test_bootstrap_thesis_payload_builds_taxonomy_from_spa_style_phrases():
     assert "Bank" not in taxonomy_by_layer["customer_archetype"]
 
 
-def test_bootstrap_thesis_payload_scopes_market_map_to_buyer_site():
+def test_build_company_context_artifacts_scopes_market_map_to_buyer_site():
     profile = CompanyProfile(
         workspace_id=9,
         buyer_company_url="https://4tpm.fr/",
-        generated_context_summary="",
-        reference_company_urls=["https://wealth-dynamix.com/"],
-        reference_evidence_urls=[],
-        reference_summaries={},
+                comparator_seed_urls=["https://wealth-dynamix.com/"],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
         geo_scope={"region": "EU+UK", "include_countries": [], "exclude_countries": []},
         context_pack_json={
             "version": "v2",
@@ -465,7 +621,7 @@ def test_bootstrap_thesis_payload_scopes_market_map_to_buyer_site():
         product_pages_found=4,
     )
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
     taxonomy_by_layer = {}
     for node in payload["taxonomy_nodes"]:
         taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
@@ -476,14 +632,13 @@ def test_bootstrap_thesis_payload_scopes_market_map_to_buyer_site():
     assert "Integrate data from all sources with" not in taxonomy_by_layer["capability"]
 
 
-def test_bootstrap_thesis_payload_promotes_rendered_product_features_into_cleaner_capabilities():
+def test_build_company_context_artifacts_promotes_rendered_product_features_into_cleaner_capabilities():
     profile = CompanyProfile(
         workspace_id=10,
         buyer_company_url="https://4tpm.fr/platform/front-office",
-        generated_context_summary="",
-        reference_company_urls=[],
-        reference_evidence_urls=[],
-        reference_summaries={},
+                comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
         geo_scope={},
         context_pack_json={
             "sites": [
@@ -530,7 +685,7 @@ def test_bootstrap_thesis_payload_promotes_rendered_product_features_into_cleane
         product_pages_found=1,
     )
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
     taxonomy_by_layer: dict[str, list[str]] = {}
     for node in payload["taxonomy_nodes"]:
         taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
@@ -551,10 +706,9 @@ def test_taxonomy_ranking_prefers_broader_capability_clusters():
     profile = CompanyProfile(
         workspace_id=16,
         buyer_company_url="https://4tpm.fr/platform/front-office",
-        generated_context_summary="",
-        reference_company_urls=[],
-        reference_evidence_urls=[],
-        reference_summaries={},
+                comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
         geo_scope={},
         context_pack_json={
             "sites": [
@@ -586,7 +740,7 @@ def test_taxonomy_ranking_prefers_broader_capability_clusters():
         product_pages_found=1,
     )
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
     capability_phrases = [
         node["phrase"] for node in payload["taxonomy_nodes"] if node["layer"] == "capability"
     ]
@@ -599,14 +753,13 @@ def test_taxonomy_ranking_prefers_broader_capability_clusters():
     )
 
 
-def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monkeypatch):
+def test_build_company_context_artifacts_uses_market_map_reasoning_when_available(monkeypatch):
     profile = CompanyProfile(
         workspace_id=11,
         buyer_company_url="https://4tpm.fr/platform/front-office",
-        generated_context_summary="",
-        reference_company_urls=[],
-        reference_evidence_urls=[],
-        reference_summaries={},
+                comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
         geo_scope={},
         context_pack_json={
             "sites": [
@@ -692,9 +845,9 @@ def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monke
                 )
             )
 
-    monkeypatch.setattr("app.services.thesis.LLMOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator", _FakeOrchestrator)
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
 
     assert payload["market_map_brief"]["source_summary"].startswith("4TPM appears to sell front-office wealth management capabilities")
     assert payload["market_map_brief"]["reasoning_status"] == "success"
@@ -715,14 +868,13 @@ def test_bootstrap_thesis_payload_uses_market_map_reasoning_when_available(monke
     assert len(payload["market_map_brief"]["open_questions"]) == 1
 
 
-def test_bootstrap_thesis_payload_builds_hublo_style_market_map_layers():
+def test_build_company_context_artifacts_builds_hublo_style_market_map_layers():
     profile = CompanyProfile(
         workspace_id=13,
         buyer_company_url="https://www.hublo.com/en",
-        generated_context_summary="",
-        reference_company_urls=[],
-        reference_evidence_urls=[],
-        reference_summaries={},
+                comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
         geo_scope={},
         context_pack_json={
             "version": "v2",
@@ -828,7 +980,7 @@ def test_bootstrap_thesis_payload_builds_hublo_style_market_map_layers():
         product_pages_found=2,
     )
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
     taxonomy_by_layer: dict[str, list[str]] = {}
     for node in payload["taxonomy_nodes"]:
         taxonomy_by_layer.setdefault(node["layer"], []).append(node["phrase"])
@@ -846,14 +998,13 @@ def test_bootstrap_thesis_payload_builds_hublo_style_market_map_layers():
     )
 
 
-def test_bootstrap_thesis_payload_marks_degraded_reasoning_when_llm_fails(monkeypatch):
+def test_build_company_context_artifacts_marks_degraded_reasoning_when_llm_fails(monkeypatch):
     profile = CompanyProfile(
         workspace_id=12,
         buyer_company_url="https://4tpm.fr/platform/front-office",
-        generated_context_summary="",
-        reference_company_urls=[],
-        reference_evidence_urls=[],
-        reference_summaries={},
+                comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
         geo_scope={},
         context_pack_json={
             "sites": [
@@ -900,22 +1051,21 @@ def test_bootstrap_thesis_payload_marks_degraded_reasoning_when_llm_fails(monkey
                 ],
             )
 
-    monkeypatch.setattr("app.services.thesis.LLMOrchestrator", _FailingOrchestrator)
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator", _FailingOrchestrator)
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
 
     assert payload["market_map_brief"]["reasoning_status"] == "degraded"
     assert "deterministic fallback" in str(payload["market_map_brief"]["reasoning_warning"] or "").lower()
 
 
-def test_bootstrap_thesis_payload_keeps_reasoned_questions_capped(monkeypatch):
+def test_build_company_context_artifacts_keeps_reasoned_questions_capped(monkeypatch):
     profile = CompanyProfile(
         workspace_id=14,
         buyer_company_url="https://4tpm.fr/platform/front-office",
-        generated_context_summary="",
-        reference_company_urls=[],
-        reference_evidence_urls=[],
-        reference_summaries={},
+                comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
         geo_scope={},
         context_pack_json={
             "sites": [
@@ -980,9 +1130,9 @@ def test_bootstrap_thesis_payload_keeps_reasoned_questions_capped(monkeypatch):
                 )
             )
 
-    monkeypatch.setattr("app.services.thesis.LLMOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator", _FakeOrchestrator)
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
 
     assert payload["market_map_brief"]["reasoning_status"] == "success"
     assert payload["market_map_brief"]["open_questions"] == [
@@ -991,14 +1141,13 @@ def test_bootstrap_thesis_payload_keeps_reasoned_questions_capped(monkeypatch):
     ]
 
 
-def test_bootstrap_thesis_payload_filters_strategy_style_reasoned_questions(monkeypatch):
+def test_build_company_context_artifacts_filters_strategy_style_reasoned_questions(monkeypatch):
     profile = CompanyProfile(
         workspace_id=15,
         buyer_company_url="https://4tpm.fr/platform/front-office",
-        generated_context_summary="",
-        reference_company_urls=[],
-        reference_evidence_urls=[],
-        reference_summaries={},
+                comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
         geo_scope={},
         context_pack_json={
             "sites": [
@@ -1062,9 +1211,9 @@ def test_bootstrap_thesis_payload_filters_strategy_style_reasoned_questions(monk
                 )
             )
 
-    monkeypatch.setattr("app.services.thesis.LLMOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator", _FakeOrchestrator)
 
-    payload = bootstrap_thesis_payload(profile)
+    payload = build_company_context_artifacts(profile)
 
     assert payload["market_map_brief"]["reasoning_status"] == "success"
     assert payload["market_map_brief"]["open_questions"] == [

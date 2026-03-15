@@ -43,7 +43,7 @@ CATALOG: List[ReasonCode] = [
     ReasonCode("CAU-07", "caution", "Entity/group ambiguity.", "conflicting legal identity evidence", "Corporate structure needs clarification.", ["registry", "about/legal pages"]),
     ReasonCode("REJ-01", "reject", "B2C/retail focus mismatch.", "consumer-focused evidence + no institutional proof", "Primarily consumer-focused; outside scope.", ["consumer pricing", "app listing"]),
     ReasonCode("REJ-02", "reject", "Consultancy/dev shop profile.", "services-led evidence + no product depth", "Services-led provider, not a product target.", ["services page", "portfolio page"]),
-    ReasonCode("REJ-03", "reject", "Out-of-vertical.", "primary domain outside target scope", "Primary domain outside target thesis.", ["product pages", "directory taxonomy"]),
+    ReasonCode("REJ-03", "reject", "Out-of-vertical.", "primary domain outside target scope", "Primary domain outside target company context.", ["product pages", "directory taxonomy"]),
     ReasonCode("REJ-04", "reject", "Not a relevant software product.", "offering type mismatch evidence", "Offering is not a relevant software platform.", ["datasheet", "website"]),
     ReasonCode("REJ-05", "reject", "Non-enterprise micro-focus mismatch.", "SMB/retail emphasis without enterprise evidence", "Enterprise fit unlikely based on customer focus.", ["pricing", "customer pages"]),
     ReasonCode("REJ-06", "reject", "Identity cannot be verified.", "failed legal identity verification", "Legal entity identity cannot be verified.", ["registry checks", "legal pages"]),
@@ -64,4 +64,3 @@ def get_catalog_payload() -> Dict[str, Any]:
 def reason_text(code: str) -> str:
     row = CATALOG_BY_CODE.get(code)
     return row.user_text if row else code
-

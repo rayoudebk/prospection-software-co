@@ -1,10 +1,10 @@
 """
-Remove legacy taxonomy schema after thesis/search-lane rollout.
+Remove legacy taxonomy schema after context-pack/scope-review rollout.
 
 This migration:
-1. Ensures thesis/search-lane tables exist.
-2. Backfills thesis packs and search lanes for older workspaces.
-3. Normalizes workspace policy JSON to use `search_lanes` instead of `brick_model`.
+1. Ensures company-context tables exist.
+2. Backfills company-context packs for older workspaces.
+3. Normalizes workspace policy JSON to use `scope_review` instead of `brick_model`.
 4. Drops `brick_mappings`, `brick_taxonomies`, and `vendors.tags_vertical`.
 """
 import sys
@@ -18,7 +18,10 @@ from sqlalchemy.orm import sessionmaker
 from app.config import get_settings
 from app.models.workspace import Workspace
 from app.services.evidence_policy import DEFAULT_EVIDENCE_POLICY, normalize_policy
-from migrations.migrate_thesis_sourcing_v1 import _ensure_thesis_tables, backfill_thesis_sourcing
+from migrations.migrate_company_context_backfill_v1 import (
+    _ensure_company_context_tables,
+    backfill_company_context,
+)
 
 settings = get_settings()
 
@@ -32,9 +35,10 @@ def _normalize_workspace_policies(session) -> int:
             gate_requirements = {}
             normalized["gate_requirements"] = gate_requirements
         gate_requirements.pop("brick_model", None)
+        gate_requirements.pop("search_lanes", None)
         gate_requirements.setdefault(
-            "search_lanes",
-            DEFAULT_EVIDENCE_POLICY["gate_requirements"]["search_lanes"],
+            "scope_review",
+            DEFAULT_EVIDENCE_POLICY["gate_requirements"]["scope_review"],
         )
         if workspace.decision_policy_json != normalized:
             workspace.decision_policy_json = normalized
@@ -79,18 +83,18 @@ def _drop_legacy_schema(conn) -> dict[str, bool]:
 def migrate_remove_legacy_taxonomy_v1() -> dict[str, int | bool]:
     engine = create_engine(settings.database_url_sync, echo=True)
     with engine.begin() as conn:
-        _ensure_thesis_tables(conn)
+        _ensure_company_context_tables(conn)
 
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     with SessionLocal() as session:
-        thesis_summary = backfill_thesis_sourcing(session)
+        company_context_summary = backfill_company_context(session)
         policies_updated = _normalize_workspace_policies(session)
 
     with engine.begin() as conn:
         drop_summary = _drop_legacy_schema(conn)
 
     return {
-        **thesis_summary,
+        **company_context_summary,
         "workspace_policies_updated": policies_updated,
         **drop_summary,
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay a workspace context pack through the local phase-1 market-map builder."""
+"""Replay a workspace context pack through the local company-context builder."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.models.workspace import CompanyProfile  # noqa: E402
-from app.services.thesis import bootstrap_thesis_payload  # noqa: E402
+from app.services.company_context import build_company_context_artifacts  # noqa: E402
 
 
 def _load_workspace_context(*, workspace_id: int, api_base: str) -> dict[str, Any]:
@@ -30,11 +30,9 @@ def _profile_from_context_pack(payload: dict[str, Any], *, workspace_id: int) ->
     return CompanyProfile(
         workspace_id=workspace_id,
         buyer_company_url=payload.get("buyer_company_url"),
-        manual_brief_text=payload.get("manual_brief_text"),
-        generated_context_summary=payload.get("generated_context_summary"),
-        reference_company_urls=payload.get("reference_company_urls") or [],
-        reference_evidence_urls=payload.get("reference_evidence_urls") or [],
-        reference_summaries=payload.get("reference_summaries") or {},
+        comparator_seed_urls=payload.get("comparator_seed_urls") or [],
+        supporting_evidence_urls=payload.get("supporting_evidence_urls") or [],
+        comparator_seed_summaries=payload.get("comparator_seed_summaries") or {},
         geo_scope=payload.get("geo_scope") or {},
         context_pack_markdown=payload.get("context_pack_markdown"),
         context_pack_json=payload.get("context_pack_json") or {},
@@ -45,7 +43,6 @@ def _profile_from_context_pack(payload: dict[str, Any], *, workspace_id: int) ->
 def _compact_output(payload: dict[str, Any]) -> dict[str, Any]:
     brief = payload.get("market_map_brief") or {}
     return {
-        "summary": payload.get("summary"),
         "reasoning_status": brief.get("reasoning_status"),
         "reasoning_provider": brief.get("reasoning_provider"),
         "reasoning_model": brief.get("reasoning_model"),
@@ -73,13 +70,13 @@ def main() -> int:
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Print the full bootstrap payload instead of the compact summary view",
+        help="Print the full company-context payload instead of the compact summary view",
     )
     args = parser.parse_args()
 
     context_pack_payload = _load_workspace_context(workspace_id=args.workspace_id, api_base=args.api_base)
     profile = _profile_from_context_pack(context_pack_payload, workspace_id=args.workspace_id)
-    bootstrap_payload = bootstrap_thesis_payload(profile)
+    bootstrap_payload = build_company_context_artifacts(profile)
 
     output = bootstrap_payload if args.full else _compact_output(bootstrap_payload)
     print(json.dumps(output, ensure_ascii=False, indent=2, default=str))

@@ -452,20 +452,6 @@ export default function UniversePage() {
                 <Building2 className="w-4 h-4" />
                 {company.hq_country || "Unknown"} • status: {company.status}
               </div>
-
-              {company.lane_types && company.lane_types.length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-2">
-                  {company.lane_types.map((laneType) => (
-                    <span
-                      key={`${company.id}-${laneType}`}
-                      className="px-2 py-0.5 text-xs border border-info/30 bg-info/10 text-info"
-                    >
-                      {laneType} lane
-                    </span>
-                  ))}
-                </div>
-              )}
-
               {company.entity_type && company.entity_type !== "company" && (
                 <div className="text-xs text-warning mb-2">Entity type: {company.entity_type}</div>
               )}

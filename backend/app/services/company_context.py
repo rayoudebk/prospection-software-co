@@ -1,4 +1,4 @@
-"""Thesis-pack bootstrap, normalization, and search-lane derivation helpers."""
+"""Company-context bootstrap, normalization, and scope-derived discovery helpers."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -8,33 +8,29 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from app.models.thesis import BuyerThesisPack, SearchLane
+from app.config import get_settings
+from app.models.company_context import CompanyContextPack
 from app.models.workspace import CompanyProfile
-from app.services.company_profile_context import (
-    get_generated_context_summary,
-    get_manual_brief_text,
-)
 from app.services.llm.orchestrator import LLMOrchestrator
 from app.services.llm.types import LLMOrchestrationError, LLMRequest, LLMStage
 from app.services.reporting import normalize_domain
 from app.services.retrieval.url_normalization import normalize_url
 
-THESIS_SECTIONS = {
-    "core_capability",
-    "adjacent_capability",
-    "business_model",
-    "customer_profile",
-    "deployment_model",
-    "size_signal",
-    "geography",
-    "include_constraint",
-    "exclude_constraint",
-}
-
-CLAIM_RENDERINGS = {"fact", "hypothesis"}
 CLAIM_USER_STATUSES = {"system", "confirmed", "edited", "removed"}
-LANE_TYPES = {"core", "adjacent"}
-LANE_STATUSES = {"draft", "confirmed"}
+EXPANSION_ITEM_STATUSES = {
+    "source_grounded",
+    "corroborated_expansion",
+    "hypothesis",
+    "user_kept",
+    "user_removed",
+    "user_deprioritized",
+}
+EXPANSION_ITEM_TYPES = {
+    "adjacent_capability",
+    "adjacent_customer_segment",
+    "named_account_anchor",
+    "geography_expansion",
+}
 
 DEFAULT_OPEN_QUESTIONS = [
     "Which customer segment is most strategic for target discovery?",
@@ -60,6 +56,52 @@ MARKET_MAP_REASONING_OUTPUT_SCHEMA = {
     ],
     "confidence_gaps": ["string"],
     "open_questions": ["string"],
+}
+EXPANSION_RESEARCH_PROMPT_VERSION = "v1"
+EXPANSION_RESEARCH_OUTPUT_SCHEMA = {
+    "adjacent_capabilities": [
+        {
+            "label": "Voting rights / proxy voting",
+            "why_it_matters": "string",
+            "evidence_urls": ["https://example.com"],
+            "source_entity_names": ["Comparator A", "BNP Paribas"],
+            "market_importance": "high|medium|low",
+            "operational_centrality": "core|meaningful|peripheral",
+            "workflow_criticality": "high|medium|low",
+            "daily_operator_usage": "high|medium|low",
+            "switching_cost_intensity": "high|medium|low",
+            "confidence": 0.62,
+        }
+    ],
+    "adjacent_customer_segments": [],
+    "named_account_anchors": [],
+    "geography_expansions": [],
+}
+EXPANSION_BRIEF_OUTPUT_SCHEMA = {
+    "reasoning_status": "success|degraded|not_run",
+    "reasoning_warning": "string|null",
+    "adjacent_capabilities": [
+        {
+            "id": "expansion_xxx",
+            "label": "Voting rights / proxy voting",
+            "expansion_type": "adjacent_capability",
+            "status": "source_grounded|corroborated_expansion|hypothesis|user_kept|user_removed|user_deprioritized",
+            "confidence": 0.62,
+            "why_it_matters": "string",
+            "evidence_urls": ["https://example.com"],
+            "supporting_node_ids": ["taxonomy_xxx"],
+            "source_entity_names": ["Comparator A", "BNP Paribas"],
+            "market_importance": "high|medium|low",
+            "operational_centrality": "core|meaningful|peripheral",
+            "workflow_criticality": "high|medium|low",
+            "daily_operator_usage": "high|medium|low",
+            "switching_cost_intensity": "high|medium|low",
+            "priority_tier": "core_adjacent|meaningful_adjacent|edge_case",
+        }
+    ],
+    "adjacent_customer_segments": [],
+    "named_account_anchors": [],
+    "geography_expansions": [],
 }
 
 CUSTOMER_KEYWORDS = (
@@ -430,6 +472,20 @@ NOISY_CUSTOMER_PREFIXES = (
 def _slugify(value: str, *, max_len: int = 48) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
     return normalized[:max_len] or "item"
+
+
+def _domain_brand_name(url: Any) -> str:
+    domain = normalize_domain(url)
+    if not domain:
+        return ""
+    parts = domain.split(".")
+    base = parts[-2] if len(parts) >= 2 else parts[0]
+    tokens = [token for token in re.split(r"[-_]+", base) if token]
+    if not tokens:
+        return domain
+    if len(tokens) == 1 and len(tokens[0]) <= 4:
+        return tokens[0].upper()
+    return " ".join(token.upper() if len(token) <= 4 else token.capitalize() for token in tokens)
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -1037,9 +1093,9 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
     }
 
 
-def _source_scoped_context_pack(context_pack_v2: dict[str, Any], *, buyer_url: Any) -> dict[str, Any]:
-    buyer_domain = normalize_domain(buyer_url)
-    if not buyer_domain or not isinstance(context_pack_v2, dict):
+def _domain_scoped_context_pack(context_pack_v2: dict[str, Any], *, domain: str) -> dict[str, Any]:
+    domain = normalize_domain(domain)
+    if not domain or not isinstance(context_pack_v2, dict):
         return context_pack_v2
 
     selected_sites: list[dict[str, Any]] = []
@@ -1049,7 +1105,7 @@ def _source_scoped_context_pack(context_pack_v2: dict[str, Any], *, buyer_url: A
         site_domain = normalize_domain(site.get("website") or site.get("url"))
         if not site_domain:
             continue
-        if site_domain == buyer_domain or site_domain.endswith(f".{buyer_domain}") or buyer_domain.endswith(f".{site_domain}"):
+        if site_domain == domain or site_domain.endswith(f".{domain}") or domain.endswith(f".{site_domain}"):
             selected_sites.append(site)
 
     if not selected_sites:
@@ -1113,6 +1169,13 @@ def _source_scoped_context_pack(context_pack_v2: dict[str, Any], *, buyer_url: A
         "extracted_raw_phrases": sorted(raw_phrases)[:160],
         "crawl_coverage": coverage,
     }
+
+
+def _source_scoped_context_pack(context_pack_v2: dict[str, Any], *, buyer_url: Any) -> dict[str, Any]:
+    buyer_domain = normalize_domain(buyer_url)
+    if not buyer_domain:
+        return context_pack_v2
+    return _domain_scoped_context_pack(context_pack_v2, domain=buyer_domain)
 
 
 def _phrase_case(value: str) -> str:
@@ -1894,7 +1957,7 @@ def _build_market_map_artifacts(
         "capability_nodes": capabilities[:8],
         "delivery_or_integration_nodes": delivery_nodes[:8],
         "named_customer_proof": named_customers,
-        "integration_partner_proof": integrations,
+        "partner_integration_proof": integrations,
         "active_lenses": lens_seeds,
         "adjacency_hypotheses": adjacency_hypotheses[:6],
         "strongest_evidence_buckets": [
@@ -2056,7 +2119,7 @@ def _compact_market_map_payload(
             for item in lens_seeds[:8]
         ],
         "named_customer_proof": [_proof_stub(item) for item in named_customers[:8]],
-        "integration_partner_proof": [_proof_stub(item) for item in integrations[:8]],
+        "partner_integration_proof": [_proof_stub(item) for item in integrations[:8]],
         "evidence_highlights": evidence_highlights,
         "selection_rules": {
             "summary_max_words": 120,
@@ -2120,6 +2183,171 @@ def _market_map_reasoning_prompt(payload: dict[str, Any]) -> str:
         "5. fallback brief summary\n\n"
         "Input:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _compact_expansion_research_payload(
+    *,
+    company_name: str,
+    company_url: Optional[str],
+    market_map_brief: dict[str, Any],
+    taxonomy_nodes: list[dict[str, Any]],
+    expansion_inputs: list[dict[str, Any]],
+    geo_scope: dict[str, Any],
+    fallback_brief: dict[str, Any],
+) -> dict[str, Any]:
+    def _node_stub(node: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": node.get("id"),
+            "layer": node.get("layer"),
+            "phrase": node.get("phrase"),
+            "confidence": node.get("confidence"),
+            "evidence_ids": (node.get("evidence_ids") or [])[:4],
+        }
+
+    def _proof_stub(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "name": item.get("name"),
+            "source_url": item.get("source_url"),
+            "context": _safe_phrase(item.get("context"), max_len=180),
+            "evidence_type": item.get("evidence_type"),
+        }
+
+    expansion_input_stubs = []
+    for expansion_input in expansion_inputs[:6]:
+        if not isinstance(expansion_input, dict):
+            continue
+        expansion_input_stubs.append(
+            {
+                "name": expansion_input.get("name"),
+                "website": expansion_input.get("website"),
+                "source_summary": _truncate_words(expansion_input.get("source_summary"), max_words=50, max_chars=300),
+                "top_capabilities": [
+                    node.get("phrase")
+                    for node in (expansion_input.get("taxonomy_nodes") or [])
+                    if isinstance(node, dict) and node.get("layer") == "capability" and node.get("phrase")
+                ][:6],
+                "top_customer_segments": [
+                    node.get("phrase")
+                    for node in (expansion_input.get("taxonomy_nodes") or [])
+                    if isinstance(node, dict) and node.get("layer") == "customer_archetype" and node.get("phrase")
+                ][:6],
+                "named_customer_proof": [_proof_stub(item) for item in (expansion_input.get("named_customer_proof") or [])[:4]],
+            }
+        )
+
+    return {
+        "prompt_version": EXPANSION_RESEARCH_PROMPT_VERSION,
+        "source_company": {
+            "name": company_name,
+            "website": company_url,
+        },
+        "source_brief": {
+            "source_summary": _truncate_words(market_map_brief.get("source_summary"), max_words=120, max_chars=800),
+            "customer_nodes": [_node_stub(node) for node in (market_map_brief.get("customer_nodes") or [])[:6] if isinstance(node, dict)],
+            "workflow_nodes": [_node_stub(node) for node in (market_map_brief.get("workflow_nodes") or [])[:6] if isinstance(node, dict)],
+            "capability_nodes": [_node_stub(node) for node in (market_map_brief.get("capability_nodes") or [])[:8] if isinstance(node, dict)],
+            "delivery_nodes": [
+                _node_stub(node)
+                for node in (market_map_brief.get("delivery_or_integration_nodes") or [])[:6]
+                if isinstance(node, dict)
+            ],
+            "named_customer_proof": [_proof_stub(item) for item in (market_map_brief.get("named_customer_proof") or [])[:8] if isinstance(item, dict)],
+            "partner_integration_proof": [_proof_stub(item) for item in (market_map_brief.get("partner_integration_proof") or [])[:8] if isinstance(item, dict)],
+            "secondary_evidence_proof": [
+                {
+                    "title": item.get("title"),
+                    "claim_type": item.get("claim_type"),
+                    "publisher_type": item.get("publisher_type"),
+                    "url": item.get("url"),
+                    "claim_text": _safe_phrase(item.get("claim_text"), max_len=180),
+                }
+                for item in (market_map_brief.get("secondary_evidence_proof") or [])[:8]
+                if isinstance(item, dict)
+            ],
+        },
+        "taxonomy_nodes": [_node_stub(node) for node in taxonomy_nodes[:32]],
+        "expansion_inputs": expansion_input_stubs,
+        "geo_scope": {
+            "region": geo_scope.get("region"),
+            "include_countries": _normalize_string_list(geo_scope.get("include_countries"), max_items=8, max_len=64),
+            "exclude_countries": _normalize_string_list(geo_scope.get("exclude_countries"), max_items=8, max_len=64),
+        },
+        "fallback_expansion_brief": normalize_expansion_brief(fallback_brief),
+        "selection_rules": {
+            "max_adjacent_capabilities": 8,
+            "max_adjacent_customer_segments": 6,
+            "max_named_account_anchors": 8,
+            "max_geography_expansions": 6,
+        },
+    }
+
+
+def _expansion_research_prompt(payload: dict[str, Any]) -> str:
+    return (
+        "You are generating a bounded Expansion Research artifact for M&A sourcing.\n\n"
+        "Start only from the provided source-company brief, taxonomy, expansion inputs, and geo scope.\n"
+        "You may use web search when available, but remain tightly bounded to one-hop adjacencies around the source evidence.\n"
+        "Do not generate a full market map and do not return a long company list.\n"
+        "Prefer categories that repeatedly appear across source evidence, expansion inputs, named accounts, integrations, or nearby public evidence.\n"
+        "Demote niche, edge-case, or peripheral use cases that are too small or too optional to steer primary discovery.\n"
+        "If an adjacency is real but likely too narrow to drive target discovery on its own, keep it and mark it low importance rather than dropping it.\n\n"
+        "You must propose only these buckets:\n"
+        "- adjacent_capabilities\n"
+        "- adjacent_customer_segments\n"
+        "- named_account_anchors\n"
+        "- geography_expansions\n\n"
+        "For each item provide:\n"
+        "- label\n"
+        "- why_it_matters\n"
+        "- evidence_urls\n"
+        "- source_entity_names\n"
+        "- market_importance: high, medium, or low\n"
+        "- operational_centrality: core, meaningful, or peripheral\n"
+        "- workflow_criticality: high, medium, or low\n"
+        "- daily_operator_usage: high, medium, or low\n"
+        "- switching_cost_intensity: high, medium, or low\n"
+        "- confidence\n\n"
+        "Interpretation rules:\n"
+        "- market_importance = a secondary signal about whether the adjacency appears broad enough to matter beyond a niche edge case\n"
+        "- operational_centrality = whether the adjacency appears central to day-to-day customer operations versus peripheral or optional\n"
+        "- workflow_criticality = whether the capability sits on a business-critical workflow path\n"
+        "- daily_operator_usage = whether operators appear to rely on it frequently in routine execution\n"
+        "- switching_cost_intensity = whether replacing it would likely be operationally painful due to workflow embedding, data gravity, controls, or integration depth\n"
+        "- avoid treating a narrow compliance check, isolated add-on, or rarely emphasized feature as equal to a system-of-record workflow\n"
+        "- named_account_anchors should be concrete institutions useful for tracing peer vendors or adjacent stack components\n"
+        "- geography_expansions should be bounded adjacent markets, not all plausible countries\n\n"
+        "Return only valid JSON with this exact shape:\n"
+        f"{json.dumps(EXPANSION_RESEARCH_OUTPUT_SCHEMA, ensure_ascii=False, indent=2)}\n\n"
+        "Input:\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _expansion_normalization_prompt(
+    *,
+    company_name: str,
+    research_payload: dict[str, Any],
+    fallback_brief: dict[str, Any],
+) -> str:
+    return (
+        "You are normalizing an Expansion Research artifact into a graph-safe Expansion Brief.\n\n"
+        f"The source company is {company_name}.\n"
+        "Do not invent items not present in the research payload unless they already exist in the fallback brief.\n"
+        "Preserve selective breadth. Fewer strong items are better than many weak ones.\n"
+        "Use the fallback brief only when the research payload is missing a useful item already grounded in source evidence.\n"
+        "Each item must receive expansion_type, status, confidence, market_importance, operational_centrality, workflow_criticality, daily_operator_usage, switching_cost_intensity, and priority_tier.\n\n"
+        "Priority rules:\n"
+        "- Use priority_tier=core_adjacent only when workflow_criticality is high and either operational_centrality is core or switching_cost_intensity is high.\n"
+        "- Use priority_tier=meaningful_adjacent when the adjacency is relevant but not clearly a primary discovery lane.\n"
+        "- Use priority_tier=edge_case for narrow, peripheral, or weakly repeated adjacencies.\n"
+        "- Small, optional, or rarely repeated use cases should generally be edge_case or meaningful_adjacent, not core_adjacent, even if they look adjacent.\n"
+        "- Named accounts grounded in source evidence can stay source_grounded.\n"
+        "- Geography expansions sourced only from workspace scope may remain source_grounded but should not automatically imply a high-priority lane.\n\n"
+        "Return only valid JSON with this exact shape:\n"
+        f"{json.dumps(EXPANSION_BRIEF_OUTPUT_SCHEMA, ensure_ascii=False, indent=2)}\n\n"
+        f"Research payload:\n{json.dumps(research_payload, ensure_ascii=False, indent=2)}\n\n"
+        f"Fallback brief:\n{json.dumps(normalize_expansion_brief(fallback_brief), ensure_ascii=False, indent=2)}"
     )
 
 
@@ -2325,16 +2553,16 @@ def _pill_label_for_url(
     url: str,
     *,
     buyer_url: Optional[str],
-    reference_company_urls: Iterable[str],
-    reference_evidence_urls: Iterable[str],
+    comparator_seed_urls: Iterable[str],
+    supporting_evidence_urls: Iterable[str],
 ) -> str:
     normalized = normalize_url(url)
     domain = normalize_domain(normalized) or "source"
     if normalized and normalize_domain(normalized) == normalize_domain(buyer_url):
         return "Buyer website"
-    if normalized in {normalize_url(item) for item in reference_company_urls if normalize_url(item)}:
+    if normalized in {normalize_url(item) for item in comparator_seed_urls if normalize_url(item)}:
         return f"Comparator seed: {domain}"
-    if normalized in {normalize_url(item) for item in reference_evidence_urls if normalize_url(item)}:
+    if normalized in {normalize_url(item) for item in supporting_evidence_urls if normalize_url(item)}:
         return f"Evidence source: {domain}"
     return domain
 
@@ -2343,13 +2571,13 @@ def normalize_source_pills(
     source_pills: Any,
     *,
     buyer_url: Optional[str] = None,
-    reference_company_urls: Optional[Iterable[str]] = None,
-    reference_evidence_urls: Optional[Iterable[str]] = None,
+    comparator_seed_urls: Optional[Iterable[str]] = None,
+    supporting_evidence_urls: Optional[Iterable[str]] = None,
 ) -> list[dict[str, Any]]:
     pills: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
-    company_urls = list(reference_company_urls or [])
-    evidence_urls = list(reference_evidence_urls or [])
+    company_urls = list(comparator_seed_urls or [])
+    evidence_urls = list(supporting_evidence_urls or [])
 
     if not isinstance(source_pills, list):
         source_pills = []
@@ -2368,8 +2596,8 @@ def normalize_source_pills(
         label = str(payload.get("label") or "").strip() or _pill_label_for_url(
             url,
             buyer_url=buyer_url,
-            reference_company_urls=company_urls,
-            reference_evidence_urls=evidence_urls,
+            comparator_seed_urls=company_urls,
+            supporting_evidence_urls=evidence_urls,
         )
         pills.append(
             {
@@ -2380,60 +2608,558 @@ def normalize_source_pills(
         )
     return pills[:40]
 
-
-def normalize_thesis_claims(
-    claims: Any,
-    *,
-    available_pill_ids: Optional[set[str]] = None,
-) -> list[dict[str, Any]]:
-    available_pills = available_pill_ids or set()
-    normalized_claims: list[dict[str, Any]] = []
-    seen_pairs: set[tuple[str, str]] = set()
-
-    if not isinstance(claims, list):
-        claims = []
-
-    for item in claims:
-        if not isinstance(item, dict):
-            continue
-        section = str(item.get("section") or "").strip()
-        value = str(item.get("value") or "").strip()
-        if not section or not value or section not in THESIS_SECTIONS:
-            continue
-        pair = (section, value.lower())
-        if pair in seen_pairs:
-            continue
-        seen_pairs.add(pair)
-        rendering = str(item.get("rendering") or "fact").strip().lower()
-        if rendering not in CLAIM_RENDERINGS:
-            rendering = "fact"
-        user_status = str(item.get("user_status") or "system").strip().lower()
-        if user_status not in CLAIM_USER_STATUSES:
-            user_status = "system"
-        source_pill_ids = [
-            str(pill_id)
-            for pill_id in _normalize_string_list(item.get("source_pill_ids"), max_items=8, max_len=64)
-            if not available_pills or str(pill_id) in available_pills
-        ]
-        normalized_claims.append(
-            {
-                "id": str(item.get("id") or _stable_id("claim", section, value)),
-                "section": section,
-                "value": value[:280],
-                "rendering": rendering,
-                "confidence": _clamp_confidence(
-                    item.get("confidence"),
-                    default=0.8 if rendering == "fact" else 0.5,
-                ),
-                "source_pill_ids": source_pill_ids,
-                "user_status": user_status,
-            }
-        )
-    return normalized_claims[:80]
-
-
 def normalize_open_questions(open_questions: Any) -> list[str]:
     return _normalize_string_list(open_questions, max_items=12, max_len=240)
+
+
+def normalize_expansion_items(
+    items: Any,
+    *,
+    item_type: str,
+    max_items: int = 8,
+) -> list[dict[str, Any]]:
+    if item_type not in EXPANSION_ITEM_TYPES:
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        label = _compact_phrase(raw.get("label") or raw.get("name"), max_words=8, max_len=120)
+        if not label:
+            continue
+        key = _normalize_phrase_key(label)
+        if key in seen:
+            continue
+        seen.add(key)
+        status = str(raw.get("status") or "hypothesis").strip().lower()
+        if status not in EXPANSION_ITEM_STATUSES:
+            status = "hypothesis"
+        normalized.append(
+            {
+                "id": str(raw.get("id") or _stable_id("expansion", item_type, label)),
+                "label": label,
+                "expansion_type": item_type,
+                "status": status,
+                "confidence": _clamp_confidence(raw.get("confidence"), default=0.6),
+                "why_it_matters": str(raw.get("why_it_matters") or "").strip()[:400],
+                "evidence_urls": [
+                    url
+                    for url in [
+                        normalize_url(url)
+                        for url in _normalize_string_list(raw.get("evidence_urls"), max_items=6, max_len=500)
+                    ]
+                    if url
+                ],
+                "supporting_node_ids": _normalize_string_list(raw.get("supporting_node_ids"), max_items=8, max_len=120),
+                "source_entity_names": _normalize_string_list(raw.get("source_entity_names"), max_items=6, max_len=120),
+                "market_importance": (
+                    str(raw.get("market_importance") or "medium").strip().lower()
+                    if str(raw.get("market_importance") or "medium").strip().lower() in {"high", "medium", "low"}
+                    else "medium"
+                ),
+                "operational_centrality": (
+                    str(raw.get("operational_centrality") or "meaningful").strip().lower()
+                    if str(raw.get("operational_centrality") or "meaningful").strip().lower() in {"core", "meaningful", "peripheral"}
+                    else "meaningful"
+                ),
+                "workflow_criticality": (
+                    str(raw.get("workflow_criticality") or "medium").strip().lower()
+                    if str(raw.get("workflow_criticality") or "medium").strip().lower() in {"high", "medium", "low"}
+                    else "medium"
+                ),
+                "daily_operator_usage": (
+                    str(raw.get("daily_operator_usage") or "medium").strip().lower()
+                    if str(raw.get("daily_operator_usage") or "medium").strip().lower() in {"high", "medium", "low"}
+                    else "medium"
+                ),
+                "switching_cost_intensity": (
+                    str(raw.get("switching_cost_intensity") or "medium").strip().lower()
+                    if str(raw.get("switching_cost_intensity") or "medium").strip().lower() in {"high", "medium", "low"}
+                    else "medium"
+                ),
+                "priority_tier": (
+                    str(raw.get("priority_tier") or "meaningful_adjacent").strip().lower()
+                    if str(raw.get("priority_tier") or "meaningful_adjacent").strip().lower() in {"core_adjacent", "meaningful_adjacent", "edge_case"}
+                    else "meaningful_adjacent"
+                ),
+            }
+        )
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def normalize_expansion_brief(expansion_brief: Any) -> dict[str, Any]:
+    payload = expansion_brief if isinstance(expansion_brief, dict) else {}
+    return {
+        "reasoning_status": str(payload.get("reasoning_status") or "not_run"),
+        "reasoning_warning": str(payload.get("reasoning_warning") or "").strip() or None,
+        "reasoning_provider": str(payload.get("reasoning_provider") or "").strip() or None,
+        "reasoning_model": str(payload.get("reasoning_model") or "").strip() or None,
+        "confirmed_at": payload.get("confirmed_at"),
+        "adjacent_capabilities": normalize_expansion_items(
+            payload.get("adjacent_capabilities"),
+            item_type="adjacent_capability",
+            max_items=10,
+        ),
+        "adjacent_customer_segments": normalize_expansion_items(
+            payload.get("adjacent_customer_segments"),
+            item_type="adjacent_customer_segment",
+            max_items=8,
+        ),
+        "named_account_anchors": normalize_expansion_items(
+            payload.get("named_account_anchors"),
+            item_type="named_account_anchor",
+            max_items=8,
+        ),
+        "geography_expansions": normalize_expansion_items(
+            payload.get("geography_expansions"),
+            item_type="geography_expansion",
+            max_items=8,
+        ),
+    }
+
+
+def _supporting_node_ids_for_phrase(
+    phrase: str,
+    nodes: list[dict[str, Any]],
+    *,
+    layers: set[str],
+    max_items: int = 3,
+) -> list[str]:
+    phrase_key = _normalize_phrase_key(phrase)
+    supporting: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("layer") or "").strip() not in layers:
+            continue
+        node_phrase = str(node.get("phrase") or "").strip()
+        if _normalize_phrase_key(node_phrase) != phrase_key:
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if node_id and node_id not in supporting:
+            supporting.append(node_id)
+        if len(supporting) >= max_items:
+            break
+    return supporting
+
+
+def _derive_adjacent_nodes_from_expansion_inputs(
+    *,
+    expansion_inputs: list[dict[str, Any]],
+    source_keys: set[str],
+    layer: str,
+    item_type: str,
+    source_summary: str,
+) -> list[dict[str, Any]]:
+    candidates: dict[str, dict[str, Any]] = {}
+    for expansion_input in expansion_inputs:
+        if not isinstance(expansion_input, dict):
+            continue
+        comparator_name = str(expansion_input.get("name") or expansion_input.get("website") or "Expansion input").strip()
+        comparator_url = normalize_url(expansion_input.get("website") or expansion_input.get("url") or "")
+        for node in expansion_input.get("taxonomy_nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("layer") or "").strip() != layer:
+                continue
+            label = _compact_phrase(node.get("phrase"), max_words=8, max_len=120)
+            if not label:
+                continue
+            key = _normalize_phrase_key(label)
+            if not key or key in source_keys:
+                continue
+            entry = candidates.setdefault(
+                key,
+                {
+                    "id": _stable_id("expansion", item_type, label),
+                    "label": label,
+                    "expansion_type": item_type,
+                    "comparators": [],
+                    "evidence_urls": [],
+                },
+            )
+            if comparator_name not in entry["comparators"]:
+                entry["comparators"].append(comparator_name)
+            if comparator_url and comparator_url not in entry["evidence_urls"]:
+                entry["evidence_urls"].append(comparator_url)
+
+    results: list[dict[str, Any]] = []
+    for entry in sorted(
+        candidates.values(),
+        key=lambda item: (-len(item.get("comparators") or []), str(item.get("label") or "")),
+    ):
+        comparator_count = len(entry.get("comparators") or [])
+        status = "corroborated_expansion" if comparator_count >= 2 else "hypothesis"
+        confidence = 0.78 if comparator_count >= 2 else 0.6
+        if item_type == "adjacent_capability":
+            why = (
+                f"Comparator context extends the source capability neighborhood beyond {source_summary}. "
+                f"Surfaced by {', '.join((entry.get('comparators') or [])[:2])}."
+            )
+        else:
+            why = (
+                f"Comparator context points to a neighboring buyer segment around the current source market box. "
+                f"Surfaced by {', '.join((entry.get('comparators') or [])[:2])}."
+            )
+        results.append(
+            {
+                "id": entry["id"],
+                "label": entry["label"],
+                "expansion_type": item_type,
+                "status": status,
+                "confidence": confidence,
+                "why_it_matters": why[:400],
+                "evidence_urls": entry.get("evidence_urls") or [],
+                "supporting_node_ids": [],
+                "source_entity_names": entry.get("comparators") or [],
+            }
+        )
+    return results
+
+
+def _build_deterministic_expansion_brief(
+    *,
+    profile: CompanyProfile,
+    market_map_brief: dict[str, Any],
+    taxonomy_nodes: list[dict[str, Any]],
+    expansion_inputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source_capabilities = [
+        str(item.get("phrase") or "").strip()
+        for item in (market_map_brief.get("capability_nodes") or [])
+        if isinstance(item, dict) and str(item.get("phrase") or "").strip()
+    ]
+    source_customers = [
+        str(item.get("phrase") or "").strip()
+        for item in (market_map_brief.get("customer_nodes") or [])
+        if isinstance(item, dict) and str(item.get("phrase") or "").strip()
+    ]
+    source_summary = ", ".join(source_capabilities[:2]) or "the current source brief"
+    source_capability_keys = {_normalize_phrase_key(item) for item in source_capabilities if _normalize_phrase_key(item)}
+    source_customer_keys = {_normalize_phrase_key(item) for item in source_customers if _normalize_phrase_key(item)}
+
+    adjacent_capabilities = _derive_adjacent_nodes_from_expansion_inputs(
+        expansion_inputs=expansion_inputs,
+        source_keys=source_capability_keys,
+        layer="capability",
+        item_type="adjacent_capability",
+        source_summary=source_summary,
+    )
+    adjacent_customer_segments = _derive_adjacent_nodes_from_expansion_inputs(
+        expansion_inputs=expansion_inputs,
+        source_keys=source_customer_keys,
+        layer="customer_archetype",
+        item_type="adjacent_customer_segment",
+        source_summary=source_summary,
+    )
+
+    named_account_anchors: list[dict[str, Any]] = []
+    for item in market_map_brief.get("named_customer_proof") or []:
+        if not isinstance(item, dict):
+            continue
+        label = _compact_phrase(item.get("name"), max_words=6, max_len=120)
+        if not label:
+            continue
+        named_account_anchors.append(
+            {
+                "id": _stable_id("expansion", "named_account_anchor", label),
+                "label": label,
+                "expansion_type": "named_account_anchor",
+                "status": "source_grounded",
+                "confidence": _clamp_confidence(item.get("confidence"), default=0.84),
+                "why_it_matters": (
+                    "Named customer evidence provides a concrete account anchor for tracing peer institutions and nearby vendor footprints."
+                ),
+                "evidence_urls": [item.get("source_url")] if normalize_url(item.get("source_url")) else [],
+                "supporting_node_ids": [],
+                "source_entity_names": [label],
+            }
+        )
+
+    geography_expansions: list[dict[str, Any]] = []
+    geo_scope = profile.geo_scope or {}
+    include_countries = _normalize_string_list(geo_scope.get("include_countries"), max_items=8, max_len=64)
+    for country in include_countries:
+        geography_expansions.append(
+            {
+                "id": _stable_id("expansion", "geography_expansion", country),
+                "label": country,
+                "expansion_type": "geography_expansion",
+                "status": "source_grounded",
+                "confidence": 0.92,
+                "why_it_matters": "Explicit geographic scope set on the workspace and should be available for discovery review.",
+                "evidence_urls": [],
+                "supporting_node_ids": [],
+                "source_entity_names": [],
+            }
+        )
+    if not geography_expansions:
+        region = str(geo_scope.get("region") or "").strip()
+        if region:
+            geography_expansions.append(
+                {
+                    "id": _stable_id("expansion", "geography_expansion", region),
+                    "label": region,
+                    "expansion_type": "geography_expansion",
+                    "status": "source_grounded",
+                    "confidence": 0.88,
+                    "why_it_matters": "Workspace-level regional scope should be visible during scope review before universe discovery.",
+                    "evidence_urls": [],
+                    "supporting_node_ids": [],
+                    "source_entity_names": [],
+                }
+            )
+
+    adjacent_capabilities = [
+        {
+            **item,
+            "supporting_node_ids": item.get("supporting_node_ids")
+            or _supporting_node_ids_for_phrase(
+                str(item.get("label") or ""),
+                taxonomy_nodes,
+                layers={"capability"},
+            ),
+        }
+        for item in adjacent_capabilities
+    ]
+    adjacent_customer_segments = [
+        {
+            **item,
+            "supporting_node_ids": item.get("supporting_node_ids")
+            or _supporting_node_ids_for_phrase(
+                str(item.get("label") or ""),
+                taxonomy_nodes,
+                layers={"customer_archetype"},
+            ),
+        }
+        for item in adjacent_customer_segments
+    ]
+
+    return normalize_expansion_brief(
+        {
+            "reasoning_status": "not_run",
+            "reasoning_warning": (
+                "Expansion brief currently uses deterministic scaffolding from the source brief, expansion inputs, and workspace geo scope. "
+                "Bounded model-based deep research can enrich this artifact next."
+            ),
+            "adjacent_capabilities": adjacent_capabilities,
+            "adjacent_customer_segments": adjacent_customer_segments,
+            "named_account_anchors": named_account_anchors,
+            "geography_expansions": geography_expansions,
+        }
+    )
+
+
+def _merge_reasoned_expansion_brief(
+    *,
+    response_text: str,
+    fallback_brief: dict[str, Any],
+    taxonomy_nodes: list[dict[str, Any]],
+    reasoning_provider: Optional[str] = None,
+    reasoning_model: Optional[str] = None,
+) -> dict[str, Any]:
+    parsed = _extract_json_object(response_text)
+    if not parsed:
+        return {
+            **normalize_expansion_brief(fallback_brief),
+            "reasoning_status": "degraded",
+            "reasoning_warning": (
+                "Expansion brief normalization returned invalid structured output. "
+                "Showing deterministic fallback from the source brief, expansion inputs, and geo scope."
+            ),
+            "reasoning_provider": reasoning_provider,
+            "reasoning_model": reasoning_model,
+        }
+
+    normalized = normalize_expansion_brief(parsed)
+    for key, layers in (
+        ("adjacent_capabilities", {"capability"}),
+        ("adjacent_customer_segments", {"customer_archetype"}),
+    ):
+        enriched: list[dict[str, Any]] = []
+        for item in normalized.get(key) or []:
+            enriched.append(
+                {
+                    **item,
+                    "supporting_node_ids": item.get("supporting_node_ids")
+                    or _supporting_node_ids_for_phrase(
+                        item.get("label"),
+                        taxonomy_nodes,
+                        layers=layers,
+                    ),
+                }
+            )
+        normalized[key] = enriched
+    return {
+        **normalized,
+        "reasoning_status": str(parsed.get("reasoning_status") or "success"),
+        "reasoning_warning": str(parsed.get("reasoning_warning") or "").strip() or None,
+        "reasoning_provider": reasoning_provider,
+        "reasoning_model": reasoning_model,
+    }
+
+
+def _reason_expansion_brief(
+    *,
+    profile: CompanyProfile,
+    market_map_brief: dict[str, Any],
+    taxonomy_nodes: list[dict[str, Any]],
+    expansion_inputs: list[dict[str, Any]],
+    fallback_brief: dict[str, Any],
+) -> dict[str, Any]:
+    if not market_map_brief.get("capability_nodes") and not market_map_brief.get("customer_nodes"):
+        return {
+            **normalize_expansion_brief(fallback_brief),
+            "reasoning_status": "not_applicable",
+            "reasoning_warning": "Expansion reasoning did not run because the source brief is too thin to bound adjacency research.",
+            "reasoning_provider": None,
+            "reasoning_model": None,
+        }
+    settings = get_settings()
+    if not any([settings.gemini_api_key, settings.openai_api_key, settings.anthropic_api_key]):
+        return normalize_expansion_brief(fallback_brief)
+
+    research_payload = _compact_expansion_research_payload(
+        company_name=str(((market_map_brief.get("source_company") or {}).get("name")) or _domain_brand_name(profile.buyer_company_url or "") or "Source Company"),
+        company_url=normalize_url(profile.buyer_company_url) if profile.buyer_company_url else None,
+        market_map_brief=market_map_brief,
+        taxonomy_nodes=taxonomy_nodes,
+        expansion_inputs=expansion_inputs,
+        geo_scope=profile.geo_scope or {},
+        fallback_brief=fallback_brief,
+    )
+
+    try:
+        research_response = LLMOrchestrator().run_stage(
+            LLMRequest(
+                stage=LLMStage.expansion_brief_reasoning,
+                prompt=_expansion_research_prompt(research_payload),
+                timeout_seconds=90,
+                use_web_search=True,
+                expect_json=True,
+                metadata={"company_name": research_payload["source_company"]["name"], "phase": "expansion_research"},
+            )
+        )
+    except LLMOrchestrationError as exc:
+        attempt_error = ""
+        if getattr(exc, "attempts", None):
+            last_attempt = exc.attempts[-1]
+            attempt_error = str(getattr(last_attempt, "error_message", "") or "").strip()
+        warning = (
+            "Expansion research failed after model retries. "
+            "Showing deterministic fallback from the source brief, expansion inputs, and geo scope."
+        )
+        if attempt_error:
+            warning = f"{warning} Last error: {attempt_error[:240]}"
+        return {
+            **normalize_expansion_brief(fallback_brief),
+            "reasoning_status": "degraded",
+            "reasoning_warning": warning,
+            "reasoning_provider": None,
+            "reasoning_model": None,
+        }
+    except Exception as exc:
+        return {
+            **normalize_expansion_brief(fallback_brief),
+            "reasoning_status": "degraded",
+            "reasoning_warning": (
+                "Expansion research failed unexpectedly. Showing deterministic fallback from the source brief, expansion inputs, and geo scope. "
+                f"Last error: {str(exc)[:240]}"
+            ),
+            "reasoning_provider": None,
+            "reasoning_model": None,
+        }
+
+    research_json = _extract_json_object(research_response.text)
+    if not research_json:
+        return {
+            **normalize_expansion_brief(fallback_brief),
+            "reasoning_status": "degraded",
+            "reasoning_warning": (
+                "Expansion research returned invalid structured output. "
+                "Showing deterministic fallback from the source brief, expansion inputs, and geo scope."
+            ),
+            "reasoning_provider": getattr(research_response, "provider", None),
+            "reasoning_model": getattr(research_response, "model", None),
+        }
+
+    try:
+        normalization_response = LLMOrchestrator().run_stage(
+            LLMRequest(
+                stage=LLMStage.structured_normalization,
+                prompt=_expansion_normalization_prompt(
+                    company_name=research_payload["source_company"]["name"],
+                    research_payload=research_json,
+                    fallback_brief=fallback_brief,
+                ),
+                timeout_seconds=60,
+                use_web_search=False,
+                expect_json=True,
+                metadata={"company_name": research_payload["source_company"]["name"], "phase": "expansion_normalization"},
+            )
+        )
+    except LLMOrchestrationError as exc:
+        attempt_error = ""
+        if getattr(exc, "attempts", None):
+            last_attempt = exc.attempts[-1]
+            attempt_error = str(getattr(last_attempt, "error_message", "") or "").strip()
+        warning = (
+            "Expansion normalization failed after model retries. "
+            "Showing deterministic fallback from the source brief, expansion inputs, and geo scope."
+        )
+        if attempt_error:
+            warning = f"{warning} Last error: {attempt_error[:240]}"
+        return {
+            **normalize_expansion_brief(fallback_brief),
+            "reasoning_status": "degraded",
+            "reasoning_warning": warning,
+            "reasoning_provider": getattr(research_response, "provider", None),
+            "reasoning_model": getattr(research_response, "model", None),
+        }
+    except Exception as exc:
+        return {
+            **normalize_expansion_brief(fallback_brief),
+            "reasoning_status": "degraded",
+            "reasoning_warning": (
+                "Expansion normalization failed unexpectedly. Showing deterministic fallback from the source brief, expansion inputs, and geo scope. "
+                f"Last error: {str(exc)[:240]}"
+            ),
+            "reasoning_provider": getattr(research_response, "provider", None),
+            "reasoning_model": getattr(research_response, "model", None),
+        }
+
+    return _merge_reasoned_expansion_brief(
+        response_text=normalization_response.text,
+        fallback_brief=fallback_brief,
+        taxonomy_nodes=taxonomy_nodes,
+        reasoning_provider=getattr(research_response, "provider", None),
+        reasoning_model=getattr(research_response, "model", None),
+    )
+
+
+def build_expansion_brief(
+    *,
+    profile: CompanyProfile,
+    market_map_brief: dict[str, Any],
+    taxonomy_nodes: list[dict[str, Any]],
+    expansion_inputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    fallback_brief = _build_deterministic_expansion_brief(
+        profile=profile,
+        market_map_brief=market_map_brief,
+        taxonomy_nodes=taxonomy_nodes,
+        expansion_inputs=expansion_inputs,
+    )
+    return _reason_expansion_brief(
+        profile=profile,
+        market_map_brief=market_map_brief,
+        taxonomy_nodes=taxonomy_nodes,
+        expansion_inputs=expansion_inputs,
+        fallback_brief=fallback_brief,
+    )
 
 
 def _sanitize_reasoned_open_questions(open_questions: Any) -> list[str]:
@@ -2459,16 +3185,14 @@ def _sanitize_reasoned_open_questions(open_questions: Any) -> list[str]:
 
 def _extract_context_text(profile: CompanyProfile) -> str:
     parts: list[str] = []
-    reference_summaries = (
-        list((profile.reference_summaries or {}).values())
-        if isinstance(profile.reference_summaries, dict)
+    comparator_seed_summaries = (
+        list((profile.comparator_seed_summaries or {}).values())
+        if isinstance(profile.comparator_seed_summaries, dict)
         else []
     )
     for value in [
-        get_manual_brief_text(profile),
-        get_generated_context_summary(profile),
         profile.context_pack_markdown,
-        *reference_summaries,
+        *comparator_seed_summaries,
     ]:
         text = str(value or "").strip()
         if text:
@@ -2584,25 +3308,6 @@ def _identity_tokens_from_name(value: Any) -> set[str]:
     return tokens
 
 
-def _generated_summary_for_buyer(profile: CompanyProfile, buyer_site: dict[str, Any]) -> str:
-    summary = str(get_generated_context_summary(profile) or "").strip()
-    if not summary:
-        return ""
-
-    lowered = summary.lower()
-    buyer_tokens = _identity_tokens_from_url(profile.buyer_company_url)
-    buyer_tokens.update(_identity_tokens_from_name(buyer_site.get("company_name")))
-    reference_tokens: set[str] = set()
-    for url in profile.reference_company_urls or []:
-        reference_tokens.update(_identity_tokens_from_url(url))
-
-    mentions_buyer = any(token in lowered for token in buyer_tokens if token)
-    mentions_reference = any(token in lowered for token in reference_tokens if token)
-    if mentions_reference and not mentions_buyer:
-        return ""
-    return summary
-
-
 def _resolve_buyer_site(profile: CompanyProfile) -> dict[str, Any]:
     buyer_url = normalize_url(profile.buyer_company_url)
     buyer_domain = normalize_domain(buyer_url)
@@ -2624,10 +3329,10 @@ def assess_buyer_evidence(profile: CompanyProfile) -> dict[str, Any]:
     buyer_url = normalize_url(profile.buyer_company_url)
     if not buyer_url:
         return {
-            "mode": "thesis_only",
+            "mode": "source_company_missing",
             "status": "not_applicable",
             "score": 0,
-            "used_for_inference": True,
+            "used_for_inference": False,
             "warning": None,
             "metrics": {
                 "pages_crawled": 0,
@@ -2707,49 +3412,6 @@ def assess_buyer_evidence(profile: CompanyProfile) -> dict[str, Any]:
     }
 
 
-def _extract_employee_signal(text: str) -> Optional[str]:
-    if not text:
-        return None
-    ranged = re.search(
-        r"(?:between\s+)?(\d{1,4})\s*(?:-|to|and|–)\s*(\d{1,4})\s*(?:employees|employee|staff|people|headcount|team)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if ranged:
-        return f"Employee estimate: {ranged.group(1)}-{ranged.group(2)} employees"
-    explicit = re.search(
-        r"(\d{1,4})\s*(?:employees|employee|staff|people|headcount|team)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if explicit:
-        return f"Employee estimate: {explicit.group(1)} employees"
-    return None
-
-
-def _extract_revenue_signal(text: str) -> Optional[str]:
-    if not text:
-        return None
-    match = re.search(
-        r"(?:less than|under|below|<)\s*\$?\s*(\d+(?:\.\d+)?)\s*(m|mm|million|b|bn|billion|k|thousand)?\s*(?:in\s+)?revenue",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return None
-    amount = match.group(1)
-    suffix = (match.group(2) or "").strip().lower()
-    if suffix in {"m", "mm", "million"}:
-        normalized = f"${amount}M"
-    elif suffix in {"b", "bn", "billion"}:
-        normalized = f"${amount}B"
-    elif suffix in {"k", "thousand"}:
-        normalized = f"${amount}K"
-    else:
-        normalized = f"${amount}"
-    return f"Prefer companies under {normalized} revenue"
-
-
 def _sanitize_focus_phrase(value: str) -> str:
     cleaned = re.sub(r"\([^)]*\)", "", str(value or "")).strip(" ,.;:-")
     cleaned = cleaned.split("(", 1)[0].strip(" ,.;:-")
@@ -2764,165 +3426,9 @@ def _sanitize_focus_phrase(value: str) -> str:
     return " ".join(words[:8]).strip()
 
 
-def _extract_brief_capability_claims(text: str) -> list[str]:
-    if not text:
-        return []
-    claims: list[str] = []
-    patterns = (
-        r"(?:provide|provides|providing|sell|sells|selling|build|builds|building|offer|offers|offering)\s+software\s+(?:to|for)\s+([^.,;\n]+)",
-        r"software\s+(?:to|for)\s+([^.,;\n]+)",
-    )
-    for pattern in patterns:
-        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-            phrase = _sanitize_focus_phrase(match.group(1))
-            if phrase:
-                claims.append(f"Software for {phrase}")
-    return _normalize_string_list(claims, max_items=3, max_len=140)
-
-
-def _humanize_customer_profile(value: str) -> str:
-    cleaned = str(value or "").strip()
-    if cleaned.lower().startswith("targets "):
-        cleaned = cleaned[8:]
-    cleaned = re.sub(r"\s+customers?$", "", cleaned, flags=re.IGNORECASE).strip()
-    cleaned = re.sub(r"^named customer proof:\s*", "", cleaned, flags=re.IGNORECASE).strip()
-    return cleaned
-
-
-def _fallback_lane_focus(
-    customer_tags: list[str],
-    include_terms: list[str],
-    business_model: list[str],
-) -> Optional[str]:
-    for tag in customer_tags:
-        customer_focus = _humanize_customer_profile(tag)
-        if not customer_focus:
-            continue
-        if "health" in customer_focus.lower() or "hospital" in customer_focus.lower() or "doctor" in customer_focus.lower():
-            return "Healthcare provider software"
-        return f"Software for {customer_focus}"
-    for term in include_terms:
-        if term.lower().startswith("prefer companies under "):
-            continue
-        if term.lower().startswith("prefer companies active in "):
-            continue
-        return term
-    if business_model:
-        return business_model[0]
-    return None
-
-
-def _lane_title(lane_type: str, capabilities: list[str], customer_tags: list[str], business_model: list[str]) -> str:
-    prefix = "Core" if lane_type == "core" else "Adjacent"
-    focus = (capabilities or [])[0] if capabilities else _fallback_lane_focus(customer_tags, [], business_model)
-    if focus:
-        return f"{prefix}: {focus}"[:255]
-    return f"{prefix} sourcing lane"
-
-
-def _claim_from_value(
-    claims: list[dict[str, Any]],
-    *,
-    section: str,
-    value: str,
-    rendering: str,
-    confidence: float,
-    source_pill_ids: Optional[list[str]] = None,
-    user_status: str = "system",
-) -> None:
-    cleaned = str(value or "").strip()
-    if not cleaned or section not in THESIS_SECTIONS:
-        return
-    claims.append(
-        {
-            "section": section,
-            "value": cleaned,
-            "rendering": rendering,
-            "confidence": confidence,
-            "source_pill_ids": source_pill_ids or [],
-            "user_status": user_status,
-        }
-    )
-
-
-def _site_source_pill_ids_by_url(profile: CompanyProfile, source_pills: list[dict[str, Any]]) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    for pill in source_pills:
-        url = normalize_url(pill.get("url"))
-        if url:
-            mapping[url] = str(pill.get("id"))
-    context_pack = profile.context_pack_json if isinstance(profile.context_pack_json, dict) else {}
-    for site in context_pack.get("sites") or []:
-        if not isinstance(site, dict):
-            continue
-        site_url = normalize_url(site.get("url"))
-        if site_url and site_url not in mapping:
-            pill = {
-                "id": _stable_id("pill", site_url),
-                "label": str(site.get("company_name") or normalize_domain(site_url) or "source")[:120],
-                "url": site_url,
-            }
-            source_pills.append(pill)
-            mapping[site_url] = pill["id"]
-        for page in site.get("pages") or []:
-            if not isinstance(page, dict):
-                continue
-            page_url = normalize_url(page.get("url"))
-            if page_url and page_url not in mapping:
-                pill = {
-                    "id": _stable_id("pill", page_url),
-                    "label": str(page.get("title") or normalize_domain(page_url) or "source")[:120],
-                    "url": page_url,
-                }
-                source_pills.append(pill)
-                mapping[page_url] = pill["id"]
-    normalized = normalize_source_pills(
-        source_pills,
-        buyer_url=profile.buyer_company_url,
-        reference_company_urls=profile.reference_company_urls or [],
-        reference_evidence_urls=profile.reference_evidence_urls or [],
-    )
-    source_pills[:] = normalized
-    return {normalize_url(pill.get("url")): str(pill.get("id")) for pill in normalized if normalize_url(pill.get("url"))}
-
-
-def _extract_customer_profile_claims(text: str) -> list[str]:
-    lower_text = text.lower()
-    claims: list[str] = []
-    for keyword in CUSTOMER_KEYWORDS:
-        if keyword.lower() in lower_text:
-            claims.append(f"Targets {keyword} customers")
-    return _normalize_string_list(claims, max_items=6, max_len=120)
-
-
-def _extract_keyword_claims(text: str, patterns: Iterable[tuple[str, str]]) -> list[str]:
-    lower_text = text.lower()
-    claims: list[str] = []
-    for token, label in patterns:
-        if token in lower_text:
-            claims.append(label)
-    return _normalize_string_list(claims, max_items=6, max_len=160)
-
-
-def _extract_business_model_claims(text: str) -> list[str]:
-    lower_text = text.lower()
-    claims: list[str] = []
-    negative_saas = any(token in lower_text for token in ["no saas", "non-saas", "not saas"])
-    negative_subscription = "no subscription" in lower_text or "non-subscription" in lower_text
-    for token, label in BUSINESS_MODEL_PATTERNS:
-        if token not in lower_text:
-            continue
-        if token == "saas" and negative_saas:
-            continue
-        if token == "subscription" and negative_subscription:
-            continue
-        claims.append(label)
-    return _normalize_string_list(claims, max_items=6, max_len=160)
-
-
 def _derive_source_pills_from_profile(profile: CompanyProfile) -> list[dict[str, Any]]:
     source_items: list[dict[str, Any]] = []
-    for url in [profile.buyer_company_url, *(profile.reference_company_urls or []), *(profile.reference_evidence_urls or [])]:
+    for url in [profile.buyer_company_url, *(profile.comparator_seed_urls or []), *(profile.supporting_evidence_urls or [])]:
         if normalize_url(url):
             source_items.append({"url": url})
 
@@ -2961,208 +3467,129 @@ def _derive_source_pills_from_profile(profile: CompanyProfile) -> list[dict[str,
     return normalize_source_pills(
         source_items,
         buyer_url=profile.buyer_company_url,
-        reference_company_urls=profile.reference_company_urls or [],
-        reference_evidence_urls=profile.reference_evidence_urls or [],
+        comparator_seed_urls=profile.comparator_seed_urls or [],
+        supporting_evidence_urls=profile.supporting_evidence_urls or [],
     )
 
+def build_expansion_inputs(
+    context_pack_v2: dict[str, Any],
+    *,
+    comparator_seed_urls: Iterable[str],
+    buyer_url: Any,
+) -> list[dict[str, Any]]:
+    def _candidate_domains_from_sites() -> list[str]:
+        domains: list[str] = []
+        for site in context_pack_v2.get("sites") or []:
+            if not isinstance(site, dict):
+                continue
+            comparator_domain = normalize_domain(site.get("website") or site.get("url"))
+            if comparator_domain:
+                domains.append(comparator_domain)
+        return domains
 
-def bootstrap_thesis_payload(
+    def _build_from_domains(candidate_domains: list[str]) -> list[dict[str, Any]]:
+        contexts: list[dict[str, Any]] = []
+        seen_domains: set[str] = set()
+        seen_entities: set[str] = set()
+        for comparator_domain in candidate_domains:
+            if not comparator_domain or comparator_domain == buyer_domain or comparator_domain in seen_domains:
+                continue
+            seen_domains.add(comparator_domain)
+            scoped_pack = _domain_scoped_context_pack(context_pack_v2, domain=comparator_domain)
+            scoped_sites = []
+            for site in scoped_pack.get("sites") or []:
+                if not isinstance(site, dict):
+                    continue
+                site_domain = normalize_domain(site.get("website") or site.get("url"))
+                if (
+                    site_domain
+                    and (
+                        site_domain == comparator_domain
+                        or site_domain.endswith(f".{comparator_domain}")
+                        or comparator_domain.endswith(f".{site_domain}")
+                    )
+                ):
+                    scoped_sites.append(site)
+            if not scoped_sites:
+                continue
+            taxonomy_nodes, taxonomy_edges = _build_taxonomy_map(scoped_pack)
+            nodes_by_layer = {
+                layer: [node for node in taxonomy_nodes if node.get("layer") == layer]
+                for layer in TAXONOMY_LAYERS
+            }
+            named_customers = [
+                item
+                for item in (scoped_pack.get("named_customers") or [])
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+            partner_integrations = [
+                item
+                for item in (scoped_pack.get("integrations") or [])
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+            primary_site = scoped_sites[0]
+            raw_name = str(primary_site.get("company_name") or "").strip()
+            domain_name = _domain_brand_name(primary_site.get("website") or primary_site.get("url") or comparator_domain)
+            name_word_count = len([part for part in re.split(r"\s+", raw_name) if part])
+            comparator_name = raw_name or domain_name or comparator_domain
+            if (
+                not raw_name
+                or name_word_count > 8
+                or any(token in raw_name.lower() for token in ("solutions for", "find out more", "changing the game", "provides"))
+            ):
+                comparator_name = domain_name or comparator_name
+            entity_key = _normalize_phrase_key(comparator_name)
+            if entity_key and entity_key in seen_entities:
+                continue
+            if entity_key:
+                seen_entities.add(entity_key)
+            contexts.append(
+                {
+                    "name": comparator_name,
+                    "website": str(primary_site.get("website") or primary_site.get("url") or comparator_domain),
+                    "source_summary": _generate_market_map_summary(
+                        comparator_name,
+                        capabilities=nodes_by_layer.get("capability", []),
+                        workflows=nodes_by_layer.get("workflow", []),
+                        customers=nodes_by_layer.get("customer_archetype", []),
+                        named_customers=named_customers,
+                    ),
+                    "taxonomy_nodes": taxonomy_nodes,
+                    "taxonomy_edges": taxonomy_edges,
+                    "named_customer_proof": named_customers[:12],
+                    "partner_integration_proof": partner_integrations[:12],
+                    "crawl_coverage": scoped_pack.get("crawl_coverage") or {},
+                }
+            )
+        return contexts
+
+    buyer_domain = normalize_domain(buyer_url)
+    candidate_domains: list[str] = []
+    for seed_url in comparator_seed_urls or []:
+        comparator_domain = normalize_domain(seed_url)
+        if comparator_domain:
+            candidate_domains.append(comparator_domain)
+    if not candidate_domains:
+        candidate_domains = _candidate_domains_from_sites()
+
+    expansion_inputs = _build_from_domains(candidate_domains)
+    if expansion_inputs or not comparator_seed_urls:
+        return expansion_inputs
+
+    return _build_from_domains(_candidate_domains_from_sites())
+
+
+def build_company_context_artifacts(
     profile: CompanyProfile,
+    *,
+    override_nodes: Any = None,
+    source_summary_override: Any = None,
+    open_questions_override: Any = None,
+    confirmed_at: datetime | None = None,
 ) -> dict[str, Any]:
+    full_context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
     source_pills = _derive_source_pills_from_profile(profile)
-    pill_id_by_url = _site_source_pill_ids_by_url(profile, source_pills)
-    claims: list[dict[str, Any]] = []
-    buyer_url = normalize_url(profile.buyer_company_url)
-    buyer_site = _resolve_buyer_site(profile)
     buyer_evidence = assess_buyer_evidence(profile)
-
-    buyer_site_has_content = _site_has_meaningful_content(buyer_site)
-    buyer_site_context_text = _extract_site_context_text(buyer_site) if buyer_site_has_content else ""
-    buyer_generated_summary = (
-        _generated_summary_for_buyer(profile, buyer_site)
-        if buyer_url and isinstance(buyer_site, dict) and buyer_site_has_content
-        else ""
-    )
-    if buyer_url:
-        buyer_only_context_text = "\n".join(
-            part for part in [buyer_generated_summary, buyer_site_context_text] if str(part or "").strip()
-        )
-        context_text = buyer_only_context_text if bool(buyer_evidence.get("used_for_inference")) else ""
-    else:
-        context_text = _extract_context_text(profile)
-    buyer_site_url = normalize_url(buyer_site.get("url")) if isinstance(buyer_site, dict) else buyer_url
-    buyer_site_pill = pill_id_by_url.get(buyer_site_url or "") if buyer_site_url else None
-
-    for signal in (buyer_site.get("signals") or [])[:60]:
-        if not isinstance(signal, dict):
-            continue
-        signal_type = str(signal.get("type") or "").strip().lower()
-        signal_value = str(signal.get("value") or "").strip()
-        signal_url = normalize_url(signal.get("source_url")) or buyer_site_url or buyer_url or ""
-        pill_ids = [pill_id_by_url.get(signal_url)] if pill_id_by_url.get(signal_url) else ([buyer_site_pill] if buyer_site_pill else [])
-        if signal_type == "capability":
-            _claim_from_value(
-                claims,
-                section="core_capability",
-                value=signal_value,
-                rendering="fact",
-                confidence=0.84,
-                source_pill_ids=pill_ids,
-            )
-        elif signal_type == "service":
-            _claim_from_value(
-                claims,
-                section="adjacent_capability",
-                value=signal_value,
-                rendering="hypothesis",
-                confidence=0.58,
-                source_pill_ids=pill_ids,
-            )
-        elif signal_type == "integration":
-            _claim_from_value(
-                claims,
-                section="deployment_model",
-                value=f"Integration signal: {signal_value}",
-                rendering="fact",
-                confidence=0.72,
-                source_pill_ids=pill_ids,
-            )
-
-    for customer in (buyer_site.get("customer_evidence") or [])[:8]:
-        if not isinstance(customer, dict):
-            continue
-        customer_name = str(customer.get("name") or "").strip()
-        source_url = normalize_url(customer.get("source_url")) or buyer_site_url or ""
-        pill_ids = [pill_id_by_url.get(source_url)] if pill_id_by_url.get(source_url) else ([buyer_site_pill] if buyer_site_pill else [])
-        if customer_name:
-            _claim_from_value(
-                claims,
-                section="customer_profile",
-                value=f"Named customer proof: {customer_name}",
-                rendering="fact",
-                confidence=0.73,
-                source_pill_ids=pill_ids,
-            )
-
-    for claim_value in _extract_customer_profile_claims(context_text):
-        _claim_from_value(
-            claims,
-            section="customer_profile",
-            value=claim_value,
-            rendering="hypothesis",
-            confidence=0.55,
-            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
-        )
-
-    for claim_value in _extract_brief_capability_claims(context_text):
-        _claim_from_value(
-            claims,
-            section="core_capability",
-            value=claim_value,
-            rendering="hypothesis",
-            confidence=0.52,
-            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
-        )
-
-    for claim_value in _extract_business_model_claims(context_text):
-        _claim_from_value(
-            claims,
-            section="business_model",
-            value=claim_value,
-            rendering="hypothesis",
-            confidence=0.58,
-            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
-        )
-
-    for claim_value in _extract_keyword_claims(context_text, DEPLOYMENT_PATTERNS):
-        _claim_from_value(
-            claims,
-            section="deployment_model",
-            value=claim_value,
-            rendering="hypothesis",
-            confidence=0.56,
-            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
-        )
-
-    for claim_value in _extract_keyword_claims(context_text, NEGATIVE_CONSTRAINT_PATTERNS):
-        _claim_from_value(
-            claims,
-            section="exclude_constraint",
-            value=claim_value,
-            rendering="hypothesis",
-            confidence=0.72,
-            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
-        )
-
-    employee_signal = _extract_employee_signal(context_text)
-    if employee_signal:
-        _claim_from_value(
-            claims,
-            section="size_signal",
-            value=employee_signal,
-            rendering="fact",
-            confidence=0.62,
-            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
-        )
-
-    revenue_signal = _extract_revenue_signal(context_text)
-    if revenue_signal:
-        _claim_from_value(
-            claims,
-            section="include_constraint",
-            value=revenue_signal,
-            rendering="hypothesis",
-            confidence=0.72,
-            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
-        )
-
-    if not profile.geo_scope and re.search(r"\beurope|european\b", context_text, flags=re.IGNORECASE):
-        _claim_from_value(
-            claims,
-            section="geography",
-            value="Primary sourcing region: Europe",
-            rendering="hypothesis",
-            confidence=0.72,
-            source_pill_ids=[buyer_site_pill] if buyer_site_pill else [],
-        )
-
-    geo_scope = profile.geo_scope or {}
-    region = str(geo_scope.get("region") or "").strip()
-    if region:
-        _claim_from_value(
-            claims,
-            section="geography",
-            value=f"Primary sourcing region: {region}",
-            rendering="fact",
-            confidence=0.9,
-            source_pill_ids=[],
-        )
-    include_countries = _normalize_string_list(geo_scope.get("include_countries"), max_items=8, max_len=32)
-    if include_countries:
-        _claim_from_value(
-            claims,
-            section="include_constraint",
-            value=f"Prefer companies active in {', '.join(include_countries)}",
-            rendering="fact",
-            confidence=0.9,
-            source_pill_ids=[],
-        )
-    exclude_countries = _normalize_string_list(geo_scope.get("exclude_countries"), max_items=8, max_len=32)
-    if exclude_countries:
-        _claim_from_value(
-            claims,
-            section="exclude_constraint",
-            value=f"Exclude companies limited to {', '.join(exclude_countries)}",
-            rendering="fact",
-            confidence=0.9,
-            source_pill_ids=[],
-        )
-
-    normalized_claims = normalize_thesis_claims(
-        claims,
-        available_pill_ids={pill["id"] for pill in source_pills},
-    )
-
     (
         context_pack_v2,
         taxonomy_nodes,
@@ -3173,438 +3600,276 @@ def bootstrap_thesis_payload(
     ) = _build_market_map_artifacts(
         profile,
         source_pills=source_pills,
+        override_nodes=override_nodes,
+    )
+    expansion_inputs = build_expansion_inputs(
+        full_context_pack_v2,
+        comparator_seed_urls=profile.comparator_seed_urls or [],
+        buyer_url=profile.buyer_company_url,
     )
 
-    active_claims = [claim for claim in normalized_claims if claim["user_status"] != "removed"]
-    open_questions: list[str] = []
-    if buyer_evidence.get("status") == "insufficient" and buyer_evidence.get("warning"):
-        open_questions.append(str(buyer_evidence.get("warning")))
-    if not any(claim["section"] == "business_model" for claim in active_claims):
-        open_questions.append("Confirm the dominant revenue model (SaaS, license, services, or mixed).")
-    if not any(claim["section"] == "core_capability" for claim in active_claims):
-        open_questions.append("Define the main workflow, product category, or capability to anchor the core lane.")
-    if not any(claim["section"] == "adjacent_capability" for claim in active_claims):
-        open_questions.append("Identify one or two adjacent capabilities worth sourcing against.")
-    if not any(claim["section"] == "size_signal" for claim in active_claims):
-        open_questions.append("Set an employee or company-size window for sourcing.")
-    if not active_claims:
-        open_questions.extend(DEFAULT_OPEN_QUESTIONS)
-    for question in market_map_open_questions:
-        if question not in open_questions:
-            open_questions.append(question)
-
-    buyer_site_summary = str(buyer_site.get("summary") or "").strip() if isinstance(buyer_site, dict) else ""
-    market_map_summary = (
-        str(market_map_brief.get("source_summary") or "").strip()
-        if (not buyer_url or bool(buyer_evidence.get("used_for_inference")))
-        else ""
-    )
-    summary = str(
-        get_manual_brief_text(profile)
-        or buyer_generated_summary
-        or (buyer_site_summary if buyer_url else "")
-        or (buyer_site_context_text[:1200] if buyer_url and buyer_site_context_text else "")
-        or (get_generated_context_summary(profile) if not buyer_url else "")
-        or context_text[:1200]
-        or market_map_summary
+    source_summary = str(
+        source_summary_override
+        or ((market_map_brief.get("source_summary") if isinstance(market_map_brief, dict) else None) or "")
         or (
             "Buyer website crawled, but no first-party product or customer evidence was extracted yet. "
             "Add supporting evidence or regenerate after improving the crawl target."
-            if buyer_url
-            else "System-generated sourcing thesis pending confirmation."
+            if profile.buyer_company_url
+            else "Source company context is still too thin to generate a market map brief."
         )
     ).strip()[:8000]
 
-    final_open_questions = _sanitize_reasoned_open_questions(market_map_brief.get("open_questions"))
-    if market_map_brief.get("reasoning_status") != "success":
-        for question in normalize_open_questions(open_questions):
-            if question not in final_open_questions:
-                final_open_questions.append(question)
-            if len(final_open_questions) >= 4:
-                break
+    final_open_questions = normalize_open_questions(
+        open_questions_override if open_questions_override is not None else market_map_brief.get("open_questions")
+    )
+    if not final_open_questions:
+        final_open_questions = normalize_open_questions(market_map_open_questions)
+    if buyer_evidence.get("status") == "insufficient" and buyer_evidence.get("warning"):
+        warning = str(buyer_evidence.get("warning"))
+        if warning not in final_open_questions:
+            final_open_questions.insert(0, warning)
+    final_open_questions = normalize_open_questions(final_open_questions)[:8]
+
+    market_map_brief = {
+        **(market_map_brief if isinstance(market_map_brief, dict) else {}),
+        "source_summary": source_summary,
+        "open_questions": final_open_questions,
+        "confirmed_at": confirmed_at.isoformat() if confirmed_at else None,
+    }
+    expansion_brief = build_expansion_brief(
+        profile=profile,
+        market_map_brief=market_map_brief,
+        taxonomy_nodes=taxonomy_nodes,
+        expansion_inputs=expansion_inputs,
+    )
 
     return {
-        "summary": summary,
-        "claims": normalized_claims,
         "source_pills": source_pills,
-        "open_questions": final_open_questions,
         "buyer_evidence": buyer_evidence,
         "context_pack_v2": context_pack_v2,
         "taxonomy_nodes": taxonomy_nodes,
         "taxonomy_edges": taxonomy_edges,
         "lens_seeds": lens_seeds,
-        "market_map_brief": {
-            **market_map_brief,
-            "source_summary": str(market_map_brief.get("source_summary") or summary).strip()[:8000],
-            "open_questions": final_open_questions,
-        },
+        "market_map_brief": market_map_brief,
+        "expansion_brief": expansion_brief,
+        "expansion_inputs": expansion_inputs,
         "generated_at": datetime.utcnow(),
-        "confirmed_at": None,
+        "confirmed_at": confirmed_at,
     }
 
 
-def derive_search_lane_payloads(
-    thesis_pack: BuyerThesisPack | dict[str, Any],
+def _scope_status_from_taxonomy_scope(scope_status: Any) -> str:
+    value = str(scope_status or "in_scope").strip().lower()
+    if value == "removed":
+        return "user_removed"
+    if value == "out_of_scope":
+        return "user_deprioritized"
+    return "source_grounded"
+
+
+def _taxonomy_scope_from_scope_status(status: Any) -> str:
+    value = str(status or "").strip().lower()
+    if value == "user_removed":
+        return "removed"
+    if value == "user_deprioritized":
+        return "out_of_scope"
+    return "in_scope"
+
+
+def _group_scope_item_type(layer: str) -> str:
+    mapping = {
+        "capability": "source_capability",
+        "customer_archetype": "source_customer_segment",
+        "workflow": "source_workflow",
+        "delivery_or_integration": "source_delivery_or_integration",
+    }
+    return mapping.get(str(layer or "").strip(), "source_node")
+
+
+def derive_scope_review_payload(
+    company_context_pack: CompanyContextPack | dict[str, Any],
     profile: CompanyProfile,
-) -> list[dict[str, Any]]:
-    if isinstance(thesis_pack, BuyerThesisPack):
-        claims = thesis_pack.claims_json or []
-        market_map_brief = thesis_pack.market_map_brief_json or {}
-        taxonomy_nodes = thesis_pack.taxonomy_nodes_json or []
-        lens_seeds = thesis_pack.lens_seeds_json or []
-        confirmed_at = thesis_pack.confirmed_at
-    else:
-        claims = thesis_pack.get("claims") or []
-        market_map_brief = thesis_pack.get("market_map_brief") or {}
-        taxonomy_nodes = thesis_pack.get("taxonomy_nodes") or []
-        lens_seeds = thesis_pack.get("lens_seeds") or []
-        confirmed_at = thesis_pack.get("confirmed_at")
-    active_claims = [
-        claim for claim in normalize_thesis_claims(claims)
-        if str(claim.get("user_status") or "system") != "removed"
-    ]
-    active_nodes = [
-        node
-        for node in normalize_taxonomy_nodes(taxonomy_nodes)
-        if str(node.get("scope_status") or "in_scope") == "in_scope"
-    ]
-    nodes_by_layer: dict[str, list[dict[str, Any]]] = {
-        layer: [node for node in active_nodes if node.get("layer") == layer]
-        for layer in TAXONOMY_LAYERS
-    }
-    normalized_lens_seeds = normalize_lens_seeds(lens_seeds)
-
-    section_values: dict[str, list[str]] = {}
-    for claim in active_claims:
-        section = str(claim.get("section"))
-        section_values.setdefault(section, [])
-        value = str(claim.get("value") or "").strip()
-        if value and value not in section_values[section]:
-            section_values[section].append(value)
-
-    include_terms = section_values.get("include_constraint", [])
-    exclude_terms = section_values.get("exclude_constraint", [])
-    customer_tags = section_values.get("customer_profile", [])
-    reference_seed_urls = _normalize_string_list(profile.reference_company_urls or [], max_items=8, max_len=220)
-
-    customer_phrases = [
-        str(node.get("phrase") or "").strip()
-        for node in nodes_by_layer.get("customer_archetype", [])
-        if str(node.get("phrase") or "").strip()
-    ]
-    workflow_phrases = [
-        str(node.get("phrase") or "").strip()
-        for node in nodes_by_layer.get("workflow", [])
-        if str(node.get("phrase") or "").strip()
-    ]
-    capability_phrases = [
-        str(node.get("phrase") or "").strip()
-        for node in nodes_by_layer.get("capability", [])
-        if str(node.get("phrase") or "").strip()
-    ]
-    active_lens_labels = [
-        str(seed.get("label") or seed.get("lens_type") or "").strip()
-        for seed in normalized_lens_seeds
-        if str(seed.get("label") or seed.get("lens_type") or "").strip()
-    ]
-
-    customer_tags = _normalize_string_list(customer_phrases + customer_tags, max_items=8, max_len=140)
-    core_capabilities = _normalize_string_list(
-        capability_phrases + workflow_phrases + section_values.get("core_capability", []),
-        max_items=8,
-        max_len=140,
-    )
-    adjacent_capabilities = _normalize_string_list(
-        section_values.get("adjacent_capability", []) + workflow_phrases[1:] + active_lens_labels,
-        max_items=8,
-        max_len=140,
-    )
-    business_model = section_values.get("business_model", [])[:2]
-    market_map_include_terms = _normalize_string_list(
-        workflow_phrases[:3]
-        + [
-            item.get("name")
-            for item in (market_map_brief.get("named_customer_proof") or [])
-            if isinstance(item, dict) and item.get("name")
-        ]
-        + [
-            item.get("name")
-            for item in (market_map_brief.get("integration_partner_proof") or [])
-            if isinstance(item, dict) and item.get("name")
-        ],
-        max_items=8,
-        max_len=140,
-    )
-    include_terms = _normalize_string_list(include_terms + market_map_include_terms, max_items=10, max_len=140)
-    if not core_capabilities:
-        fallback_core = _fallback_lane_focus(customer_tags, include_terms, business_model)
-        if fallback_core:
-            core_capabilities = [fallback_core]
-    if not adjacent_capabilities and core_capabilities:
-        adjacent_capabilities = [f"Adjacent workflows around {core_capabilities[0]}"][:1]
-
-    core_lane = {
-        "lane_type": "core",
-        "title": _lane_title("core", core_capabilities, customer_tags, business_model),
-        "intent": (
-            "Source direct-fit companies aligned with the confirmed buyer thesis."
-            if core_capabilities
-            else "Source direct-fit companies once core capabilities are confirmed."
-        ),
-        "capabilities": core_capabilities,
-        "customer_tags": customer_tags[:6],
-        "must_include_terms": include_terms[:6] + business_model[:2],
-        "must_exclude_terms": exclude_terms[:6],
-        "seed_urls": reference_seed_urls[:6],
-        "status": "confirmed" if confirmed_at else "draft",
-    }
-    adjacent_lane = {
-        "lane_type": "adjacent",
-        "title": _lane_title("adjacent", adjacent_capabilities, customer_tags, business_model),
-        "intent": (
-            "Source adjacent capability extensions and neighboring product lines."
-            if adjacent_capabilities
-            else "Capture adjacent sourcing ideas beyond the direct product footprint."
-        ),
-        "capabilities": adjacent_capabilities,
-        "customer_tags": customer_tags[:4],
-        "must_include_terms": include_terms[:4],
-        "must_exclude_terms": exclude_terms[:6],
-        "seed_urls": reference_seed_urls[:3],
-        "status": "confirmed" if confirmed_at else "draft",
-    }
-    return [normalize_search_lane_payload(core_lane), normalize_search_lane_payload(adjacent_lane)]
-
-
-def normalize_search_lane_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    lane_type = str(payload.get("lane_type") or "").strip().lower()
-    if lane_type not in LANE_TYPES:
-        raise ValueError("Unsupported lane type")
-    status = str(payload.get("status") or "draft").strip().lower()
-    if status not in LANE_STATUSES:
-        status = "draft"
-    title = str(payload.get("title") or f"{lane_type.title()} sourcing lane").strip()[:255]
-    intent = str(payload.get("intent") or "").strip()[:1000] or None
-    return {
-        "lane_type": lane_type,
-        "title": title,
-        "intent": intent,
-        "capabilities": _normalize_string_list(payload.get("capabilities"), max_items=12, max_len=140),
-        "customer_tags": _normalize_string_list(payload.get("customer_tags"), max_items=10, max_len=140),
-        "must_include_terms": _normalize_string_list(payload.get("must_include_terms"), max_items=12, max_len=140),
-        "must_exclude_terms": _normalize_string_list(payload.get("must_exclude_terms"), max_items=12, max_len=140),
-        "seed_urls": [normalize_url(url) for url in _normalize_string_list(payload.get("seed_urls"), max_items=10, max_len=240) if normalize_url(url)],
-        "status": status,
-    }
-
-
-def apply_thesis_adjustment_operations(
-    thesis_pack: BuyerThesisPack | dict[str, Any],
-    operations: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    if isinstance(thesis_pack, BuyerThesisPack):
-        payload = {
-            "summary": thesis_pack.summary,
-            "claims": deepcopy(thesis_pack.claims_json or []),
-            "source_pills": deepcopy(thesis_pack.source_pills_json or []),
-            "open_questions": deepcopy(thesis_pack.open_questions_json or []),
-            "market_map_brief": deepcopy(thesis_pack.market_map_brief_json or {}),
-            "taxonomy_nodes": deepcopy(thesis_pack.taxonomy_nodes_json or []),
-            "taxonomy_edges": deepcopy(thesis_pack.taxonomy_edges_json or []),
-            "lens_seeds": deepcopy(thesis_pack.lens_seeds_json or []),
-            "generated_at": thesis_pack.generated_at,
-            "confirmed_at": thesis_pack.confirmed_at,
-        }
+    if isinstance(company_context_pack, CompanyContextPack):
+        taxonomy_nodes = normalize_taxonomy_nodes(company_context_pack.taxonomy_nodes_json or [])
+        market_map_brief = company_context_pack.market_map_brief_json or {}
+        expansion_brief = normalize_expansion_brief(company_context_pack.expansion_brief_json or {})
     else:
-        payload = {
-            "summary": thesis_pack.get("summary"),
-            "claims": deepcopy(thesis_pack.get("claims") or []),
-            "source_pills": deepcopy(thesis_pack.get("source_pills") or []),
-            "open_questions": deepcopy(thesis_pack.get("open_questions") or []),
-            "market_map_brief": deepcopy(thesis_pack.get("market_map_brief") or {}),
-            "taxonomy_nodes": deepcopy(thesis_pack.get("taxonomy_nodes") or []),
-            "taxonomy_edges": deepcopy(thesis_pack.get("taxonomy_edges") or []),
-            "lens_seeds": deepcopy(thesis_pack.get("lens_seeds") or []),
-            "generated_at": thesis_pack.get("generated_at"),
-            "confirmed_at": thesis_pack.get("confirmed_at"),
-        }
+        taxonomy_nodes = normalize_taxonomy_nodes(company_context_pack.get("taxonomy_nodes") or [])
+        market_map_brief = company_context_pack.get("market_map_brief") or {}
+        expansion_brief = normalize_expansion_brief(company_context_pack.get("expansion_brief") or {})
 
-    claims = normalize_thesis_claims(
-        payload["claims"],
-        available_pill_ids={str(pill.get("id")) for pill in (payload["source_pills"] or []) if isinstance(pill, dict)},
-    )
-    open_questions = normalize_open_questions(payload["open_questions"])
-    applied_ops: list[dict[str, Any]] = []
+    selected_ids = {
+        str(item.get("id") or "")
+        for key in ("customer_nodes", "workflow_nodes", "capability_nodes", "delivery_or_integration_nodes")
+        for item in (market_map_brief.get(key) or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
 
-    def _claim_index() -> dict[str, dict[str, Any]]:
-        return {str(claim.get("id")): claim for claim in claims}
-
-    for raw_op in operations or []:
-        if not isinstance(raw_op, dict):
-            continue
-        op = str(raw_op.get("op") or "").strip().lower()
-        if not op:
-            continue
-        claim_id = str(raw_op.get("claim_id") or "").strip()
-        claim_lookup = _claim_index()
-        if op in {"remove_claim", "confirm_claim", "set_status", "edit_claim", "update_claim"} and claim_id and claim_id not in claim_lookup:
-            continue
-        if op == "remove_claim":
-            claim_lookup[claim_id]["user_status"] = "removed"
-            applied_ops.append({"op": op, "claim_id": claim_id})
-        elif op in {"confirm_claim", "set_status"}:
-            new_status = str(raw_op.get("user_status") or "confirmed").strip().lower()
-            if new_status not in CLAIM_USER_STATUSES:
-                new_status = "confirmed"
-            claim_lookup[claim_id]["user_status"] = new_status
-            applied_ops.append({"op": op, "claim_id": claim_id, "user_status": new_status})
-        elif op in {"edit_claim", "update_claim"}:
-            claim = claim_lookup[claim_id]
-            if raw_op.get("value") is not None:
-                claim["value"] = str(raw_op.get("value") or "").strip()[:280]
-            if raw_op.get("section") in THESIS_SECTIONS:
-                claim["section"] = str(raw_op.get("section"))
-            if raw_op.get("rendering") in CLAIM_RENDERINGS:
-                claim["rendering"] = str(raw_op.get("rendering"))
-            if raw_op.get("confidence") is not None:
-                claim["confidence"] = _clamp_confidence(raw_op.get("confidence"), default=claim.get("confidence") or 0.65)
-            if raw_op.get("source_pill_ids") is not None:
-                claim["source_pill_ids"] = _normalize_string_list(raw_op.get("source_pill_ids"), max_items=8, max_len=64)
-            claim["user_status"] = "edited"
-            applied_ops.append({"op": op, "claim_id": claim_id})
-        elif op == "add_claim":
-            section = str(raw_op.get("section") or "").strip()
-            value = str(raw_op.get("value") or "").strip()
-            if section not in THESIS_SECTIONS or not value:
+    def _source_group(layer: str) -> list[dict[str, Any]]:
+        rows = []
+        for node in taxonomy_nodes:
+            if not isinstance(node, dict):
                 continue
-            claims.append(
+            if str(node.get("layer") or "").strip() != layer:
+                continue
+            label = str(node.get("phrase") or "").strip()
+            if not label:
+                continue
+            rows.append(
                 {
-                    "id": str(raw_op.get("id") or _stable_id("claim", section, value)),
-                    "section": section,
-                    "value": value[:280],
-                    "rendering": str(raw_op.get("rendering") or "hypothesis"),
-                    "confidence": _clamp_confidence(raw_op.get("confidence"), default=0.55),
-                    "source_pill_ids": _normalize_string_list(raw_op.get("source_pill_ids"), max_items=8, max_len=64),
-                    "user_status": "edited",
+                    "id": str(node.get("id") or ""),
+                    "label": label,
+                    "scope_item_type": _group_scope_item_type(layer),
+                    "origin": "source_brief",
+                    "status": _scope_status_from_taxonomy_scope(node.get("scope_status")),
+                    "confidence": _clamp_confidence(node.get("confidence"), default=0.68),
+                    "evidence_ids": _normalize_string_list(node.get("evidence_ids"), max_items=8, max_len=96),
+                    "evidence_urls": [],
+                    "supporting_node_ids": [str(node.get("id") or "")] if str(node.get("id") or "").strip() else [],
+                    "source_entity_names": [],
+                    "why_it_matters": None,
+                    "priority_tier": "core" if str(node.get("id") or "") in selected_ids else "supporting",
                 }
             )
-            applied_ops.append({"op": op, "section": section, "value": value[:280]})
-        elif op == "replace_summary":
-            summary = str(raw_op.get("summary") or "").strip()
-            if summary:
-                payload["summary"] = summary[:8000]
-                applied_ops.append({"op": op})
-        elif op == "add_open_question":
-            question = str(raw_op.get("value") or "").strip()
-            if question:
-                open_questions.append(question[:240])
-                applied_ops.append({"op": op, "value": question[:240]})
-        elif op == "remove_open_question":
-            question = str(raw_op.get("value") or "").strip().lower()
-            if question:
-                open_questions = [item for item in open_questions if item.strip().lower() != question]
-                applied_ops.append({"op": op, "value": question})
+        return sorted(
+            rows,
+            key=lambda item: (
+                0 if item.get("priority_tier") == "core" else 1,
+                -float(item.get("confidence") or 0.0),
+                str(item.get("label") or ""),
+            ),
+        )[:12]
 
-    normalized_claims = normalize_thesis_claims(
-        claims,
-        available_pill_ids={str(pill.get("id")) for pill in (payload["source_pills"] or []) if isinstance(pill, dict)},
-    )
-    payload["claims"] = normalized_claims
-    payload["open_questions"] = normalize_open_questions(open_questions)
-    payload["confirmed_at"] = datetime.utcnow()
-    payload["applied_operations"] = applied_ops
-    return payload
-
-
-def infer_adjustment_operations_from_message(
-    message: str,
-    thesis_pack: BuyerThesisPack | dict[str, Any],
-) -> list[dict[str, Any]]:
-    text = str(message or "").strip()
-    if not text:
-        return []
-    claims = thesis_pack.claims_json if isinstance(thesis_pack, BuyerThesisPack) else thesis_pack.get("claims") or []
-    normalized_claims = normalize_thesis_claims(claims)
-    lowered_message = text.lower()
-    operations: list[dict[str, Any]] = []
-
-    for claim in normalized_claims:
-        claim_value = str(claim.get("value") or "").strip()
-        if not claim_value:
-            continue
-        claim_value_lower = claim_value.lower()
-        if claim_value_lower in lowered_message or _slugify(claim_value_lower) in _slugify(lowered_message):
-            if any(token in lowered_message for token in ["remove", "drop", "delete", "wrong"]):
-                operations.append({"op": "remove_claim", "claim_id": claim["id"]})
-            elif any(token in lowered_message for token in ["confirm", "keep", "correct", "right"]):
-                operations.append({"op": "confirm_claim", "claim_id": claim["id"], "user_status": "confirmed"})
-
-    line_ops = [line.strip("-* ").strip() for line in text.splitlines() if line.strip()]
-    for line in line_ops:
-        lower_line = line.lower()
-        if lower_line.startswith("add adjacent:"):
-            operations.append({"op": "add_claim", "section": "adjacent_capability", "value": line.split(":", 1)[1].strip()})
-        elif lower_line.startswith("add core:"):
-            operations.append({"op": "add_claim", "section": "core_capability", "value": line.split(":", 1)[1].strip()})
-        elif lower_line.startswith("business model:"):
-            operations.append({"op": "add_claim", "section": "business_model", "value": line.split(":", 1)[1].strip()})
-        elif lower_line.startswith("customer profile:"):
-            operations.append({"op": "add_claim", "section": "customer_profile", "value": line.split(":", 1)[1].strip()})
-        elif lower_line.startswith("deployment:"):
-            operations.append({"op": "add_claim", "section": "deployment_model", "value": line.split(":", 1)[1].strip()})
-        elif lower_line.startswith("include:"):
-            operations.append({"op": "add_claim", "section": "include_constraint", "value": line.split(":", 1)[1].strip()})
-        elif lower_line.startswith("exclude:"):
-            operations.append({"op": "add_claim", "section": "exclude_constraint", "value": line.split(":", 1)[1].strip()})
-        elif lower_line.startswith("question:"):
-            operations.append({"op": "add_open_question", "value": line.split(":", 1)[1].strip()})
-
-    return operations[:24]
-
-
-def thesis_pack_to_payload(
-    thesis_pack: BuyerThesisPack,
-    profile: CompanyProfile | None = None,
-) -> dict[str, Any]:
-    source_pills = normalize_source_pills(thesis_pack.source_pills_json or [])
-    context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {}) if profile else None
-    taxonomy_nodes = normalize_taxonomy_nodes(thesis_pack.taxonomy_nodes_json or [])
-    taxonomy_edges = normalize_taxonomy_edges(thesis_pack.taxonomy_edges_json or [])
-    lens_seeds = normalize_lens_seeds(thesis_pack.lens_seeds_json or [])
-    market_map_brief = thesis_pack.market_map_brief_json or {}
     return {
-        "id": thesis_pack.id,
-        "workspace_id": thesis_pack.workspace_id,
-        "summary": thesis_pack.summary,
-        "claims": normalize_thesis_claims(
-            thesis_pack.claims_json or [],
-            available_pill_ids={str(pill.get("id")) for pill in source_pills},
-        ),
-        "source_pills": source_pills,
-        "open_questions": normalize_open_questions(thesis_pack.open_questions_json or []),
-        "buyer_evidence": assess_buyer_evidence(profile) if profile else None,
-        "context_pack_v2": context_pack_v2,
-        "taxonomy_nodes": taxonomy_nodes,
-        "taxonomy_edges": taxonomy_edges,
-        "lens_seeds": lens_seeds,
-        "market_map_brief": market_map_brief,
-        "generated_at": thesis_pack.generated_at,
-        "confirmed_at": thesis_pack.confirmed_at,
+        "workspace_geo_scope": profile.geo_scope or {},
+        "confirmed_at": expansion_brief.get("confirmed_at"),
+        "source_capabilities": _source_group("capability"),
+        "source_customer_segments": _source_group("customer_archetype"),
+        "source_workflows": _source_group("workflow"),
+        "source_delivery_or_integration": _source_group("delivery_or_integration"),
+        "adjacent_capabilities": expansion_brief.get("adjacent_capabilities") or [],
+        "adjacent_customer_segments": expansion_brief.get("adjacent_customer_segments") or [],
+        "named_account_anchors": expansion_brief.get("named_account_anchors") or [],
+        "geography_expansions": expansion_brief.get("geography_expansions") or [],
     }
 
 
-def search_lane_to_payload(search_lane: SearchLane) -> dict[str, Any]:
+def apply_scope_review_decisions(
+    company_context_pack: CompanyContextPack | dict[str, Any],
+    decisions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if isinstance(company_context_pack, CompanyContextPack):
+        payload = {
+            "taxonomy_nodes": deepcopy(company_context_pack.taxonomy_nodes_json or []),
+            "expansion_brief": deepcopy(company_context_pack.expansion_brief_json or {}),
+        }
+    else:
+        payload = {
+            "taxonomy_nodes": deepcopy(company_context_pack.get("taxonomy_nodes") or []),
+            "expansion_brief": deepcopy(company_context_pack.get("expansion_brief") or {}),
+        }
+
+    taxonomy_nodes = normalize_taxonomy_nodes(payload["taxonomy_nodes"])
+    expansion_brief = normalize_expansion_brief(payload["expansion_brief"])
+    taxonomy_by_id = {str(node.get("id") or ""): node for node in taxonomy_nodes if str(node.get("id") or "").strip()}
+
+    expansion_groups = (
+        "adjacent_capabilities",
+        "adjacent_customer_segments",
+        "named_account_anchors",
+        "geography_expansions",
+    )
+
+    for raw in decisions or []:
+        if not isinstance(raw, dict):
+            continue
+        item_id = str(raw.get("id") or "").strip()
+        status = str(raw.get("status") or "").strip().lower()
+        if not item_id or status not in {"user_kept", "user_removed", "user_deprioritized", "source_grounded"}:
+            continue
+        if item_id in taxonomy_by_id:
+            taxonomy_by_id[item_id]["scope_status"] = _taxonomy_scope_from_scope_status(status)
+            continue
+        for group in expansion_groups:
+            updated_group = []
+            found = False
+            for item in expansion_brief.get(group) or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("id") or "").strip() == item_id:
+                    updated_group.append({**item, "status": status})
+                    found = True
+                else:
+                    updated_group.append(item)
+            if found:
+                expansion_brief[group] = updated_group
+                break
+
     return {
-        "id": search_lane.id,
-        "workspace_id": search_lane.workspace_id,
-        "lane_type": search_lane.lane_type,
-        "title": search_lane.title,
-        "intent": search_lane.intent,
-        "capabilities": _normalize_string_list(search_lane.capabilities_json, max_items=12, max_len=140),
-        "customer_tags": _normalize_string_list(search_lane.customer_tags_json, max_items=10, max_len=140),
-        "must_include_terms": _normalize_string_list(search_lane.must_include_terms_json, max_items=12, max_len=140),
-        "must_exclude_terms": _normalize_string_list(search_lane.must_exclude_terms_json, max_items=12, max_len=140),
-        "seed_urls": [normalize_url(url) for url in _normalize_string_list(search_lane.seed_urls_json, max_items=10, max_len=240) if normalize_url(url)],
-        "status": search_lane.status if search_lane.status in LANE_STATUSES else "draft",
-        "confirmed_at": search_lane.confirmed_at,
+        "taxonomy_nodes": normalize_taxonomy_nodes(list(taxonomy_by_id.values())),
+        "expansion_brief": normalize_expansion_brief(expansion_brief),
+    }
+
+def derive_discovery_scope_hints(
+    company_context_pack: CompanyContextPack | dict[str, Any],
+    profile: CompanyProfile,
+) -> dict[str, Any]:
+    scope = derive_scope_review_payload(company_context_pack, profile)
+
+    source_capabilities = [
+        item["label"]
+        for item in scope["source_capabilities"]
+        if item.get("status") in {"source_grounded", "user_kept"}
+    ]
+    source_workflows = [
+        item["label"]
+        for item in scope["source_workflows"]
+        if item.get("status") in {"source_grounded", "user_kept"}
+    ]
+    source_customers = [
+        item["label"]
+        for item in scope["source_customer_segments"]
+        if item.get("status") in {"source_grounded", "user_kept"}
+    ]
+    adjacent_capabilities = [
+        item["label"]
+        for item in scope["adjacent_capabilities"]
+        if item.get("status") in {"source_grounded", "corroborated_expansion", "user_kept"}
+        and (item.get("priority_tier") != "edge_case" or item.get("status") == "user_kept")
+    ]
+    adjacent_customers = [
+        item["label"]
+        for item in scope["adjacent_customer_segments"]
+        if item.get("status") in {"source_grounded", "corroborated_expansion", "user_kept"}
+        and (item.get("priority_tier") != "edge_case" or item.get("status") == "user_kept")
+    ]
+    named_accounts = [
+        item["label"]
+        for item in scope["named_account_anchors"]
+        if item.get("status") in {"source_grounded", "corroborated_expansion", "user_kept"}
+    ]
+
+    return {
+        "source_capabilities": _normalize_string_list(source_capabilities + source_workflows[:2], max_items=8, max_len=140)
+        or _normalize_string_list(source_workflows, max_items=6, max_len=140),
+        "adjacent_capabilities": _normalize_string_list(adjacent_capabilities, max_items=8, max_len=140),
+        "source_customer_segments": _normalize_string_list(source_customers, max_items=6, max_len=140),
+        "adjacent_customer_segments": _normalize_string_list(adjacent_customers, max_items=6, max_len=140),
+        "named_account_anchors": _normalize_string_list(named_accounts, max_items=8, max_len=140),
+        "comparator_seed_urls": [
+            normalized
+            for normalized in (
+                normalize_url(url)
+                for url in _normalize_string_list(profile.comparator_seed_urls or [], max_items=8, max_len=240)
+            )
+            if normalized
+        ],
+        "confirmed": bool(
+            normalize_expansion_brief(
+                company_context_pack.expansion_brief_json or {}
+                if isinstance(company_context_pack, CompanyContextPack)
+                else company_context_pack.get("expansion_brief") or {}
+            ).get("confirmed_at")
+        ),
     }

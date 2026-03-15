@@ -7,11 +7,11 @@ def test_context_pack_start_urls_include_buyer_supporting_evidence_same_domain()
     profile = CompanyProfile(
         workspace_id=1,
         buyer_company_url="https://4tpm.fr/offers/patio-oms/?lang=en",
-        reference_company_urls=[
+        comparator_seed_urls=[
             "https://wealth-dynamix.com/",
             "https://4tpm.fr/company/about",
         ],
-        reference_evidence_urls=[
+        supporting_evidence_urls=[
             "https://4tpm.fr/technology-services/services/?lang=en",
             "https://4tpm.fr/4tpm/references/?lang=en",
             "https://cwan.com/customers",
@@ -31,11 +31,11 @@ def test_context_pack_start_urls_include_adaptive_buyer_hints(monkeypatch):
     profile = CompanyProfile(
         workspace_id=1,
         buyer_company_url="https://4tpm.fr/offers/patio-oms/?lang=en",
-        reference_company_urls=[
+        comparator_seed_urls=[
             "https://wealth-dynamix.com/",
             "https://cwan.com/",
         ],
-        reference_evidence_urls=[],
+        supporting_evidence_urls=[],
     )
 
     monkeypatch.setattr(
@@ -59,11 +59,11 @@ def test_context_pack_start_urls_include_adaptive_comparator_hints(monkeypatch):
     profile = CompanyProfile(
         workspace_id=1,
         buyer_company_url="https://4tpm.fr/offers/patio-oms/?lang=en",
-        reference_company_urls=[
+        comparator_seed_urls=[
             "https://wealth-dynamix.com/",
             "https://cwan.com/",
         ],
-        reference_evidence_urls=[],
+        supporting_evidence_urls=[],
     )
 
     monkeypatch.setattr(

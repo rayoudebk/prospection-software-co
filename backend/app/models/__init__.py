@@ -7,7 +7,7 @@ from app.models.feedback import FeedbackEvent
 
 # New workspace-based models
 from app.models.workspace import Workspace, CompanyProfile
-from app.models.thesis import BuyerThesisPack, SearchLane
+from app.models.company_context import CompanyContextPack
 from app.models.company import Company, CompanyDossier, CompanyStatus
 from app.models.job import Job, JobType, JobState, JobProvider
 from app.models.source_evidence import SourceEvidence
@@ -32,7 +32,7 @@ __all__ = [
     "Base", "Strategy", "Target", "ResearchJob", "EvidenceItem", "FeedbackEvent",
     # New workspace models
     "Workspace", "CompanyProfile",
-    "BuyerThesisPack", "SearchLane",
+    "CompanyContextPack",
     "Company", "CompanyDossier", "CompanyStatus",
     "Job", "JobType", "JobState", "JobProvider",
     "SourceEvidence",

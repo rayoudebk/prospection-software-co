@@ -10,7 +10,7 @@ import math
 
 from app.models.base import get_db
 from app.models.workspace import Workspace, CompanyProfile
-from app.models.thesis import BuyerThesisPack, SearchLane
+from app.models.company_context import CompanyContextPack
 from app.models.company import Company, CompanyDossier, CompanyStatus
 from app.models.job import (
     DB_ACTIVE_JOB_STATES,
@@ -55,24 +55,25 @@ from app.services.reporting import (
     source_label_for_url,
 )
 from app.services.quality_audit import normalize_quality_audit_v1
-from app.services.company_profile_context import (
-    get_generated_context_summary,
-    get_manual_brief_text,
+from app.services.company_context_graph import (
+    Neo4jCompanyContextGraphStore,
+    build_company_context_payload,
 )
-from app.services.thesis import (
-    apply_thesis_adjustment_operations,
-    bootstrap_thesis_payload,
-    derive_search_lane_payloads,
-    infer_adjustment_operations_from_message,
+from app.services.company_context import (
+    assess_buyer_evidence,
+    apply_scope_review_decisions,
+    build_context_pack_v2,
+    build_expansion_inputs,
+    build_company_context_artifacts,
+    derive_discovery_scope_hints,
+    derive_scope_review_payload,
+    normalize_expansion_brief,
+    normalize_lens_seeds,
     normalize_open_questions,
-    normalize_search_lane_payload,
-    normalize_source_pills,
     normalize_taxonomy_edges,
     normalize_taxonomy_nodes,
-    normalize_thesis_claims,
-    search_lane_to_payload,
-    thesis_pack_to_payload,
     _build_market_map_artifacts,
+    _derive_source_pills_from_profile,
 )
 
 router = APIRouter()
@@ -107,7 +108,7 @@ class WorkspaceResponse(BaseModel):
     created_at: datetime
     company_count: int = 0
     has_context_pack: bool = False
-    has_confirmed_search_lanes: bool = False
+    has_confirmed_scope_review: bool = False
 
     class Config:
         from_attributes = True
@@ -121,10 +122,8 @@ class GeoScope(BaseModel):
 
 class CompanyProfileUpdate(BaseModel):
     buyer_company_url: Optional[str] = None
-    manual_brief_text: Optional[str] = None
-    generated_context_summary: Optional[str] = None
-    reference_company_urls: Optional[List[str]] = None
-    reference_evidence_urls: Optional[List[str]] = None
+    comparator_seed_urls: Optional[List[str]] = None
+    supporting_evidence_urls: Optional[List[str]] = None
     geo_scope: Optional[GeoScope] = None
 
 
@@ -132,11 +131,9 @@ class CompanyProfileResponse(BaseModel):
     id: int
     workspace_id: int
     buyer_company_url: Optional[str]
-    manual_brief_text: Optional[str]
-    generated_context_summary: Optional[str]
-    reference_company_urls: List[str]
-    reference_evidence_urls: List[str]
-    reference_summaries: Dict[str, str]
+    comparator_seed_urls: List[str]
+    supporting_evidence_urls: List[str]
+    comparator_seed_summaries: Dict[str, str]
     geo_scope: Dict[str, Any]
     context_pack_markdown: Optional[str]
     context_pack_generated_at: Optional[datetime]
@@ -145,32 +142,6 @@ class CompanyProfileResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class ThesisClaimInput(BaseModel):
-    id: Optional[str] = None
-    section: str
-    value: str
-    rendering: str = "fact"
-    confidence: float = 0.65
-    source_pill_ids: List[str] = Field(default_factory=list)
-    user_status: str = "system"
-
-
-class ThesisClaimResponse(ThesisClaimInput):
-    id: str
-
-
-class ThesisSourcePillInput(BaseModel):
-    id: Optional[str] = None
-    label: Optional[str] = None
-    url: str
-
-
-class ThesisSourcePillResponse(BaseModel):
-    id: str
-    label: str
-    url: str
 
 
 class BuyerEvidenceDiagnosticsResponse(BaseModel):
@@ -232,74 +203,135 @@ class MarketMapBriefResponse(BaseModel):
     capability_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
     delivery_or_integration_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
     named_customer_proof: List[Dict[str, Any]] = Field(default_factory=list)
-    integration_partner_proof: List[Dict[str, Any]] = Field(default_factory=list)
+    partner_integration_proof: List[Dict[str, Any]] = Field(default_factory=list)
+    secondary_evidence_proof: List[Dict[str, Any]] = Field(default_factory=list)
+    customer_partner_corroboration: List[Dict[str, Any]] = Field(default_factory=list)
+    directory_category_context: List[Dict[str, Any]] = Field(default_factory=list)
+    other_secondary_context: List[Dict[str, Any]] = Field(default_factory=list)
     active_lenses: List[LensSeedResponse] = Field(default_factory=list)
     adjacency_hypotheses: List[Dict[str, Any]] = Field(default_factory=list)
     strongest_evidence_buckets: List[Dict[str, Any]] = Field(default_factory=list)
     confidence_gaps: List[str] = Field(default_factory=list)
     open_questions: List[str] = Field(default_factory=list)
+    unknowns_not_publicly_resolvable: List[str] = Field(default_factory=list)
     crawl_coverage: Dict[str, Any] = Field(default_factory=dict)
     confirmed_at: Optional[Any] = None
 
 
-class BuyerThesisPackResponse(BaseModel):
+class ExpansionBriefItemResponse(BaseModel):
+    id: str
+    label: str
+    expansion_type: str
+    status: str
+    confidence: float
+    why_it_matters: Optional[str] = None
+    evidence_urls: List[str] = Field(default_factory=list)
+    supporting_node_ids: List[str] = Field(default_factory=list)
+    source_entity_names: List[str] = Field(default_factory=list)
+    market_importance: str = "medium"
+    operational_centrality: str = "meaningful"
+    workflow_criticality: str = "medium"
+    daily_operator_usage: str = "medium"
+    switching_cost_intensity: str = "medium"
+    priority_tier: str = "meaningful_adjacent"
+
+
+class ExpansionBriefResponse(BaseModel):
+    reasoning_status: str = "not_run"
+    reasoning_warning: Optional[str] = None
+    reasoning_provider: Optional[str] = None
+    reasoning_model: Optional[str] = None
+    confirmed_at: Optional[datetime] = None
+    adjacent_capabilities: List[ExpansionBriefItemResponse] = Field(default_factory=list)
+    adjacent_customer_segments: List[ExpansionBriefItemResponse] = Field(default_factory=list)
+    named_account_anchors: List[ExpansionBriefItemResponse] = Field(default_factory=list)
+    geography_expansions: List[ExpansionBriefItemResponse] = Field(default_factory=list)
+
+
+class ScopeReviewItemResponse(BaseModel):
+    id: str
+    label: str
+    scope_item_type: str
+    origin: str
+    status: str
+    confidence: float
+    evidence_ids: List[str] = Field(default_factory=list)
+    evidence_urls: List[str] = Field(default_factory=list)
+    supporting_node_ids: List[str] = Field(default_factory=list)
+    source_entity_names: List[str] = Field(default_factory=list)
+    why_it_matters: Optional[str] = None
+    priority_tier: Optional[str] = None
+    market_importance: Optional[str] = None
+    operational_centrality: Optional[str] = None
+    workflow_criticality: Optional[str] = None
+    daily_operator_usage: Optional[str] = None
+    switching_cost_intensity: Optional[str] = None
+
+
+class ScopeReviewDecisionInput(BaseModel):
+    id: str
+    status: str
+
+
+class ScopeReviewUpdate(BaseModel):
+    decisions: List[ScopeReviewDecisionInput] = Field(default_factory=list)
+
+
+class SourceDocumentResponse(BaseModel):
+    id: str
+    name: str
+    url: Optional[str] = None
+    publisher: Optional[str] = None
+    snippet: Optional[str] = None
+    publisher_channel: str
+    publisher_type: Optional[str] = None
+    claim_scope: Optional[str] = None
+    subject_company: Optional[str] = None
+    evidence_tier: str
+    evidence_type: str
+
+
+class CompanyContextPackResponse(BaseModel):
     id: int
     workspace_id: int
-    summary: Optional[str]
-    claims: List[ThesisClaimResponse] = Field(default_factory=list)
-    source_pills: List[ThesisSourcePillResponse] = Field(default_factory=list)
-    open_questions: List[str] = Field(default_factory=list)
+    company_context_graph_ref: Optional[str] = None
+    graph_status: str = "not_synced"
+    graph_warning: Optional[str] = None
+    graph_synced_at: Optional[datetime] = None
+    graph_stats: Dict[str, Any] = Field(default_factory=dict)
+    company_context_graph: Optional[Dict[str, Any]] = None
+    deep_research_handoff: Dict[str, Any] = Field(default_factory=dict)
     buyer_evidence: Optional[BuyerEvidenceDiagnosticsResponse] = None
     context_pack_v2: Optional[Dict[str, Any]] = None
+    source_documents: List[SourceDocumentResponse] = Field(default_factory=list)
+    expansion_inputs: List[Dict[str, Any]] = Field(default_factory=list)
     taxonomy_nodes: List[TaxonomyNodeResponse] = Field(default_factory=list)
     taxonomy_edges: List[TaxonomyEdgeResponse] = Field(default_factory=list)
     lens_seeds: List[LensSeedResponse] = Field(default_factory=list)
     market_map_brief: Optional[MarketMapBriefResponse] = None
+    expansion_brief: Optional[ExpansionBriefResponse] = None
     generated_at: Optional[datetime]
     confirmed_at: Optional[datetime]
 
 
-class BuyerThesisPackUpdate(BaseModel):
-    summary: Optional[str] = None
-    claims: Optional[List[ThesisClaimInput]] = None
-    source_pills: Optional[List[ThesisSourcePillInput]] = None
-    open_questions: Optional[List[str]] = None
+class CompanyContextPackUpdate(BaseModel):
+    source_summary: Optional[str] = None
     taxonomy_nodes: Optional[List[TaxonomyNodeInput]] = None
     confirmed: Optional[bool] = None
 
 
-class ThesisAdjustmentRequest(BaseModel):
-    message: Optional[str] = None
-    operations: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class ThesisAdjustmentResponse(BaseModel):
-    thesis_pack: BuyerThesisPackResponse
-    applied_operations: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class SearchLaneItem(BaseModel):
-    id: Optional[int] = None
-    workspace_id: Optional[int] = None
-    lane_type: str
-    title: str
-    intent: Optional[str] = None
-    capabilities: List[str] = Field(default_factory=list)
-    customer_tags: List[str] = Field(default_factory=list)
-    must_include_terms: List[str] = Field(default_factory=list)
-    must_exclude_terms: List[str] = Field(default_factory=list)
-    seed_urls: List[str] = Field(default_factory=list)
-    status: str = "draft"
-    confirmed_at: Optional[datetime] = None
-
-
-class SearchLanesResponse(BaseModel):
+class ScopeReviewResponse(BaseModel):
     workspace_id: int
-    lanes: List[SearchLaneItem] = Field(default_factory=list)
-
-
-class SearchLanesUpdate(BaseModel):
-    lanes: List[SearchLaneItem] = Field(default_factory=list)
+    workspace_geo_scope: Dict[str, Any] = Field(default_factory=dict)
+    confirmed_at: Optional[datetime] = None
+    source_capabilities: List[ScopeReviewItemResponse] = Field(default_factory=list)
+    source_customer_segments: List[ScopeReviewItemResponse] = Field(default_factory=list)
+    source_workflows: List[ScopeReviewItemResponse] = Field(default_factory=list)
+    source_delivery_or_integration: List[ScopeReviewItemResponse] = Field(default_factory=list)
+    adjacent_capabilities: List[ScopeReviewItemResponse] = Field(default_factory=list)
+    adjacent_customer_segments: List[ScopeReviewItemResponse] = Field(default_factory=list)
+    named_account_anchors: List[ScopeReviewItemResponse] = Field(default_factory=list)
+    geography_expansions: List[ScopeReviewItemResponse] = Field(default_factory=list)
 
 
 class CompanyCreate(BaseModel):
@@ -345,7 +377,6 @@ class CompanyResponse(BaseModel):
     first_party_hint_urls_used_count: int = 0
     first_party_hint_pages_crawled_total: int = 0
     unresolved_contradictions_count: int = 0
-    lane_types: List[str] = Field(default_factory=list)
     why_fit_bullets: List[Dict[str, Any]] = Field(default_factory=list)
     business_model_signal: Optional[str] = None
     customer_proof: List[str] = Field(default_factory=list)
@@ -393,7 +424,7 @@ class JobResponse(BaseModel):
 
 class GatesResponse(BaseModel):
     context_pack: bool
-    search_lanes: bool
+    scope_review: bool
     universe: bool
     segmentation: bool
     enrichment: bool
@@ -929,25 +960,61 @@ async def _latest_completed_discovery_job(
     return result.scalar_one_or_none()
 
 
-def _buyer_thesis_response_from_payload(payload: Dict[str, Any]) -> BuyerThesisPackResponse:
+def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyContextPackResponse:
     market_map_brief = payload.get("market_map_brief")
-    return BuyerThesisPackResponse(
+    if isinstance(market_map_brief, dict):
+        market_map_brief = {
+            **market_map_brief,
+            "partner_integration_proof": market_map_brief.get("partner_integration_proof") or [],
+            "secondary_evidence_proof": market_map_brief.get("secondary_evidence_proof") or [],
+            "customer_partner_corroboration": market_map_brief.get("customer_partner_corroboration") or [],
+            "directory_category_context": market_map_brief.get("directory_category_context") or [],
+            "other_secondary_context": market_map_brief.get("other_secondary_context") or [],
+        }
+    expansion_brief = normalize_expansion_brief(payload.get("expansion_brief") or {})
+    source_documents = []
+    for item in (payload.get("source_documents") or []):
+        if not isinstance(item, dict):
+            continue
+        source_documents.append(
+            {
+                **item,
+                "publisher_channel": item.get("publisher_channel") or item.get("source_type") or "company_website",
+                "publisher_type": item.get("publisher_type"),
+                "claim_scope": item.get("claim_scope"),
+                "subject_company": item.get("subject_company"),
+            }
+        )
+    return CompanyContextPackResponse(
         id=int(payload.get("id") or 0),
         workspace_id=int(payload.get("workspace_id") or 0),
-        summary=payload.get("summary"),
-        claims=[ThesisClaimResponse.model_validate(item) for item in (payload.get("claims") or []) if isinstance(item, dict)],
-        source_pills=[
-            ThesisSourcePillResponse.model_validate(item)
-            for item in (payload.get("source_pills") or [])
-            if isinstance(item, dict)
-        ],
-        open_questions=normalize_open_questions(payload.get("open_questions") or []),
+        company_context_graph_ref=payload.get("company_context_graph_ref"),
+        graph_status=str(payload.get("graph_status") or "not_synced"),
+        graph_warning=payload.get("graph_warning"),
+        graph_synced_at=payload.get("graph_synced_at"),
+        graph_stats=payload.get("graph_stats") if isinstance(payload.get("graph_stats"), dict) else {},
+        company_context_graph=payload.get("company_context_graph") if isinstance(payload.get("company_context_graph"), dict) else None,
+        deep_research_handoff=(
+            payload.get("deep_research_handoff")
+            if isinstance(payload.get("deep_research_handoff"), dict)
+            else (
+                payload.get("graph_derived_packet")
+                if isinstance(payload.get("graph_derived_packet"), dict)
+                else {}
+            )
+        ),
+        source_documents=[SourceDocumentResponse.model_validate(item) for item in source_documents],
         buyer_evidence=(
             BuyerEvidenceDiagnosticsResponse.model_validate(payload.get("buyer_evidence"))
             if isinstance(payload.get("buyer_evidence"), dict)
             else None
         ),
         context_pack_v2=payload.get("context_pack_v2") if isinstance(payload.get("context_pack_v2"), dict) else None,
+        expansion_inputs=[
+            item
+            for item in (payload.get("expansion_inputs") or [])
+            if isinstance(item, dict)
+        ],
         taxonomy_nodes=[
             TaxonomyNodeResponse.model_validate(item)
             for item in (payload.get("taxonomy_nodes") or [])
@@ -968,19 +1035,97 @@ def _buyer_thesis_response_from_payload(payload: Dict[str, Any]) -> BuyerThesisP
             if isinstance(market_map_brief, dict)
             else None
         ),
+        expansion_brief=ExpansionBriefResponse.model_validate(expansion_brief),
         generated_at=payload.get("generated_at"),
         confirmed_at=payload.get("confirmed_at"),
     )
 
 
-def _search_lanes_response_from_payloads(
+def _scope_review_response_from_payload(
     workspace_id: int,
-    payloads: List[Dict[str, Any]],
-) -> SearchLanesResponse:
-    return SearchLanesResponse(
+    payload: Dict[str, Any],
+) -> ScopeReviewResponse:
+    defaults_by_key = {
+        "adjacent_capabilities": {"scope_item_type": "adjacent_capability", "origin": "expansion_brief"},
+        "adjacent_customer_segments": {"scope_item_type": "adjacent_customer_segment", "origin": "expansion_brief"},
+        "named_account_anchors": {"scope_item_type": "named_account_anchor", "origin": "expansion_brief"},
+        "geography_expansions": {"scope_item_type": "geography_expansion", "origin": "expansion_brief"},
+    }
+
+    def _items(key: str) -> List[ScopeReviewItemResponse]:
+        return [
+            ScopeReviewItemResponse.model_validate({**defaults_by_key.get(key, {}), **item})
+            for item in (payload.get(key) or [])
+            if isinstance(item, dict)
+        ]
+
+    return ScopeReviewResponse(
         workspace_id=workspace_id,
-        lanes=[SearchLaneItem.model_validate(payload) for payload in payloads if isinstance(payload, dict)],
+        workspace_geo_scope=payload.get("workspace_geo_scope") or {},
+        confirmed_at=payload.get("confirmed_at"),
+        source_capabilities=_items("source_capabilities"),
+        source_customer_segments=_items("source_customer_segments"),
+        source_workflows=_items("source_workflows"),
+        source_delivery_or_integration=_items("source_delivery_or_integration"),
+        adjacent_capabilities=_items("adjacent_capabilities"),
+        adjacent_customer_segments=_items("adjacent_customer_segments"),
+        named_account_anchors=_items("named_account_anchors"),
+        geography_expansions=_items("geography_expansions"),
     )
+
+
+def _company_context_payload_from_pack(
+    company_context_pack: CompanyContextPack,
+    *,
+    profile: CompanyProfile,
+) -> Dict[str, Any]:
+    context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
+    graph_cache = (
+        company_context_pack.company_context_graph_cache_json
+        if isinstance(company_context_pack.company_context_graph_cache_json, dict)
+        else {}
+    )
+    graph_ref = (
+        company_context_pack.company_context_graph_ref
+        or graph_cache.get("graph_ref")
+    )
+    payload = {
+        "id": company_context_pack.id,
+        "workspace_id": company_context_pack.workspace_id,
+        "buyer_evidence": assess_buyer_evidence(profile),
+        "context_pack_v2": context_pack_v2,
+        "taxonomy_nodes": normalize_taxonomy_nodes(company_context_pack.taxonomy_nodes_json or []),
+        "taxonomy_edges": normalize_taxonomy_edges(company_context_pack.taxonomy_edges_json or []),
+        "lens_seeds": normalize_lens_seeds(company_context_pack.lens_seeds_json or []),
+        "market_map_brief": company_context_pack.market_map_brief_json or {},
+        "expansion_brief": normalize_expansion_brief(company_context_pack.expansion_brief_json or {}),
+        "generated_at": company_context_pack.generated_at,
+        "confirmed_at": company_context_pack.confirmed_at,
+    }
+    payload["company_context_graph_ref"] = graph_ref
+    payload["company_context_graph"] = graph_cache or None
+    payload["graph_status"] = company_context_pack.graph_sync_status or "not_synced"
+    payload["graph_warning"] = company_context_pack.graph_sync_error
+    payload["graph_synced_at"] = company_context_pack.graph_synced_at
+    payload["graph_stats"] = company_context_pack.graph_stats_json or {}
+    payload["deep_research_handoff"] = (
+        graph_cache.get("deep_research_handoff")
+        if isinstance(graph_cache.get("deep_research_handoff"), dict)
+        else (
+            graph_cache.get("graph_derived_packet")
+            if isinstance(graph_cache.get("graph_derived_packet"), dict)
+            else {}
+        )
+    )
+    payload["source_documents"] = (
+        graph_cache.get("source_documents") or []
+    )
+    payload["expansion_inputs"] = build_expansion_inputs(
+        context_pack_v2,
+        comparator_seed_urls=[],
+        buyer_url=profile.buyer_company_url,
+    )
+    return payload
 
 
 async def _get_company_profile(db: AsyncSession, workspace_id: int) -> Optional[CompanyProfile]:
@@ -990,89 +1135,65 @@ async def _get_company_profile(db: AsyncSession, workspace_id: int) -> Optional[
     return result.scalar_one_or_none()
 
 
-async def _ensure_thesis_pack(
+async def _sync_company_context_graph(
+    company_context_pack: CompanyContextPack,
+    profile: CompanyProfile,
+) -> Dict[str, Any]:
+    payload = build_company_context_payload(company_context_pack, profile)
+    graph_payload = payload.get("company_context_graph") or {}
+    sync_result = Neo4jCompanyContextGraphStore().sync_graph(graph_payload)
+    sync_status = str(sync_result.get("status") or "failed")
+    graph_ref = (
+        payload.get("company_context_graph_ref")
+        or graph_payload.get("graph_ref")
+        or sync_result.get("graph_ref")
+    )
+    company_context_pack.company_context_graph_ref = graph_ref
+    company_context_pack.company_context_graph_cache_json = graph_payload
+    company_context_pack.graph_stats_json = payload.get("graph_stats") or {}
+    company_context_pack.graph_sync_status = sync_status
+    company_context_pack.graph_sync_error = sync_result.get("error")
+    company_context_pack.graph_synced_at = datetime.utcnow()
+    company_context_pack.market_map_brief_json = payload.get("market_map_brief") or company_context_pack.market_map_brief_json or {}
+    company_context_pack.expansion_brief_json = payload.get("expansion_brief") or company_context_pack.expansion_brief_json or {}
+    payload["graph_status"] = sync_status
+    payload["graph_warning"] = sync_result.get("error")
+    payload["graph_synced_at"] = company_context_pack.graph_synced_at
+    payload["company_context_graph_ref"] = graph_ref
+    payload["source_documents"] = graph_payload.get("source_documents") or []
+    return payload
+
+
+async def _ensure_company_context_pack(
     db: AsyncSession,
     workspace_id: int,
     *,
     profile: Optional[CompanyProfile] = None,
-) -> BuyerThesisPack:
+) -> CompanyContextPack:
     result = await db.execute(
-        select(BuyerThesisPack).where(BuyerThesisPack.workspace_id == workspace_id)
+        select(CompanyContextPack).where(CompanyContextPack.workspace_id == workspace_id)
     )
-    thesis_pack = result.scalar_one_or_none()
-    if thesis_pack:
-        return thesis_pack
+    company_context_pack = result.scalar_one_or_none()
+    if company_context_pack:
+        return company_context_pack
 
     profile = profile or await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    bootstrap_payload = bootstrap_thesis_payload(profile)
-    thesis_pack = BuyerThesisPack(
+    company_context_payload = build_company_context_artifacts(profile)
+    company_context_pack = CompanyContextPack(
         workspace_id=workspace_id,
-        summary=bootstrap_payload.get("summary"),
-        claims_json=bootstrap_payload.get("claims") or [],
-        source_pills_json=bootstrap_payload.get("source_pills") or [],
-        open_questions_json=bootstrap_payload.get("open_questions") or [],
-        market_map_brief_json=bootstrap_payload.get("market_map_brief") or {},
-        taxonomy_nodes_json=bootstrap_payload.get("taxonomy_nodes") or [],
-        taxonomy_edges_json=bootstrap_payload.get("taxonomy_edges") or [],
-        lens_seeds_json=bootstrap_payload.get("lens_seeds") or [],
-        generated_at=bootstrap_payload.get("generated_at"),
-        confirmed_at=bootstrap_payload.get("confirmed_at"),
+        market_map_brief_json=company_context_payload.get("market_map_brief") or {},
+        expansion_brief_json=company_context_payload.get("expansion_brief") or {},
+        taxonomy_nodes_json=company_context_payload.get("taxonomy_nodes") or [],
+        taxonomy_edges_json=company_context_payload.get("taxonomy_edges") or [],
+        lens_seeds_json=company_context_payload.get("lens_seeds") or [],
+        generated_at=company_context_payload.get("generated_at"),
+        confirmed_at=company_context_payload.get("confirmed_at"),
     )
-    db.add(thesis_pack)
+    db.add(company_context_pack)
     await db.flush()
-    return thesis_pack
-
-
-async def _ensure_search_lanes(
-    db: AsyncSession,
-    workspace_id: int,
-    *,
-    profile: Optional[CompanyProfile] = None,
-    thesis_pack: Optional[BuyerThesisPack] = None,
-) -> List[SearchLane]:
-    result = await db.execute(
-        select(SearchLane)
-        .where(SearchLane.workspace_id == workspace_id)
-        .order_by(SearchLane.lane_type.asc(), SearchLane.id.asc())
-    )
-    existing = result.scalars().all()
-    if {lane.lane_type for lane in existing} == {"core", "adjacent"}:
-        return existing
-
-    profile = profile or await _get_company_profile(db, workspace_id)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Context pack not found")
-    thesis_pack = thesis_pack or await _ensure_thesis_pack(
-        db,
-        workspace_id,
-        profile=profile,
-    )
-    lane_payloads = derive_search_lane_payloads(thesis_pack, profile)
-    by_type = {lane.lane_type: lane for lane in existing}
-    for payload in lane_payloads:
-        lane_type = payload["lane_type"]
-        lane = by_type.get(lane_type)
-        if lane is None:
-            lane = SearchLane(
-                workspace_id=workspace_id,
-                lane_type=lane_type,
-            )
-            db.add(lane)
-            by_type[lane_type] = lane
-        lane.title = payload["title"]
-        lane.intent = payload.get("intent")
-        lane.capabilities_json = payload.get("capabilities") or []
-        lane.customer_tags_json = payload.get("customer_tags") or []
-        lane.must_include_terms_json = payload.get("must_include_terms") or []
-        lane.must_exclude_terms_json = payload.get("must_exclude_terms") or []
-        lane.seed_urls_json = payload.get("seed_urls") or []
-        lane.status = payload.get("status") or "draft"
-        lane.confirmed_at = thesis_pack.confirmed_at if lane.status == "confirmed" else None
-        lane.updated_at = datetime.utcnow()
-    await db.flush()
-    return list(by_type.values())
+    return company_context_pack
 
 
 async def _run_context_pack_inline(job_id: int) -> None:
@@ -1343,26 +1464,6 @@ async def _latest_screening_for_company(
     return screening_result.scalar_one_or_none()
 
 
-def _lane_types_from_meta(screening_meta: Dict[str, Any]) -> List[str]:
-    values: List[str] = []
-    for key in ["lane_types", "query_lane_types"]:
-        raw = screening_meta.get(key)
-        if isinstance(raw, list):
-            for item in raw:
-                text = str(item or "").strip().lower()
-                if text in {"core", "adjacent"} and text not in values:
-                    values.append(text)
-    if values:
-        return values
-    for item in (screening_meta.get("expansion_provenance") or [])[:6]:
-        if not isinstance(item, dict):
-            continue
-        query_intent = str(item.get("query_intent") or "").strip().lower()
-        if query_intent == "adjacent" and "adjacent" not in values:
-            values.append("adjacent")
-    return values or ["core"]
-
-
 def _company_claims_to_fit_card(
     company: Company,
     screening: Optional[CompanyScreening],
@@ -1458,7 +1559,6 @@ def _company_claims_to_fit_card(
         open_questions.append("Confirm employee range or company-size proxy.")
 
     return {
-        "lane_types": _lane_types_from_meta(screening_meta),
         "why_fit_bullets": why_fit_bullets[:4],
         "business_model_signal": business_model_signal,
         "customer_proof": customer_proof[:4],
@@ -1521,7 +1621,6 @@ async def _company_response_from_row(db: AsyncSession, company: Company) -> Comp
         first_party_hint_urls_used_count=int(diagnostics["first_party_hint_urls_used_count"]),
         first_party_hint_pages_crawled_total=int(diagnostics["first_party_hint_pages_crawled_total"]),
         unresolved_contradictions_count=screening.unresolved_contradictions_count if screening else 0,
-        lane_types=fit_card["lane_types"],
         why_fit_bullets=fit_card["why_fit_bullets"],
         business_model_signal=fit_card["business_model_signal"],
         customer_proof=fit_card["customer_proof"],
@@ -1556,7 +1655,7 @@ async def create_workspace(
     data: WorkspaceCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new workspace with thesis-first scaffolding."""
+    """Create a new workspace with company-context scaffolding."""
     workspace = Workspace(
         name=data.name,
         region_scope=data.region_scope,
@@ -1582,7 +1681,7 @@ async def create_workspace(
         created_at=workspace.created_at,
         company_count=0,
         has_context_pack=False,
-        has_confirmed_search_lanes=False
+        has_confirmed_scope_review=False
     )
 
 
@@ -1607,23 +1706,18 @@ async def list_workspaces(db: AsyncSession = Depends(get_db)):
             select(CompanyProfile).where(CompanyProfile.workspace_id == ws.id)
         )
         profile = profile_result.scalar_one_or_none()
-        thesis_result = await db.execute(
-            select(BuyerThesisPack).where(BuyerThesisPack.workspace_id == ws.id)
+        company_context_result = await db.execute(
+            select(CompanyContextPack).where(CompanyContextPack.workspace_id == ws.id)
         )
-        thesis_pack = thesis_result.scalar_one_or_none()
+        company_context_pack = company_context_result.scalar_one_or_none()
         has_context_pack = bool(
-            (thesis_pack and (thesis_pack.summary or thesis_pack.claims_json))
+            (company_context_pack and (company_context_pack.market_map_brief_json or company_context_pack.company_context_graph_ref))
             or (profile and profile.context_pack_markdown)
         )
 
-        lanes_result = await db.execute(
-            select(SearchLane).where(SearchLane.workspace_id == ws.id)
-        )
-        lanes = lanes_result.scalars().all()
-        has_confirmed_search_lanes = bool(
-            lanes
-            and {lane.lane_type for lane in lanes} == {"core", "adjacent"}
-            and all((lane.status or "draft") == "confirmed" for lane in lanes)
+        has_confirmed_scope_review = bool(
+            company_context_pack
+            and normalize_expansion_brief(company_context_pack.expansion_brief_json or {}).get("confirmed_at")
         )
         
         responses.append(WorkspaceResponse(
@@ -1633,7 +1727,7 @@ async def list_workspaces(db: AsyncSession = Depends(get_db)):
             created_at=ws.created_at,
             company_count=company_count,
             has_context_pack=has_context_pack,
-            has_confirmed_search_lanes=has_confirmed_search_lanes
+            has_confirmed_scope_review=has_confirmed_scope_review
         ))
     
     return responses
@@ -1658,23 +1752,18 @@ async def get_workspace(workspace_id: int, db: AsyncSession = Depends(get_db)):
         select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
     )
     profile = profile_result.scalar_one_or_none()
-    thesis_result = await db.execute(
-        select(BuyerThesisPack).where(BuyerThesisPack.workspace_id == workspace_id)
+    company_context_result = await db.execute(
+        select(CompanyContextPack).where(CompanyContextPack.workspace_id == workspace_id)
     )
-    thesis_pack = thesis_result.scalar_one_or_none()
+    company_context_pack = company_context_result.scalar_one_or_none()
     has_context_pack = bool(
-        (thesis_pack and (thesis_pack.summary or thesis_pack.claims_json))
+        (company_context_pack and (company_context_pack.market_map_brief_json or company_context_pack.company_context_graph_ref))
         or (profile and profile.context_pack_markdown)
     )
 
-    lanes_result = await db.execute(
-        select(SearchLane).where(SearchLane.workspace_id == workspace_id)
-    )
-    lanes = lanes_result.scalars().all()
-    has_confirmed_search_lanes = bool(
-        lanes
-        and {lane.lane_type for lane in lanes} == {"core", "adjacent"}
-        and all((lane.status or "draft") == "confirmed" for lane in lanes)
+    has_confirmed_scope_review = bool(
+        company_context_pack
+        and normalize_expansion_brief(company_context_pack.expansion_brief_json or {}).get("confirmed_at")
     )
     
     return WorkspaceResponse(
@@ -1684,7 +1773,7 @@ async def get_workspace(workspace_id: int, db: AsyncSession = Depends(get_db)):
         created_at=workspace.created_at,
         company_count=company_count,
         has_context_pack=has_context_pack,
-        has_confirmed_search_lanes=has_confirmed_search_lanes
+        has_confirmed_scope_review=has_confirmed_scope_review
     )
 
 
@@ -1758,11 +1847,9 @@ async def get_context_pack(workspace_id: int, db: AsyncSession = Depends(get_db)
         id=profile.id,
         workspace_id=profile.workspace_id,
         buyer_company_url=profile.buyer_company_url,
-        manual_brief_text=get_manual_brief_text(profile),
-        generated_context_summary=get_generated_context_summary(profile),
-        reference_company_urls=profile.reference_company_urls or [],
-        reference_evidence_urls=profile.reference_evidence_urls or [],
-        reference_summaries=profile.reference_summaries or {},
+        comparator_seed_urls=profile.comparator_seed_urls or [],
+        supporting_evidence_urls=profile.supporting_evidence_urls or [],
+        comparator_seed_summaries=profile.comparator_seed_summaries or {},
         geo_scope=profile.geo_scope or {},
         context_pack_markdown=profile.context_pack_markdown,
         context_pack_generated_at=profile.context_pack_generated_at,
@@ -1802,11 +1889,9 @@ async def export_context_pack(
     export_data = {
         "workspace_id": workspace_id,
         "buyer_company_url": profile.buyer_company_url,
-        "manual_brief_text": get_manual_brief_text(profile),
-        "generated_context_summary": get_generated_context_summary(profile),
-        "reference_company_urls": profile.reference_company_urls or [],
-        "reference_evidence_urls": profile.reference_evidence_urls or [],
-        "reference_summaries": profile.reference_summaries or {},
+        "comparator_seed_urls": profile.comparator_seed_urls or [],
+        "supporting_evidence_urls": profile.supporting_evidence_urls or [],
+        "comparator_seed_summaries": profile.comparator_seed_summaries or {},
         "geo_scope": profile.geo_scope or {},
         "product_pages_found": profile.product_pages_found or 0,
         "context_pack": profile.context_pack_json,
@@ -1833,14 +1918,10 @@ async def update_context_pack(
     
     if data.buyer_company_url is not None:
         profile.buyer_company_url = data.buyer_company_url
-    if data.manual_brief_text is not None:
-        profile.manual_brief_text = str(data.manual_brief_text or "").strip()[:8000] or None
-    if data.generated_context_summary is not None:
-        profile.generated_context_summary = str(data.generated_context_summary or "").strip()[:8000] or None
-    if data.reference_company_urls is not None:
-        profile.reference_company_urls = _clean_url_list(data.reference_company_urls, max_items=10)
-    if data.reference_evidence_urls is not None:
-        profile.reference_evidence_urls = _clean_url_list(data.reference_evidence_urls, max_items=50)
+    if data.comparator_seed_urls is not None:
+        profile.comparator_seed_urls = _clean_url_list(data.comparator_seed_urls, max_items=10)
+    if data.supporting_evidence_urls is not None:
+        profile.supporting_evidence_urls = _clean_url_list(data.supporting_evidence_urls, max_items=50)
     if data.geo_scope is not None:
         profile.geo_scope = data.geo_scope.model_dump()
     
@@ -1942,65 +2023,62 @@ async def refresh_context_pack(workspace_id: int, db: AsyncSession = Depends(get
 
 
 # ============================================================================
-# Thesis Pack
+# Company Context
 # ============================================================================
 
-@router.get("/{workspace_id}/thesis-pack", response_model=BuyerThesisPackResponse)
-async def get_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_db)):
+@router.get("/{workspace_id}/company-context", response_model=CompanyContextPackResponse)
+async def get_company_context(workspace_id: int, db: AsyncSession = Depends(get_db)):
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    thesis_pack = await _ensure_thesis_pack(
+    full_context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
+    company_context_pack = await _ensure_company_context_pack(
         db,
         workspace_id,
         profile=profile,
     )
     await db.commit()
-    await db.refresh(thesis_pack)
-    payload = thesis_pack_to_payload(thesis_pack, profile=profile)
+    await db.refresh(company_context_pack)
+    has_graph_cache = bool(
+        company_context_pack.company_context_graph_ref
+        and isinstance(company_context_pack.company_context_graph_cache_json, dict)
+        and company_context_pack.company_context_graph_cache_json
+    )
+    if has_graph_cache:
+        payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
+    else:
+        payload = await _sync_company_context_graph(company_context_pack, profile)
+        await db.commit()
+        await db.refresh(company_context_pack)
+    payload["context_pack_v2"] = full_context_pack_v2
+    payload["expansion_inputs"] = build_expansion_inputs(
+        payload.get("context_pack_v2") or {},
+        comparator_seed_urls=[],
+        buyer_url=profile.buyer_company_url or ((payload.get("market_map_brief") or {}).get("source_company") or {}).get("website"),
+    )
     payload["workspace_id"] = workspace_id
-    payload["id"] = thesis_pack.id
-    return _buyer_thesis_response_from_payload(payload)
+    payload["id"] = company_context_pack.id
+    return _company_context_response_from_payload(payload)
 
 
-@router.patch("/{workspace_id}/thesis-pack", response_model=BuyerThesisPackResponse)
-async def update_thesis_pack(
+@router.patch("/{workspace_id}/company-context", response_model=CompanyContextPackResponse)
+async def update_company_context(
     workspace_id: int,
-    data: BuyerThesisPackUpdate,
+    data: CompanyContextPackUpdate,
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    thesis_pack = await _ensure_thesis_pack(
+    company_context_pack = await _ensure_company_context_pack(
         db,
         workspace_id,
         profile=profile,
     )
-    existing_pills = normalize_source_pills(thesis_pack.source_pills_json or [])
-    if data.summary is not None:
-        thesis_pack.summary = str(data.summary or "").strip()[:8000] or None
-        market_map_brief = thesis_pack.market_map_brief_json if isinstance(thesis_pack.market_map_brief_json, dict) else {}
-        market_map_brief["source_summary"] = thesis_pack.summary
-        thesis_pack.market_map_brief_json = market_map_brief
-    if data.source_pills is not None:
-        thesis_pack.source_pills_json = normalize_source_pills(
-            [item.model_dump() for item in data.source_pills],
-            buyer_url=profile.buyer_company_url,
-            reference_company_urls=profile.reference_company_urls or [],
-            reference_evidence_urls=profile.reference_evidence_urls or [],
-        )
-        existing_pills = thesis_pack.source_pills_json or []
-    if data.claims is not None:
-        thesis_pack.claims_json = normalize_thesis_claims(
-            [item.model_dump() for item in data.claims],
-            available_pill_ids={str(pill.get("id")) for pill in existing_pills if isinstance(pill, dict)},
-        )
-    if data.open_questions is not None:
-        thesis_pack.open_questions_json = normalize_open_questions(data.open_questions)
-        market_map_brief = thesis_pack.market_map_brief_json if isinstance(thesis_pack.market_map_brief_json, dict) else {}
-        market_map_brief["open_questions"] = thesis_pack.open_questions_json
-        thesis_pack.market_map_brief_json = market_map_brief
+    if data.source_summary is not None:
+        market_map_brief = company_context_pack.market_map_brief_json if isinstance(company_context_pack.market_map_brief_json, dict) else {}
+        market_map_brief["source_summary"] = str(data.source_summary or "").strip()[:8000] or None
+        company_context_pack.market_map_brief_json = market_map_brief
     if data.taxonomy_nodes is not None:
         normalized_nodes = normalize_taxonomy_nodes([item.model_dump() for item in data.taxonomy_nodes])
         (
@@ -2012,277 +2090,148 @@ async def update_thesis_pack(
             rebuilt_market_map_brief,
         ) = _build_market_map_artifacts(
             profile,
-            source_pills=existing_pills,
+            source_pills=_derive_source_pills_from_profile(profile),
             override_nodes=normalized_nodes,
         )
-        thesis_pack.taxonomy_nodes_json = rebuilt_nodes
-        thesis_pack.taxonomy_edges_json = rebuilt_edges
-        thesis_pack.lens_seeds_json = rebuilt_lens_seeds
-        thesis_pack.market_map_brief_json = {
+        company_context_pack.taxonomy_nodes_json = rebuilt_nodes
+        company_context_pack.taxonomy_edges_json = rebuilt_edges
+        company_context_pack.lens_seeds_json = rebuilt_lens_seeds
+        company_context_pack.market_map_brief_json = {
             **rebuilt_market_map_brief,
-            "source_summary": thesis_pack.summary or rebuilt_market_map_brief.get("source_summary"),
-            "confirmed_at": thesis_pack.confirmed_at.isoformat() if thesis_pack.confirmed_at else None,
+            "source_summary": (
+                ((company_context_pack.market_map_brief_json or {}).get("source_summary"))
+                if isinstance(company_context_pack.market_map_brief_json, dict)
+                else None
+            ) or rebuilt_market_map_brief.get("source_summary"),
+            "confirmed_at": company_context_pack.confirmed_at.isoformat() if company_context_pack.confirmed_at else None,
         }
-        if data.open_questions is None:
-            thesis_pack.open_questions_json = normalize_open_questions(rebuilt_open_questions)
+        company_context_pack.market_map_brief_json["open_questions"] = normalize_open_questions(rebuilt_open_questions)
     if data.confirmed is not None:
-        thesis_pack.confirmed_at = datetime.utcnow() if data.confirmed else None
-    market_map_brief = thesis_pack.market_map_brief_json if isinstance(thesis_pack.market_map_brief_json, dict) else {}
-    market_map_brief["confirmed_at"] = thesis_pack.confirmed_at.isoformat() if thesis_pack.confirmed_at else None
-    thesis_pack.market_map_brief_json = market_map_brief
-    thesis_pack.updated_at = datetime.utcnow()
+        company_context_pack.confirmed_at = datetime.utcnow() if data.confirmed else None
+    market_map_brief = company_context_pack.market_map_brief_json if isinstance(company_context_pack.market_map_brief_json, dict) else {}
+    market_map_brief["confirmed_at"] = company_context_pack.confirmed_at.isoformat() if company_context_pack.confirmed_at else None
+    company_context_pack.market_map_brief_json = market_map_brief
+    company_context_pack.updated_at = datetime.utcnow()
+    payload = await _sync_company_context_graph(company_context_pack, profile)
     await db.commit()
-    await db.refresh(thesis_pack)
-    payload = thesis_pack_to_payload(thesis_pack, profile=profile)
+    await db.refresh(company_context_pack)
+    payload["expansion_inputs"] = build_expansion_inputs(
+        payload.get("context_pack_v2") or {},
+        comparator_seed_urls=[],
+        buyer_url=profile.buyer_company_url or ((payload.get("market_map_brief") or {}).get("source_company") or {}).get("website"),
+    )
     payload["workspace_id"] = workspace_id
-    payload["id"] = thesis_pack.id
-    return _buyer_thesis_response_from_payload(payload)
+    payload["id"] = company_context_pack.id
+    return _company_context_response_from_payload(payload)
 
 
-@router.post("/{workspace_id}/thesis-pack:refresh", response_model=BuyerThesisPackResponse)
-async def refresh_thesis_pack(workspace_id: int, db: AsyncSession = Depends(get_db)):
+@router.post("/{workspace_id}/company-context:refresh", response_model=CompanyContextPackResponse)
+async def refresh_company_context(workspace_id: int, db: AsyncSession = Depends(get_db)):
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    thesis_pack = await _ensure_thesis_pack(
+    full_context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
+    company_context_pack = await _ensure_company_context_pack(
         db,
         workspace_id,
         profile=profile,
     )
-    refreshed = bootstrap_thesis_payload(profile)
-    thesis_pack.summary = refreshed.get("summary")
-    thesis_pack.claims_json = refreshed.get("claims") or []
-    thesis_pack.source_pills_json = refreshed.get("source_pills") or []
-    thesis_pack.open_questions_json = refreshed.get("open_questions") or []
-    thesis_pack.market_map_brief_json = refreshed.get("market_map_brief") or {}
-    thesis_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
-    thesis_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
-    thesis_pack.lens_seeds_json = refreshed.get("lens_seeds") or []
-    thesis_pack.generated_at = refreshed.get("generated_at")
-    thesis_pack.confirmed_at = None
-    thesis_pack.updated_at = datetime.utcnow()
+    refreshed = build_company_context_artifacts(profile)
+    company_context_pack.market_map_brief_json = refreshed.get("market_map_brief") or {}
+    company_context_pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
+    company_context_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
+    company_context_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
+    company_context_pack.lens_seeds_json = refreshed.get("lens_seeds") or []
+    company_context_pack.generated_at = refreshed.get("generated_at")
+    company_context_pack.confirmed_at = None
+    company_context_pack.updated_at = datetime.utcnow()
 
-    lanes = await _ensure_search_lanes(
-        db,
-        workspace_id,
-        profile=profile,
-        thesis_pack=thesis_pack,
-    )
-    for lane in lanes:
-        if (lane.status or "draft") != "confirmed":
-            lane_payloads = {
-                payload["lane_type"]: payload
-                for payload in derive_search_lane_payloads(thesis_pack, profile)
-            }
-            payload = lane_payloads.get(lane.lane_type)
-            if not payload:
-                continue
-            lane.title = payload["title"]
-            lane.intent = payload.get("intent")
-            lane.capabilities_json = payload.get("capabilities") or []
-            lane.customer_tags_json = payload.get("customer_tags") or []
-            lane.must_include_terms_json = payload.get("must_include_terms") or []
-            lane.must_exclude_terms_json = payload.get("must_exclude_terms") or []
-            lane.seed_urls_json = payload.get("seed_urls") or []
-            lane.status = "draft"
-            lane.confirmed_at = None
-            lane.updated_at = datetime.utcnow()
-
+    payload = await _sync_company_context_graph(company_context_pack, profile)
     await db.commit()
-    await db.refresh(thesis_pack)
-    payload = thesis_pack_to_payload(thesis_pack, profile=profile)
+    await db.refresh(company_context_pack)
+    payload["context_pack_v2"] = full_context_pack_v2
+    payload["expansion_inputs"] = build_expansion_inputs(
+        payload.get("context_pack_v2") or {},
+        comparator_seed_urls=[],
+        buyer_url=profile.buyer_company_url or ((payload.get("market_map_brief") or {}).get("source_company") or {}).get("website"),
+    )
     payload["workspace_id"] = workspace_id
-    payload["id"] = thesis_pack.id
-    return _buyer_thesis_response_from_payload(payload)
+    payload["id"] = company_context_pack.id
+    return _company_context_response_from_payload(payload)
+
+# ============================================================================
+# Scope Review
+# ============================================================================
+
+@router.get("/{workspace_id}/scope-review", response_model=ScopeReviewResponse)
+async def get_scope_review(workspace_id: int, db: AsyncSession = Depends(get_db)):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    company_context_pack = await _ensure_company_context_pack(
+        db,
+        workspace_id,
+        profile=profile,
+    )
+    scope_payload = derive_scope_review_payload(company_context_pack, profile)
+    return _scope_review_response_from_payload(workspace_id, scope_payload)
 
 
-@router.post("/{workspace_id}/thesis-pack:apply-adjustment", response_model=ThesisAdjustmentResponse)
-async def apply_thesis_adjustment(
+@router.patch("/{workspace_id}/scope-review", response_model=ScopeReviewResponse)
+async def update_scope_review(
     workspace_id: int,
-    request: ThesisAdjustmentRequest,
+    data: ScopeReviewUpdate,
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    thesis_pack = await _ensure_thesis_pack(
+    company_context_pack = await _ensure_company_context_pack(
         db,
         workspace_id,
         profile=profile,
     )
-    operations = request.operations or infer_adjustment_operations_from_message(request.message or "", thesis_pack)
-    if not operations:
-        raise HTTPException(status_code=400, detail="No thesis adjustments could be derived from the request")
 
-    adjusted = apply_thesis_adjustment_operations(thesis_pack, operations)
-    thesis_pack.summary = adjusted.get("summary")
-    thesis_pack.claims_json = adjusted.get("claims") or []
-    thesis_pack.source_pills_json = adjusted.get("source_pills") or thesis_pack.source_pills_json
-    thesis_pack.open_questions_json = adjusted.get("open_questions") or []
-    thesis_pack.market_map_brief_json = adjusted.get("market_map_brief") or thesis_pack.market_map_brief_json
-    thesis_pack.taxonomy_nodes_json = adjusted.get("taxonomy_nodes") or thesis_pack.taxonomy_nodes_json
-    thesis_pack.taxonomy_edges_json = adjusted.get("taxonomy_edges") or thesis_pack.taxonomy_edges_json
-    thesis_pack.lens_seeds_json = adjusted.get("lens_seeds") or thesis_pack.lens_seeds_json
-    thesis_pack.confirmed_at = adjusted.get("confirmed_at")
-    market_map_brief = thesis_pack.market_map_brief_json if isinstance(thesis_pack.market_map_brief_json, dict) else {}
-    market_map_brief["source_summary"] = thesis_pack.summary
-    market_map_brief["open_questions"] = thesis_pack.open_questions_json
-    market_map_brief["confirmed_at"] = thesis_pack.confirmed_at.isoformat() if thesis_pack.confirmed_at else None
-    thesis_pack.market_map_brief_json = market_map_brief
-    thesis_pack.updated_at = datetime.utcnow()
-
-    db.add(
-        WorkspaceFeedbackEvent(
-            workspace_id=workspace_id,
-            feedback_type="thesis_adjustment",
-            comment=request.message[:2000] if request.message else None,
-            metadata_json={
-                "applied_operations": adjusted.get("applied_operations") or [],
-            },
-            created_by="system",
-        )
+    adjusted = apply_scope_review_decisions(
+        company_context_pack,
+        [item.model_dump() for item in data.decisions],
     )
-
-    lanes = await _ensure_search_lanes(
-        db,
-        workspace_id,
-        profile=profile,
-        thesis_pack=thesis_pack,
-    )
-    lane_payloads = {
-        payload["lane_type"]: payload
-        for payload in derive_search_lane_payloads(thesis_pack, profile)
-    }
-    for lane in lanes:
-        if (lane.status or "draft") == "confirmed":
-            continue
-        payload = lane_payloads.get(lane.lane_type)
-        if not payload:
-            continue
-        lane.title = payload["title"]
-        lane.intent = payload.get("intent")
-        lane.capabilities_json = payload.get("capabilities") or []
-        lane.customer_tags_json = payload.get("customer_tags") or []
-        lane.must_include_terms_json = payload.get("must_include_terms") or []
-        lane.must_exclude_terms_json = payload.get("must_exclude_terms") or []
-        lane.seed_urls_json = payload.get("seed_urls") or []
-        lane.updated_at = datetime.utcnow()
-
+    company_context_pack.taxonomy_nodes_json = adjusted.get("taxonomy_nodes") or company_context_pack.taxonomy_nodes_json
+    updated_expansion_brief = adjusted.get("expansion_brief") or company_context_pack.expansion_brief_json or {}
+    if isinstance(updated_expansion_brief, dict):
+        updated_expansion_brief["confirmed_at"] = None
+    company_context_pack.expansion_brief_json = updated_expansion_brief
+    company_context_pack.updated_at = datetime.utcnow()
+    await _sync_company_context_graph(company_context_pack, profile)
     await db.commit()
-    await db.refresh(thesis_pack)
-    payload = thesis_pack_to_payload(thesis_pack, profile=profile)
-    payload["workspace_id"] = workspace_id
-    payload["id"] = thesis_pack.id
-    return ThesisAdjustmentResponse(
-        thesis_pack=_buyer_thesis_response_from_payload(payload),
-        applied_operations=adjusted.get("applied_operations") or [],
-    )
+    await db.refresh(company_context_pack)
+
+    scope_payload = derive_scope_review_payload(company_context_pack, profile)
+    return _scope_review_response_from_payload(workspace_id, scope_payload)
 
 
-# ============================================================================
-# Search Lanes
-# ============================================================================
-
-@router.get("/{workspace_id}/search-lanes", response_model=SearchLanesResponse)
-async def get_search_lanes(workspace_id: int, db: AsyncSession = Depends(get_db)):
+@router.post("/{workspace_id}/scope-review:confirm", response_model=ScopeReviewResponse)
+async def confirm_scope_review(workspace_id: int, db: AsyncSession = Depends(get_db)):
     profile = await _get_company_profile(db, workspace_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Context pack not found")
-    thesis_pack = await _ensure_thesis_pack(
+    company_context_pack = await _ensure_company_context_pack(
         db,
         workspace_id,
         profile=profile,
     )
-    lanes = await _ensure_search_lanes(
-        db,
-        workspace_id,
-        profile=profile,
-        thesis_pack=thesis_pack,
-    )
-    await db.commit()
-    refreshed_payloads = [search_lane_to_payload(lane) for lane in sorted(lanes, key=lambda item: item.lane_type)]
-    for payload in refreshed_payloads:
-        payload["workspace_id"] = workspace_id
-    return _search_lanes_response_from_payloads(workspace_id, refreshed_payloads)
 
-
-@router.patch("/{workspace_id}/search-lanes", response_model=SearchLanesResponse)
-async def update_search_lanes(
-    workspace_id: int,
-    data: SearchLanesUpdate,
-    db: AsyncSession = Depends(get_db),
-):
-    profile = await _get_company_profile(db, workspace_id)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Context pack not found")
-    thesis_pack = await _ensure_thesis_pack(
-        db,
-        workspace_id,
-        profile=profile,
-    )
-    existing_lanes = await _ensure_search_lanes(
-        db,
-        workspace_id,
-        profile=profile,
-        thesis_pack=thesis_pack,
-    )
-    by_type = {lane.lane_type: lane for lane in existing_lanes}
-    for item in data.lanes:
-        payload = normalize_search_lane_payload(item.model_dump())
-        lane = by_type.get(payload["lane_type"])
-        if lane is None:
-            lane = SearchLane(
-                workspace_id=workspace_id,
-                lane_type=payload["lane_type"],
-            )
-            db.add(lane)
-            by_type[payload["lane_type"]] = lane
-        lane.title = payload["title"]
-        lane.intent = payload.get("intent")
-        lane.capabilities_json = payload.get("capabilities") or []
-        lane.customer_tags_json = payload.get("customer_tags") or []
-        lane.must_include_terms_json = payload.get("must_include_terms") or []
-        lane.must_exclude_terms_json = payload.get("must_exclude_terms") or []
-        lane.seed_urls_json = payload.get("seed_urls") or []
-        lane.status = payload.get("status") or lane.status or "draft"
-        lane.confirmed_at = datetime.utcnow() if lane.status == "confirmed" else None
-        lane.updated_at = datetime.utcnow()
-    await db.commit()
-    refreshed = list(by_type.values())
-    payloads = [search_lane_to_payload(lane) for lane in sorted(refreshed, key=lambda item: item.lane_type)]
-    for payload in payloads:
-        payload["workspace_id"] = workspace_id
-    return _search_lanes_response_from_payloads(workspace_id, payloads)
-
-
-@router.post("/{workspace_id}/search-lanes:confirm", response_model=SearchLanesResponse)
-async def confirm_search_lanes(workspace_id: int, db: AsyncSession = Depends(get_db)):
-    profile = await _get_company_profile(db, workspace_id)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Context pack not found")
-    thesis_pack = await _ensure_thesis_pack(
-        db,
-        workspace_id,
-        profile=profile,
-    )
-    lanes = await _ensure_search_lanes(
-        db,
-        workspace_id,
-        profile=profile,
-        thesis_pack=thesis_pack,
-    )
     confirmed_at = datetime.utcnow()
-    for lane in lanes:
-        lane.status = "confirmed"
-        lane.confirmed_at = confirmed_at
-        lane.updated_at = confirmed_at
-    thesis_pack.confirmed_at = confirmed_at
-    thesis_pack.updated_at = confirmed_at
+    expansion_brief = normalize_expansion_brief(company_context_pack.expansion_brief_json or {})
+    expansion_brief["confirmed_at"] = confirmed_at.isoformat()
+    company_context_pack.expansion_brief_json = expansion_brief
+    company_context_pack.updated_at = confirmed_at
+    await _sync_company_context_graph(company_context_pack, profile)
     await db.commit()
-    refreshed_payloads = [search_lane_to_payload(lane) for lane in sorted(lanes, key=lambda item: item.lane_type)]
-    for payload in refreshed_payloads:
-        payload["workspace_id"] = workspace_id
-    return _search_lanes_response_from_payloads(workspace_id, refreshed_payloads)
+    await db.refresh(company_context_pack)
+
+    scope_payload = derive_scope_review_payload(company_context_pack, profile)
+    return _scope_review_response_from_payload(workspace_id, scope_payload)
 
 
 # ============================================================================
@@ -3695,7 +3644,7 @@ async def export_report_snapshot(
                 target_segments.append(label)
         target_segments = list(dict.fromkeys(target_segments))
 
-        thesis = (
+        fit_summary = (
             f"Strong institutional fit with score {total_score:.1f}/100 and "
             f"{len(modules) if modules else len(product_claims)} capability signals."
         )
@@ -3904,7 +3853,7 @@ async def export_report_snapshot(
                     ),
                 },
                 "buy_side_view": {
-                    "thesis": thesis,
+                    "summary": fit_summary,
                     "principal_risk": principal_risk,
                     "next_diligence_question": next_question,
                 },
@@ -4575,39 +4524,46 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
 
     missing_items: Dict[str, List[str]] = {
         "context_pack": [],
-        "search_lanes": [],
+        "scope_review": [],
         "universe": [],
         "segmentation": [],
         "enrichment": []
     }
     
-    # Check thesis/context pack
+    # Check company context
     profile = await _get_company_profile(db, workspace_id)
     context_pack_ready = False
     if profile:
         context_claim_groups_available = set()
-        thesis_result = await db.execute(
-            select(BuyerThesisPack).where(BuyerThesisPack.workspace_id == workspace_id)
+        company_context_result = await db.execute(
+            select(CompanyContextPack).where(CompanyContextPack.workspace_id == workspace_id)
         )
-        thesis_pack = thesis_result.scalar_one_or_none()
-        thesis_payload = (
-            thesis_pack_to_payload(thesis_pack, profile=profile)
-            if thesis_pack
-            else bootstrap_thesis_payload(profile)
+        company_context_pack = company_context_result.scalar_one_or_none()
+        company_context_payload = (
+            _company_context_payload_from_pack(company_context_pack, profile=profile)
+            if company_context_pack
+            else build_company_context_artifacts(profile)
         )
-        has_brief_input = bool(get_manual_brief_text(profile))
-        has_company_or_brief = bool(profile.buyer_company_url or has_brief_input)
-        if not has_company_or_brief:
-            missing_items["context_pack"].append("Add a company URL or paste an investment thesis")
+        has_company = bool(profile.buyer_company_url)
+        if not has_company:
+            missing_items["context_pack"].append("Add a source company URL")
         else:
             context_claim_groups_available.add("identity_scope")
-        if not (thesis_payload.get("summary") or thesis_payload.get("claims")):
-            missing_items["context_pack"].append("Generate or refresh the sourcing brief")
+        market_map_brief = company_context_payload.get("market_map_brief") or {}
+        if not (
+            isinstance(market_map_brief, dict)
+            and (
+                str(market_map_brief.get("source_summary") or "").strip()
+                or market_map_brief.get("customer_nodes")
+                or market_map_brief.get("capability_nodes")
+            )
+        ):
+            missing_items["context_pack"].append("Generate or refresh the market map brief")
         else:
             context_claim_groups_available.add("product_depth")
-        if profile.reference_company_urls:
+        if profile.comparator_seed_urls:
             context_claim_groups_available.add("vertical_workflow")
-        if not thesis_payload.get("source_pills") and (profile.reference_company_urls or profile.reference_evidence_urls):
+        if not (company_context_payload.get("source_documents") or []) and (profile.comparator_seed_urls or profile.supporting_evidence_urls):
             missing_items["context_pack"].append("Review supporting evidence links for the sourcing brief")
 
         required_groups = gate_cfg.get("context_pack", {}).get("required_claim_groups", ["identity_scope", "product_depth"])
@@ -4622,39 +4578,47 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
             )
         context_pack_ready = bool(
             has_company_or_brief
-            and (thesis_payload.get("summary") or thesis_payload.get("claims"))
+            and (
+                str(market_map_brief.get("source_summary") or "").strip()
+                or market_map_brief.get("customer_nodes")
+                or market_map_brief.get("capability_nodes")
+            )
             and covered >= min_required
         )
     else:
         missing_items["context_pack"].append("Create company profile")
     
-    # Check search lanes
-    search_lanes_ready = False
-    lanes_result = await db.execute(
-        select(SearchLane).where(SearchLane.workspace_id == workspace_id)
-    )
-    lanes = lanes_result.scalars().all()
-    if lanes:
-        lane_payloads = [search_lane_to_payload(lane) for lane in lanes]
-        lane_types = {payload["lane_type"] for payload in lane_payloads}
-        core_lane = next((payload for payload in lane_payloads if payload["lane_type"] == "core"), None)
-        adjacent_lane = next((payload for payload in lane_payloads if payload["lane_type"] == "adjacent"), None)
-        if lane_types != {"core", "adjacent"}:
-            missing_items["search_lanes"].append("Need both core and adjacent search lanes")
-        if not core_lane or not (core_lane.get("capabilities") or []):
-            missing_items["search_lanes"].append("Add at least 1 core capability to the search lanes")
-        if not adjacent_lane:
-            missing_items["search_lanes"].append("Create the adjacent search lane")
-        if any((payload.get("status") or "draft") != "confirmed" for payload in lane_payloads):
-            missing_items["search_lanes"].append("Confirm search lanes")
-        search_lanes_ready = bool(
-            lane_types == {"core", "adjacent"}
-            and core_lane
-            and (core_lane.get("capabilities") or [])
-            and all((payload.get("status") or "draft") == "confirmed" for payload in lane_payloads)
+    # Check scope review
+    scope_review_ready = False
+    if profile:
+        company_context_result = await db.execute(
+            select(CompanyContextPack).where(CompanyContextPack.workspace_id == workspace_id)
         )
+        company_context_pack = company_context_result.scalar_one_or_none()
+        if company_context_pack:
+            scope_payload = derive_scope_review_payload(company_context_pack, profile)
+            discovery_scope_hints = derive_discovery_scope_hints(company_context_pack, profile)
+            if not (discovery_scope_hints.get("source_capabilities") or []):
+                missing_items["scope_review"].append("Keep at least 1 source capability or workflow in scope")
+            if not (discovery_scope_hints.get("adjacent_capabilities") or []):
+                missing_items["scope_review"].append("Approve at least 1 adjacent capability before discovery")
+            if not normalize_expansion_brief(company_context_pack.expansion_brief_json or {}).get("confirmed_at"):
+                missing_items["scope_review"].append("Confirm the reviewed scope before universe discovery")
+            if not (
+                scope_payload.get("source_capabilities")
+                or scope_payload.get("adjacent_capabilities")
+                or scope_payload.get("adjacent_customer_segments")
+            ):
+                missing_items["scope_review"].append("Generate the expansion brief before scope review")
+            scope_review_ready = bool(
+                normalize_expansion_brief(company_context_pack.expansion_brief_json or {}).get("confirmed_at")
+                and (discovery_scope_hints.get("source_capabilities") or [])
+                and (discovery_scope_hints.get("adjacent_capabilities") or [])
+            )
+        else:
+            missing_items["scope_review"].append("Generate company context first")
     else:
-        missing_items["search_lanes"].append("Generate search lanes from the thesis pack")
+        missing_items["scope_review"].append("Create company profile")
     
     # Check universe with evidence-pattern decisions
     screenings_result = await db.execute(
@@ -4751,7 +4715,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     
     return GatesResponse(
         context_pack=context_pack_ready,
-        search_lanes=search_lanes_ready,
+        scope_review=scope_review_ready,
         universe=universe_ready,
         segmentation=segmentation_ready,
         enrichment=enrichment_ready,

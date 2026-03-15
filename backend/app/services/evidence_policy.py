@@ -25,7 +25,7 @@ DEFAULT_EVIDENCE_POLICY: Dict[str, Any] = {
     },
     "gate_requirements": {
         "context_pack": {"required_claim_groups": ["identity_scope", "product_depth", "vertical_workflow"], "min_required_groups_met": 2},
-        "search_lanes": {"required_lane_types": ["core", "adjacent"], "require_confirmed": True, "min_core_capabilities": 1},
+        "scope_review": {"required_scope_sections": ["source_capabilities", "adjacent_capabilities"], "require_confirmed": True, "min_core_capabilities": 1},
         "universe": {"min_decision_qualified_companies": 5, "allowed_classes": ["good_target", "borderline_watchlist"], "max_insufficient_ratio": 0.5},
         "enrichment": {"min_enriched_companies": 5, "required_groups_per_company": ["product_depth", "traction"]},
     },
