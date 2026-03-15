@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -254,6 +255,50 @@ def test_company_context_refresh_schedules_inline_task_and_returns_refreshing(tm
     assert create_response.status_code == 200
     workspace_id = create_response.json()["id"]
     _seed_company_profile(session_maker, workspace_id)
+
+    scheduled: list[str] = []
+
+    def _fake_create_task(coro):
+        scheduled.append(getattr(getattr(coro, "cr_code", None), "co_name", "unknown"))
+        coro.close()
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(None)
+        return future
+
+    monkeypatch.setattr("app.api.workspaces.asyncio.create_task", _fake_create_task)
+
+    response = client.post(f"/workspaces/{workspace_id}/company-context:refresh")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["graph_status"] == "refreshing"
+    assert "_run_company_context_refresh_inline" in scheduled
+
+
+def test_company_context_refresh_resets_stale_refreshing_state(tmp_path: Path, monkeypatch):
+    client, session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Refresh workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+    _seed_company_profile(session_maker, workspace_id)
+
+    async def seed_stale_pack() -> None:
+        async with session_maker() as session:
+            result = await session.execute(
+                select(CompanyContextPack).where(CompanyContextPack.workspace_id == workspace_id)
+            )
+            pack = result.scalar_one_or_none()
+            if pack is None:
+                pack = CompanyContextPack(workspace_id=workspace_id)
+                session.add(pack)
+                await session.flush()
+            pack.graph_sync_status = "refreshing"
+            pack.graph_sync_error = None
+            pack.updated_at = datetime.utcnow() - timedelta(minutes=10)
+            await session.commit()
+
+    asyncio.run(seed_stale_pack())
 
     scheduled: list[str] = []
 

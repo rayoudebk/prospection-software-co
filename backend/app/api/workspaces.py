@@ -1175,6 +1175,15 @@ def _company_context_refresh_response_from_payload(payload: Dict[str, Any]) -> C
     )
 
 
+def _is_stale_company_context_refresh(company_context_pack: CompanyContextPack) -> bool:
+    if str(company_context_pack.graph_sync_status or "") != "refreshing":
+        return False
+    updated_at = getattr(company_context_pack, "updated_at", None)
+    if not isinstance(updated_at, datetime):
+        return True
+    return (datetime.utcnow() - updated_at).total_seconds() > 300
+
+
 def _scope_review_response_from_payload(
     workspace_id: int,
     payload: Dict[str, Any],
@@ -2203,6 +2212,10 @@ async def get_company_context(workspace_id: int, db: AsyncSession = Depends(get_
         workspace_id,
         profile=profile,
     )
+    if _is_stale_company_context_refresh(company_context_pack):
+        company_context_pack.graph_sync_status = "failed"
+        company_context_pack.graph_sync_error = "Previous sourcing refresh stalled"
+        company_context_pack.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(company_context_pack)
     has_graph_cache = bool(
@@ -2304,6 +2317,13 @@ async def refresh_company_context(
         workspace_id,
         profile=profile,
     )
+    if _is_stale_company_context_refresh(company_context_pack):
+        company_context_pack.graph_sync_status = "failed"
+        company_context_pack.graph_sync_error = "Previous sourcing refresh stalled"
+        company_context_pack.updated_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(company_context_pack)
+
     if company_context_pack.graph_sync_status == "refreshing":
         payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
         payload["workspace_id"] = workspace_id
