@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from html import unescape
 import hashlib
 import json
+import logging
 import re
 from difflib import SequenceMatcher
 import time
@@ -83,6 +84,8 @@ from app.services.quality_audit import (
     normalize_quality_audit_v1,
     quality_audit_thresholds_from_settings,
 )
+
+logger = logging.getLogger(__name__)
 
 MIN_PUBLIC_PRICE_USD = 250.0
 MIN_SOFTWARE_HEAVINESS = 3
@@ -6621,8 +6624,10 @@ def refresh_company_context_pack(workspace_id: int):
     db = SessionLocal()
     company_context_pack = None
     try:
+        logger.info("company_context_refresh_started workspace_id=%s", workspace_id)
         profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == workspace_id).first()
         if not profile:
+            logger.warning("company_context_refresh_missing_profile workspace_id=%s", workspace_id)
             return {"status": "failed", "error": "Company profile not found", "workspace_id": workspace_id}
 
         company_context_pack = (
@@ -6677,6 +6682,12 @@ def refresh_company_context_pack(workspace_id: int):
         )
         company_context_pack.updated_at = datetime.utcnow()
         db.commit()
+        logger.info(
+            "company_context_refresh_completed workspace_id=%s status=%s graph_ref=%s",
+            workspace_id,
+            sync_status,
+            graph_ref,
+        )
         return {
             "status": sync_status,
             "error": sync_result.get("error"),
@@ -6684,6 +6695,7 @@ def refresh_company_context_pack(workspace_id: int):
             "workspace_id": workspace_id,
         }
     except Exception as exc:
+        logger.exception("company_context_refresh_failed workspace_id=%s", workspace_id)
         if company_context_pack is not None:
             company_context_pack.graph_sync_status = "failed"
             company_context_pack.graph_sync_error = str(exc)[:1000]
