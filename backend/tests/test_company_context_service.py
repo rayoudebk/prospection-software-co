@@ -516,6 +516,11 @@ def test_build_company_context_artifacts_filters_policy_capabilities_from_sourci
                     "value": "Centres hospitaliers",
                     "source_url": "https://acme.example.com/platform",
                 },
+                {
+                    "type": "capability",
+                    "value": "À propos de Hublo",
+                    "source_url": "https://acme.example.com/platform",
+                },
             ],
             "customer_evidence": [],
         }
@@ -528,6 +533,7 @@ def test_build_company_context_artifacts_filters_policy_capabilities_from_sourci
     assert "Politique de protection des données" not in capability_labels
     assert "Vous êtes une agence d’intérim ?" not in capability_labels
     assert "Centres hospitaliers" not in capability_labels
+    assert "À propos de Hublo" not in capability_labels
 
 
 def test_scope_review_decisions_compile_scope_back_into_discovery_scope_hints():

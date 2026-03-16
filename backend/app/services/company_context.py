@@ -501,7 +501,14 @@ NOISY_NAMED_ACCOUNT_TERMS = (
     "schéma",
 )
 NOISY_EXPANSION_CAPABILITY_TERMS = (
+    "about",
+    "à propos",
     "data protection",
+    "contact",
+    "contact us",
+    "espace presse",
+    "faq",
+    "press",
     "politique de protection des données",
     "policy",
     "policies",
