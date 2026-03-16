@@ -740,6 +740,7 @@ def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_kee
                 {"label": "Reportings des remplacement effectués"},
                 {"label": "Candidatdésigne une personne libre de tout engagement inscrite"},
                 {"label": "Date de la notification"},
+                {"label": "Des professionnels des secteurs conseil juridique"},
                 {"label": "Urgent replacement management"},
             ],
             "adjacent_customer_segments": [
@@ -757,6 +758,7 @@ def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_kee
     assert "Reportings des remplacement effectués" not in capability_labels
     assert "Candidatdésigne une personne libre de tout engagement inscrite" not in capability_labels
     assert "Date de la notification" not in capability_labels
+    assert "Des professionnels des secteurs conseil juridique" not in capability_labels
     assert "Établissements de santé" in segment_labels
 
 

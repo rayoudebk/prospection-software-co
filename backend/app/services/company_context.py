@@ -552,6 +552,7 @@ NOISY_EXPANSION_CAPABILITY_TERMS = (
     "consultants",
     "cookie",
     "cookies",
+    "conseil juridique",
     "formation",
     "mentions légales",
     "management de la sécurité",
@@ -3288,6 +3289,11 @@ def _merge_reasoned_expansion_brief(
     fallback_normalized = normalize_expansion_brief(fallback_brief)
     for key in ("adjacent_capabilities", "adjacent_customer_segments"):
         normalized[key] = _merge_expansion_group(
+            item_type=(
+                "adjacent_capability"
+                if key == "adjacent_capabilities"
+                else "adjacent_customer_segment"
+            ),
             fallback_items=list(fallback_normalized.get(key) or []),
             reasoned_items=list(normalized.get(key) or []),
             source_company=source_company,
@@ -3684,6 +3690,7 @@ def _is_subject_only_expansion_item(
 
 def _merge_expansion_group(
     *,
+    item_type: str,
     fallback_items: list[dict[str, Any]],
     reasoned_items: list[dict[str, Any]],
     source_company: dict[str, Any],
@@ -3696,6 +3703,10 @@ def _merge_expansion_group(
     filtered_reasoned = [
         item
         for item in reasoned_items
+        if (
+            item_type != "adjacent_capability"
+            or _is_plausible_comparator_adjacent_capability(item.get("label"))
+        )
         if not _is_subject_only_expansion_item(
             item,
             source_company=source_company,
