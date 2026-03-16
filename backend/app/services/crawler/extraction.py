@@ -138,6 +138,30 @@ class ContentExtractor:
             "utilisatrice",
             "user",
         )
+        institution_signal_terms = (
+            "bank",
+            "banque",
+            "capital",
+            "care",
+            "centre",
+            "clinic",
+            "clinique",
+            "foundation",
+            "group",
+            "groupe",
+            "health",
+            "healthcare",
+            "hospital",
+            "hopital",
+            "hôpital",
+            "insurance",
+            "nhs",
+            "partners",
+            "pharma",
+            "systems",
+            "university",
+            "ventures",
+        )
         if any(token in lowered for token in noisy_terms):
             return False
         if any(lowered.startswith(prefix) for prefix in ("how ", "why ", "our ", "with ", "secure ")):
@@ -146,6 +170,10 @@ class ContentExtractor:
         if evidence_type in {"logo_alt", "aria_label"}:
             if len(words) > 6:
                 return False
+            if 2 <= len(words) <= 3:
+                if all(re.fullmatch(r"[A-ZÀ-Ý][a-zà-ÿ'-]+", word) for word in words):
+                    if not any(token in lowered for token in institution_signal_terms):
+                        return False
             if not any(ch.isupper() or ch.isdigit() for ch in text):
                 return False
         elif len(words) > 10:

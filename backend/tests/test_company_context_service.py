@@ -403,6 +403,33 @@ def test_build_expansion_artifacts_filters_noisy_named_account_anchors():
     assert all("Image représentant" not in label for label in labels)
 
 
+def test_build_company_context_artifacts_filters_person_like_named_customer_proof():
+    profile = _build_profile()
+    profile.context_pack_json["sites"][0]["pages"] = [
+        {
+            "url": "https://acme.example.com/customers",
+            "title": "Customers",
+            "signals": [],
+            "customer_evidence": [
+                {"name": "Adrien Beata", "source_url": "https://acme.example.com/customers", "evidence_type": "logo_alt"},
+                {
+                    "name": "Image représentant un personnage barbu",
+                    "source_url": "https://acme.example.com/customers",
+                    "evidence_type": "logo_alt",
+                },
+                {"name": "Northwind Capital", "source_url": "https://acme.example.com/customers", "evidence_type": "logo_alt"},
+            ],
+        }
+    ]
+
+    payload = build_company_context_artifacts(profile)
+    labels = [item["name"] for item in payload["sourcing_brief"]["named_customer_proof"]]
+
+    assert "Northwind Capital" in labels
+    assert "Adrien Beata" not in labels
+    assert all("Image représentant" not in label for label in labels)
+
+
 def test_build_expansion_artifacts_filters_noisy_adjacent_capabilities():
     profile = _build_profile()
     noisy_input = {

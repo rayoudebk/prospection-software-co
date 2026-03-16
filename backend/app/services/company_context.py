@@ -738,6 +738,10 @@ def _is_plausible_named_customer(
             and not any(suffix in lowered for suffix in ("bank", "capital", "partners", "group", "holdings"))
         ):
             return False
+        if 2 <= len(words) <= 3:
+            if all(re.fullmatch(r"[A-ZÀ-Ý][a-zà-ÿ'-]+", word) for word in words):
+                if not any(token in lowered for token in INSTITUTION_SIGNAL_TOKENS):
+                    return False
         if not any(ch.isupper() or ch.isdigit() for ch in text):
             return False
     else:
