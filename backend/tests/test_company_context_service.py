@@ -145,6 +145,47 @@ def test_sourcing_report_summary_uses_named_proof_sources_when_taxonomy_sources_
     assert summary_sentence["citation_pill_ids"]
 
 
+def test_sourcing_report_summary_prefers_first_party_sources_over_secondary_pages():
+    sourcing_report = build_sourcing_report_artifact(
+        sourcing_brief={
+            "source_company": {"name": "Hublo", "website": "https://hublo.com"},
+            "source_summary": "Hublo runs workforce management for hospitals.",
+            "customer_nodes": [],
+            "workflow_nodes": [],
+            "capability_nodes": [],
+            "delivery_or_integration_nodes": [],
+            "named_customer_proof": [],
+            "partner_integration_proof": [],
+            "secondary_evidence_proof": [
+                {
+                    "url": "https://play.google.com/store/apps/details?id=fr.medgo.medgo1",
+                    "publisher": "play.google.com",
+                    "claim_type": "workflow_description",
+                }
+            ],
+        },
+        source_documents=[
+            {
+                "id": "hublo_primary",
+                "url": "https://hublo.com/",
+                "name": "Hublo",
+                "publisher_channel": "primary",
+                "publisher_type": "source_company",
+                "evidence_tier": "primary",
+            }
+        ],
+        context_pack_v2={},
+        confirmed_at=None,
+    )
+
+    summary_sentence = sourcing_report["sections"][0]["blocks"][0]["sentences"][0]
+    source_ids = summary_sentence["citation_pill_ids"]
+    sources_by_id = {item["id"]: item for item in sourcing_report["sources"]}
+
+    assert source_ids
+    assert sources_by_id[source_ids[0]]["url"] == "https://hublo.com/"
+
+
 def test_expansion_report_summary_dedupes_repeated_citations():
     expansion_brief = {
         "adjacent_capabilities": [
@@ -477,20 +518,33 @@ def test_normalize_expansion_brief_filters_noisy_model_outputs():
                 {"label": "Data protection and security policies"},
                 {"label": "Workforce replacement pool management"},
             ],
+            "adjacent_customer_segments": [
+                {"label": "Nurses and paramedical professionals"},
+                {"label": "Hospitals"},
+            ],
             "named_account_anchors": [
                 {"label": "Photo équipe BDE Lille"},
                 {"label": "Northwind Capital"},
+                {
+                    "label": "Rothschild & Co",
+                    "why_it_matters": "Named investor and portfolio partner useful for M&A anchoring.",
+                    "evidence_urls": ["https://rothschildandco.com/en/five-arrows/corporate-private-equity/portfolio/hublo"],
+                },
             ],
         }
     )
 
     capability_labels = [item["label"] for item in normalized["adjacent_capabilities"]]
+    segment_labels = [item["label"] for item in normalized["adjacent_customer_segments"]]
     named_account_labels = [item["label"] for item in normalized["named_account_anchors"]]
 
     assert "Workforce replacement pool management" in capability_labels
     assert "Data protection and security policies" not in capability_labels
+    assert "Hospitals" in segment_labels
+    assert "Nurses and paramedical professionals" not in segment_labels
     assert "Northwind Capital" in named_account_labels
     assert "Photo équipe BDE Lille" not in named_account_labels
+    assert "Rothschild & Co" not in named_account_labels
 
 
 def test_build_company_context_artifacts_filters_policy_capabilities_from_sourcing():

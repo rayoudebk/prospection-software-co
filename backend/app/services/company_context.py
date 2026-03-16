@@ -491,14 +491,23 @@ NOISY_CUSTOMER_PREFIXES = (
 )
 NOISY_NAMED_ACCOUNT_TERMS = (
     *NOISY_CUSTOMER_TERMS,
+    "alumni",
+    "association",
+    "bde",
+    "community",
     "data protection",
     "privacy policy",
     "gdpr",
+    "investor",
+    "investors",
+    "portfolio",
     "photo",
     "team",
     "équipe",
     "schema",
     "schéma",
+    "student",
+    "students",
 )
 NOISY_EXPANSION_CAPABILITY_TERMS = (
     "about",
@@ -522,6 +531,51 @@ NOISY_EXPANSION_CAPABILITY_TERMS = (
     "cookies",
     "mentions légales",
     "conditions générales",
+)
+NOISY_ADJACENT_CUSTOMER_SEGMENT_TERMS = (
+    "administrator",
+    "administrators",
+    "caregiver",
+    "caregivers",
+    "clinician",
+    "clinicians",
+    "doctor",
+    "doctors",
+    "employee",
+    "employees",
+    "nurse",
+    "nurses",
+    "paramedical",
+    "paramedic",
+    "paramedics",
+    "physician",
+    "physicians",
+    "professional",
+    "professionals",
+    "staff",
+    "team",
+    "teams",
+    "talent",
+    "worker",
+    "workers",
+)
+NOISY_NAMED_ACCOUNT_URL_TOKENS = (
+    "/invest",
+    "/investor",
+    "/portfolio/",
+    "/private-equity",
+    "/ventures",
+)
+NOISY_NAMED_ACCOUNT_CONTEXT_TERMS = (
+    "funding",
+    "investor",
+    "investors",
+    "portfolio company",
+    "portfolio partner",
+    "private equity",
+    "series a",
+    "series b",
+    "student",
 )
 INSTITUTION_SIGNAL_TOKENS = (
     "ap-",
@@ -790,6 +844,43 @@ def _is_plausible_named_account_anchor(value: Any) -> bool:
         if all(re.fullmatch(r"[A-ZÀ-Ý][a-zà-ÿ'-]+", word) for word in words):
             if not any(token in lowered for token in INSTITUTION_SIGNAL_TOKENS):
                 return False
+    return True
+
+
+def _is_plausible_named_account_anchor_item(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    label = _safe_phrase(item.get("label") or item.get("name"), max_len=120)
+    if not _is_plausible_named_account_anchor(label):
+        return False
+    why_lower = str(item.get("why_it_matters") or "").strip().lower()
+    source_names_lower = " ".join(_normalize_string_list(item.get("source_entity_names"), max_items=6, max_len=120)).lower()
+    combined = " ".join(part for part in (why_lower, source_names_lower) if part).strip()
+    if any(token in combined for token in NOISY_NAMED_ACCOUNT_CONTEXT_TERMS):
+        return False
+    for url in _normalize_string_list(item.get("evidence_urls"), max_items=6, max_len=500):
+        lowered = normalize_url(url) or ""
+        if any(token in lowered for token in NOISY_NAMED_ACCOUNT_URL_TOKENS):
+            return False
+    return True
+
+
+def _is_plausible_adjacent_customer_segment(value: Any) -> bool:
+    text = _safe_phrase(value, max_len=140)
+    if not text:
+        return False
+    lowered = text.lower()
+    normalized = _normalize_phrase_key(text)
+    canonical_customer_keys = {
+        _normalize_phrase_key(pattern)
+        for pattern, canonical in CUSTOMER_ARCHETYPE_PATTERNS
+        for pattern in (pattern, canonical)
+        if _normalize_phrase_key(pattern)
+    }
+    if normalized in canonical_customer_keys:
+        return True
+    if any(token in lowered for token in NOISY_ADJACENT_CUSTOMER_SEGMENT_TERMS):
+        return False
     return True
 
 
@@ -2776,9 +2867,11 @@ def normalize_expansion_items(
         label = _compact_phrase(raw.get("label") or raw.get("name"), max_words=8, max_len=120)
         if not label:
             continue
-        if item_type == "named_account_anchor" and not _is_plausible_named_account_anchor(label):
+        if item_type == "named_account_anchor" and not _is_plausible_named_account_anchor_item({**raw, "label": label}):
             continue
         if item_type == "adjacent_capability" and not _is_plausible_expansion_capability(label):
+            continue
+        if item_type == "adjacent_customer_segment" and not _is_plausible_adjacent_customer_segment(label):
             continue
         key = _normalize_phrase_key(label)
         if key in seen:
@@ -3841,6 +3934,13 @@ def build_expansion_artifacts(
 
 def _pretty_source_host_label(host: str) -> str:
     host = host.removeprefix("www.")
+    special_cases = {
+        "play.google.com": "Google Play",
+        "bcorporation.net": "B Corporation",
+        "rothschildandco.com": "Rothschild & Co",
+    }
+    if host in special_cases:
+        return special_cases[host]
     brand = host.split(".", 1)[0]
     if not brand:
         return "Source"
@@ -3855,6 +3955,34 @@ def _pretty_source_host_label(host: str) -> str:
             normalized_tokens.append(token.capitalize())
     pretty = " ".join(normalized_tokens).strip()
     return pretty or "Source"
+
+
+def _report_source_priority(source: dict[str, Any], *, preferred_host: str | None = None) -> tuple[int, int, int, str]:
+    host = normalize_domain(source.get("url"))
+    source_tier = str(source.get("source_tier") or "").strip().lower()
+    publisher_channel = str(source.get("publisher_channel") or "").strip().lower()
+    source_kind = str(source.get("source_kind") or "").strip().lower()
+    is_preferred_host = bool(preferred_host and host == preferred_host)
+    is_primary = source_tier == "primary"
+    is_first_party = publisher_channel in {"primary", "company_website", "product", "solutions", "services", "docs"}
+    is_taxonomy_or_evidence = source_kind in {"taxonomy_evidence", "source_document", "evidence_item"}
+    return (
+        0 if is_preferred_host and is_primary else 1,
+        0 if is_primary and is_first_party else 1,
+        0 if is_taxonomy_or_evidence else 1,
+        str(source.get("label") or "").strip().lower(),
+    )
+
+
+def _prioritize_report_sources(
+    sources: list[dict[str, Any]],
+    *,
+    preferred_host: str | None = None,
+    max_items: int = 4,
+) -> list[dict[str, Any]]:
+    deduped = _dedupe_report_sources(sources)
+    deduped.sort(key=lambda item: _report_source_priority(item, preferred_host=preferred_host))
+    return deduped[:max_items]
 
 
 def _normalize_report_label_text(value: Any) -> str:
@@ -4207,6 +4335,7 @@ def _sourcing_summary_sources(
     source_documents_by_url: dict[str, dict[str, Any]],
     evidence_by_id: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    preferred_host = normalize_domain(((brief.get("source_company") or {}).get("website")))
     summary_sources = _brief_sources_from_nodes(
         (brief.get("customer_nodes") or [])[:2]
         + (brief.get("workflow_nodes") or [])[:2]
@@ -4215,8 +4344,23 @@ def _sourcing_summary_sources(
         source_documents_by_url=source_documents_by_url,
         evidence_by_id=evidence_by_id,
     )
-    if summary_sources:
-        return _dedupe_report_sources(summary_sources)[:4]
+    prioritized_summary_sources = _prioritize_report_sources(summary_sources, preferred_host=preferred_host, max_items=4)
+    if prioritized_summary_sources:
+        return prioritized_summary_sources
+
+    first_party_sources = [
+        source
+        for source in source_documents_by_url.values()
+        if str(source.get("source_tier") or "").strip().lower() == "primary"
+        and (not preferred_host or normalize_domain(source.get("url")) == preferred_host)
+    ]
+    prioritized_first_party_sources = _prioritize_report_sources(
+        first_party_sources,
+        preferred_host=preferred_host,
+        max_items=4,
+    )
+    if prioritized_first_party_sources:
+        return prioritized_first_party_sources
 
     fallback_sources: list[dict[str, Any]] = []
     fallback_sources.extend(
@@ -4257,9 +4401,9 @@ def _sourcing_summary_sources(
             )
         )
     if fallback_sources:
-        return _dedupe_report_sources(fallback_sources)[:4]
+        return _prioritize_report_sources(fallback_sources, preferred_host=preferred_host, max_items=4)
 
-    return _dedupe_report_sources(list(source_documents_by_url.values()))[:4]
+    return _prioritize_report_sources(list(source_documents_by_url.values()), preferred_host=preferred_host, max_items=4)
 
 
 def build_sourcing_report_artifact(
