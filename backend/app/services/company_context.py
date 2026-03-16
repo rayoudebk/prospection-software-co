@@ -942,6 +942,58 @@ def _is_plausible_comparator_adjacent_capability(value: Any) -> bool:
     return True
 
 
+def _is_high_quality_adjacent_capability_candidate(value: Any) -> bool:
+    text = _safe_phrase(value, max_len=140)
+    if not _is_plausible_comparator_adjacent_capability(text):
+        return False
+    lowered = text.lower()
+    words = [word for word in re.split(r"\s+", text) if word]
+    if any(
+        lowered.startswith(prefix)
+        for prefix in (
+            "en ",
+            "la ",
+            "le ",
+            "les ",
+            "historique ",
+            "illustration ",
+            "je ",
+            "la team ",
+            "ne ",
+        )
+    ):
+        return False
+    if len(words) <= 3:
+        return True
+    if any(
+        token in lowered
+        for token in (
+            "analytics",
+            "contract",
+            "contrat",
+            "dépen",
+            "expense",
+            "gestion",
+            "integration",
+            "management",
+            "planning",
+            "platform",
+            "plateforme",
+            "recruit",
+            "recrut",
+            "remplaç",
+            "remplacement",
+            "reporting",
+            "staffing",
+            "vivier",
+            "voting",
+            "workflow",
+        )
+    ):
+        return True
+    return False
+
+
 def _is_plausible_comparator_name(value: Any) -> bool:
     text = _safe_phrase(value, max_len=140)
     if not text:
@@ -3073,7 +3125,7 @@ def _derive_adjacent_nodes_from_expansion_inputs(
             label = _compact_phrase(node.get("phrase"), max_words=8, max_len=120)
             if not label:
                 continue
-            if item_type == "adjacent_capability" and not _is_plausible_comparator_adjacent_capability(label):
+            if item_type == "adjacent_capability" and not _is_high_quality_adjacent_capability_candidate(label):
                 continue
             key = _normalize_phrase_key(label)
             if not key or key in source_keys:
@@ -3705,7 +3757,7 @@ def _merge_expansion_group(
         for item in reasoned_items
         if (
             item_type != "adjacent_capability"
-            or _is_plausible_comparator_adjacent_capability(item.get("label"))
+            or _is_high_quality_adjacent_capability_candidate(item.get("label"))
         )
         if not _is_subject_only_expansion_item(
             item,
