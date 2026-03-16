@@ -402,6 +402,36 @@ def _first_party_source_documents(payload: Dict[str, Any], graph_ref: str) -> Li
     return list(documents_by_url.values())
 
 
+def _comparator_seed_domains(profile: CompanyProfile) -> set[str]:
+    domains: set[str] = set()
+    for url in profile.comparator_seed_urls or []:
+        domain = normalize_domain(str(url or "").strip())
+        if domain:
+            domains.add(domain)
+            www_variant = domain[4:] if domain.startswith("www.") else f"www.{domain}"
+            domains.add(www_variant)
+    return domains
+
+
+def _filter_source_company_documents(
+    documents: List[Dict[str, Any]],
+    *,
+    profile: CompanyProfile,
+) -> List[Dict[str, Any]]:
+    comparator_domains = _comparator_seed_domains(profile)
+    if not comparator_domains:
+        return documents
+    filtered: List[Dict[str, Any]] = []
+    for item in documents:
+        if not isinstance(item, dict):
+            continue
+        hostname = normalize_domain(str(item.get("url") or item.get("hostname") or "").strip())
+        if hostname and hostname in comparator_domains:
+            continue
+        filtered.append(item)
+    return filtered
+
+
 def _first_party_evidence_items(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     context_pack = payload.get("context_pack_v2") or {}
     return {
@@ -421,6 +451,54 @@ def _source_document_id_by_url(source_documents: Iterable[Dict[str, Any]]) -> Di
         if url and doc_id:
             mapping[url] = doc_id
     return mapping
+
+
+def _canonicalize_graph(graph: Dict[str, Any]) -> Dict[str, Any]:
+    canonical = deepcopy(graph)
+
+    source_documents: Dict[str, Dict[str, Any]] = {}
+    for item in canonical.get("source_documents") or []:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if not item_id:
+            continue
+        source_documents[item_id] = item
+
+    nodes_by_id: Dict[str, Dict[str, Any]] = {}
+    for node in canonical.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            continue
+        nodes_by_id[node_id] = node
+        if str(node.get("label") or "") == "SourceDocument":
+            source_documents[node_id] = node
+
+    edges_by_id: Dict[str, Dict[str, Any]] = {}
+    valid_node_ids = set(nodes_by_id.keys())
+    for edge in canonical.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        edge_id = str(edge.get("id") or "").strip()
+        from_id = str(edge.get("from_id") or "").strip()
+        to_id = str(edge.get("to_id") or "").strip()
+        if not edge_id or not from_id or not to_id:
+            continue
+        if from_id not in valid_node_ids or to_id not in valid_node_ids:
+            continue
+        edges_by_id[edge_id] = edge
+
+    canonical["nodes"] = list(nodes_by_id.values())
+    canonical["edges"] = list(edges_by_id.values())
+    canonical["source_documents"] = list(source_documents.values())
+    stats = dict(canonical.get("graph_stats") or {})
+    stats["node_count"] = len(canonical["nodes"])
+    stats["edge_count"] = len(canonical["edges"])
+    stats["source_document_count"] = len(canonical["source_documents"])
+    canonical["graph_stats"] = stats
+    return canonical
 
 
 def _resolve_source_document_id(
@@ -622,7 +700,10 @@ def build_primary_company_graph_from_context(
     )
     nodes: Dict[str, Dict[str, Any]] = {company_node["id"]: company_node}
     edges: Dict[str, Dict[str, Any]] = {}
-    graph["source_documents"] = _first_party_source_documents(payload, graph_ref)
+    graph["source_documents"] = _filter_source_company_documents(
+        _first_party_source_documents(payload, graph_ref),
+        profile=profile,
+    )
     for document in graph["source_documents"]:
         nodes[document["id"]] = document
 
@@ -907,7 +988,7 @@ def build_primary_company_graph_from_context(
         "primary_evidence_count": len(graph["source_documents"]),
         "secondary_evidence_count": 0,
     }
-    return graph
+    return _canonicalize_graph(graph)
 
 
 def _secondary_query_text(company_name: str, phrase: Optional[str], *, domain: Optional[str] = None) -> str:
@@ -1561,7 +1642,7 @@ def merge_company_graphs(primary_graph: Dict[str, Any], secondary_graph: Dict[st
         "secondary_evidence_count": int(secondary_stats.get("secondary_evidence_count") or 0),
         "provider_mix": secondary_stats.get("provider_mix") or {},
     }
-    return merged
+    return _canonicalize_graph(merged)
 
 
 def generate_sourcing_brief_from_graph(
@@ -1786,7 +1867,7 @@ def build_company_context_graph(
         merged_graph,
         base_brief=(primary_input or {}).get("sourcing_brief") or primary_graph.get("sourcing_brief") or {},
     )
-    return merged_graph
+    return _canonicalize_graph(merged_graph)
 
 
 class Neo4jCompanyContextGraphStore:

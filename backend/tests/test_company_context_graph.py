@@ -2,6 +2,7 @@ from app.models.workspace import CompanyProfile
 from app.models.company_context import CompanyContextPack
 from app.services.company_context_graph import (
     _build_secondary_queries,
+    _canonicalize_graph,
     build_company_context_graph,
     build_company_context_payload,
     sync_company_context_pack_graph,
@@ -493,3 +494,52 @@ def test_sync_company_context_pack_graph_persists_deep_research_handoff(monkeypa
 
     assert payload["deep_research_handoff"]["source_company_truth"]["source_company"]["name"] == "4TPM"
     assert pack.company_context_graph_cache_json["deep_research_handoff"]["source_company_truth"]["source_company"]["name"] == "4TPM"
+
+
+def test_primary_graph_excludes_comparator_seed_documents(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context_graph.run_external_search_queries",
+        lambda *args, **kwargs: {"results": [], "provider_mix": {}, "errors": []},
+    )
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    profile = _build_profile()
+    graph = build_company_context_graph(profile, payload=build_company_context_artifacts(profile))
+
+    source_urls = {item.get("url") for item in graph.get("source_documents") or []}
+    assert "https://4tpm.fr/" in source_urls
+    assert "https://wealth-dynamix.com/" not in source_urls
+
+
+def test_canonicalize_graph_dedupes_duplicate_node_ids():
+    graph = {
+        "nodes": [
+            {"id": "source_document_x", "label": "SourceDocument", "url": "https://example.com/a", "name": "A"},
+            {"id": "source_document_x", "label": "SourceDocument", "url": "https://example.com/a", "name": "A duplicate"},
+            {"id": "company_x", "label": "Company", "name": "Acme"},
+        ],
+        "edges": [
+            {"id": "edge_1", "type": "SUPPORTED_BY", "from_id": "company_x", "to_id": "source_document_x"},
+            {"id": "edge_1", "type": "SUPPORTED_BY", "from_id": "company_x", "to_id": "source_document_x"},
+            {"id": "edge_2", "type": "SUPPORTED_BY", "from_id": "company_x", "to_id": "missing_node"},
+        ],
+        "source_documents": [
+            {"id": "source_document_x", "label": "SourceDocument", "url": "https://example.com/a", "name": "A"},
+            {"id": "source_document_x", "label": "SourceDocument", "url": "https://example.com/a", "name": "A duplicate"},
+        ],
+        "graph_stats": {},
+    }
+
+    canonical = _canonicalize_graph(graph)
+
+    assert len(canonical["nodes"]) == 2
+    assert len(canonical["edges"]) == 1
+    assert len(canonical["source_documents"]) == 1
