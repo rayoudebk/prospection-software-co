@@ -492,12 +492,20 @@ NOISY_NAMED_ACCOUNT_TERMS = (
     "data protection",
     "privacy policy",
     "gdpr",
+    "photo",
+    "team",
+    "équipe",
+    "schema",
+    "schéma",
 )
 NOISY_EXPANSION_CAPABILITY_TERMS = (
+    "data protection",
     "politique de protection des données",
     "policy",
+    "policies",
     "privacy",
     "protection des données",
+    "security",
     "sécurité des serveurs",
     "security of servers",
     "server security",
@@ -2749,6 +2757,10 @@ def normalize_expansion_items(
             continue
         label = _compact_phrase(raw.get("label") or raw.get("name"), max_words=8, max_len=120)
         if not label:
+            continue
+        if item_type == "named_account_anchor" and not _is_plausible_named_account_anchor(label):
+            continue
+        if item_type == "adjacent_capability" and not _is_plausible_expansion_capability(label):
             continue
         key = _normalize_phrase_key(label)
         if key in seen:

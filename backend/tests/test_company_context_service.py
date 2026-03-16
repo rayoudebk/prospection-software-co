@@ -15,6 +15,7 @@ from app.services.company_context import (
     build_context_pack_v2,
     derive_discovery_scope_hints,
     derive_scope_review_payload,
+    normalize_expansion_brief,
 )
 
 
@@ -461,6 +462,29 @@ def test_build_expansion_artifacts_filters_noisy_adjacent_capabilities():
     labels = [item["label"] for item in deterministic["adjacent_capabilities"]]
     assert "Créer votre vivier de remplaçants" in labels
     assert "Politique de protection des données" not in labels
+
+
+def test_normalize_expansion_brief_filters_noisy_model_outputs():
+    normalized = normalize_expansion_brief(
+        {
+            "adjacent_capabilities": [
+                {"label": "Data protection and security policies"},
+                {"label": "Workforce replacement pool management"},
+            ],
+            "named_account_anchors": [
+                {"label": "Photo équipe BDE Lille"},
+                {"label": "Northwind Capital"},
+            ],
+        }
+    )
+
+    capability_labels = [item["label"] for item in normalized["adjacent_capabilities"]]
+    named_account_labels = [item["label"] for item in normalized["named_account_anchors"]]
+
+    assert "Workforce replacement pool management" in capability_labels
+    assert "Data protection and security policies" not in capability_labels
+    assert "Northwind Capital" in named_account_labels
+    assert "Photo équipe BDE Lille" not in named_account_labels
 
 
 def test_scope_review_decisions_compile_scope_back_into_discovery_scope_hints():
