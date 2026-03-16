@@ -541,7 +541,9 @@ NOISY_EXPANSION_CAPABILITY_TERMS = (
     "cookies",
     "formation",
     "mentions légales",
+    "management de la sécurité",
     "recrutement formation",
+    "reportings des remplacement",
     "secteur rh",
     "conditions générales",
 )
@@ -4097,13 +4099,16 @@ def _build_source_document_lookup(
             return
         evidence_id = str(item.get("id") or "").strip()
         url = normalize_url(item.get("url"))
+        page_type = str(item.get("page_type") or "company_website").strip() or "company_website"
+        publisher = _domain_brand_name(url) if page_type == "site_summary" else None
+        fallback_label = publisher or item.get("page_title") or item.get("text")
         if url and url not in documents_by_url:
             documents_by_url[url] = {
                 "id": hashlib.sha1(url.encode("utf-8")).hexdigest()[:12],
-                "label": _report_source_label(url, fallback=item.get("page_title") or item.get("text")),
+                "label": _report_source_label(url, publisher=publisher, fallback=fallback_label),
                 "url": url,
-                "publisher": None,
-                "publisher_channel": str(item.get("page_type") or "company_website").strip() or "company_website",
+                "publisher": publisher,
+                "publisher_channel": page_type,
                 "publisher_type": None,
                 "source_tier": "primary",
                 "source_kind": str(item.get("kind") or "evidence_item").strip() or "evidence_item",

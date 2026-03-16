@@ -637,6 +637,8 @@ def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_kee
         {
             "adjacent_capabilities": [
                 {"label": "Des consultants du secteur RH et recrutement formation"},
+                {"label": "Management de la sécurité"},
+                {"label": "Reportings des remplacement effectués"},
                 {"label": "Urgent replacement management"},
             ],
             "adjacent_customer_segments": [
@@ -650,7 +652,40 @@ def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_kee
 
     assert "Urgent replacement management" in capability_labels
     assert "Des consultants du secteur RH et recrutement formation" not in capability_labels
+    assert "Management de la sécurité" not in capability_labels
+    assert "Reportings des remplacement effectués" not in capability_labels
     assert "Établissements de santé" in segment_labels
+
+
+def test_build_sourcing_report_labels_site_summary_sources_with_domain_brand():
+    report = build_sourcing_report_artifact(
+        sourcing_brief={
+            "source_company": {"name": "Hublo", "website": "https://hublo.com"},
+            "source_summary": "Hublo summary",
+            "customer_nodes": [{"phrase": "Healthcare provider", "evidence_ids": ["ev_zaggo"]}],
+            "workflow_nodes": [],
+            "capability_nodes": [],
+            "delivery_or_integration_nodes": [],
+            "named_customer_proof": [],
+            "partner_integration_proof": [],
+            "secondary_evidence_proof": [],
+        },
+        source_documents=[],
+        context_pack_v2={
+            "evidence_items": [
+                {
+                    "id": "ev_zaggo",
+                    "url": "https://zaggo.fr/",
+                    "page_type": "site_summary",
+                    "kind": "site_signal:capability",
+                }
+            ]
+        },
+        confirmed_at=None,
+    )
+
+    source_labels = [item["label"] for item in report["sources"]]
+    assert "Zaggo" in source_labels
 
 
 def test_build_company_context_artifacts_filters_policy_capabilities_from_sourcing():
