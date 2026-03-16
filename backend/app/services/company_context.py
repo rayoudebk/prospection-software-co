@@ -3238,6 +3238,8 @@ def _merge_reasoned_expansion_brief(
     response_text: str,
     fallback_brief: dict[str, Any],
     taxonomy_nodes: list[dict[str, Any]],
+    source_company: dict[str, Any],
+    comparator_domains: set[str],
     reasoning_provider: Optional[str] = None,
     reasoning_model: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -3256,9 +3258,15 @@ def _merge_reasoned_expansion_brief(
 
     normalized = normalize_expansion_brief(parsed)
     fallback_normalized = normalize_expansion_brief(fallback_brief)
+    for key in ("adjacent_capabilities", "adjacent_customer_segments"):
+        normalized[key] = _merge_expansion_group(
+            fallback_items=list(fallback_normalized.get(key) or []),
+            reasoned_items=list(normalized.get(key) or []),
+            source_company=source_company,
+            comparator_domains=comparator_domains,
+            prefer_fallback=True,
+        )
     for key in (
-        "adjacent_capabilities",
-        "adjacent_customer_segments",
         "named_account_anchors",
         "geography_expansions",
     ):
@@ -3426,6 +3434,12 @@ def _reason_expansion_brief(
         response_text=normalization_response.text,
         fallback_brief=fallback_brief,
         taxonomy_nodes=taxonomy_nodes,
+        source_company=(sourcing_brief.get("source_company") or {}),
+        comparator_domains={
+            normalize_domain(item.get("website") or item.get("url"))
+            for item in expansion_inputs
+            if isinstance(item, dict) and normalize_domain(item.get("website") or item.get("url"))
+        },
         reasoning_provider=getattr(research_response, "provider", None),
         reasoning_model=getattr(research_response, "model", None),
     )
@@ -3597,6 +3611,81 @@ def _identity_tokens_from_name(value: Any) -> set[str]:
     if cleaned.replace(" ", ""):
         tokens.add(cleaned.replace(" ", ""))
     return tokens
+
+
+def _source_company_identity_keys(source_company: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    if not isinstance(source_company, dict):
+        return keys
+    keys.update(_identity_tokens_from_name(source_company.get("name")))
+    keys.update(_identity_tokens_from_url(source_company.get("website")))
+    return {key for key in keys if key}
+
+
+def _is_subject_only_expansion_item(
+    item: dict[str, Any],
+    *,
+    source_company: dict[str, Any],
+    comparator_domains: set[str],
+) -> bool:
+    if not isinstance(item, dict):
+        return False
+    source_keys = _source_company_identity_keys(source_company)
+    if not source_keys:
+        return False
+
+    evidence_domains = {
+        normalize_domain(url)
+        for url in _normalize_string_list(item.get("evidence_urls"), max_items=8, max_len=500)
+        if normalize_domain(url)
+    }
+    if any(domain in comparator_domains for domain in evidence_domains):
+        return False
+
+    raw_entity_names = _normalize_string_list(item.get("source_entity_names"), max_items=6, max_len=120)
+    if not raw_entity_names:
+        return False
+
+    entity_name_keys = [_identity_tokens_from_name(name) for name in raw_entity_names]
+    entity_name_keys = [tokens for tokens in entity_name_keys if tokens]
+    if not entity_name_keys:
+        return False
+
+    return all(tokens & source_keys for tokens in entity_name_keys)
+
+
+def _merge_expansion_group(
+    *,
+    fallback_items: list[dict[str, Any]],
+    reasoned_items: list[dict[str, Any]],
+    source_company: dict[str, Any],
+    comparator_domains: set[str],
+    prefer_fallback: bool = False,
+) -> list[dict[str, Any]]:
+    ordered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    filtered_reasoned = [
+        item
+        for item in reasoned_items
+        if not _is_subject_only_expansion_item(
+            item,
+            source_company=source_company,
+            comparator_domains=comparator_domains,
+        )
+    ]
+
+    groups = [fallback_items, filtered_reasoned] if prefer_fallback else [filtered_reasoned, fallback_items]
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            key = _normalize_phrase_key(item.get("label"))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            ordered.append(item)
+    return ordered
 
 
 def _resolve_buyer_site(profile: CompanyProfile) -> dict[str, Any]:

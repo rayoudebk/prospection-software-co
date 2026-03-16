@@ -448,6 +448,105 @@ def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monke
     assert expansion["adjacent_capabilities"][0]["priority_tier"] == "edge_case"
 
 
+def test_build_company_context_artifacts_prefers_comparator_capabilities_over_source_self_paraphrases(monkeypatch):
+    profile = _build_profile()
+    profile.context_pack_json["sites"].append(
+        {
+            "url": "https://comp-one.example.com",
+            "company_name": "Comp One",
+            "summary": "Client reporting and proxy voting software for private banks.",
+            "signals": [
+                {
+                    "type": "capability",
+                    "value": "Proxy voting",
+                    "source_url": "https://comp-one.example.com/voting",
+                }
+            ],
+            "customer_evidence": [],
+            "pages": [],
+        }
+    )
+
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    monkeypatch.setattr("app.services.company_context.get_settings", lambda: type("S", (), {
+        "gemini_api_key": "x",
+        "openai_api_key": "",
+        "anthropic_api_key": "",
+    })())
+
+    def _fake_run_stage(_self, request):
+        if request.stage == LLMStage.expansion_brief_reasoning:
+            return LLMResponse(
+                text=json.dumps(
+                    {
+                        "adjacent_capabilities": [
+                            {
+                                "label": "Portfolio analytics automation",
+                                "why_it_matters": "Restates the source company capability.",
+                                "evidence_urls": ["https://acme.example.com/platform"],
+                                "source_entity_names": ["Acme"],
+                                "status": "source_grounded",
+                            }
+                        ],
+                        "adjacent_customer_segments": [],
+                        "named_account_anchors": [],
+                        "geography_expansions": [],
+                    }
+                ),
+                provider="gemini",
+                model="gemini-2.0-flash",
+            )
+        if request.stage == LLMStage.structured_normalization:
+            return LLMResponse(
+                text=json.dumps(
+                    {
+                        "reasoning_status": "success",
+                        "reasoning_warning": None,
+                        "adjacent_capabilities": [
+                            {
+                                "id": "expansion_source_self",
+                                "label": "Portfolio analytics automation",
+                                "expansion_type": "adjacent_capability",
+                                "status": "source_grounded",
+                                "confidence": 0.7,
+                                "why_it_matters": "Restates the source company capability.",
+                                "evidence_urls": ["https://acme.example.com/platform"],
+                                "supporting_node_ids": [],
+                                "source_entity_names": ["Acme"],
+                                "market_importance": "medium",
+                                "operational_centrality": "core",
+                                "priority_tier": "meaningful_adjacent",
+                            }
+                        ],
+                        "adjacent_customer_segments": [],
+                        "named_account_anchors": [],
+                        "geography_expansions": [],
+                    }
+                ),
+                provider="openai",
+                model="gpt-4.1-mini",
+            )
+        raise AssertionError(f"Unexpected stage: {request.stage}")
+
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator.run_stage", _fake_run_stage)
+
+    payload = build_company_context_artifacts(profile)
+    expansion = _build_expansion_payload(profile, payload)["expansion_brief"]
+
+    capability_labels = [item["label"] for item in expansion["adjacent_capabilities"]]
+    assert "Proxy voting" in capability_labels
+    assert "Portfolio analytics automation" not in capability_labels
+
+
 def test_build_company_context_artifacts_keeps_fallback_customer_segments_when_model_omits_them(monkeypatch):
     profile = _build_profile()
     profile.context_pack_json["sites"].append(
