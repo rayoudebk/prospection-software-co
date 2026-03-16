@@ -6861,6 +6861,65 @@ def run_company_context_refresh(workspace_id: int):
         db.close()
 
 
+@celery_app.task(name="app.workers.workspace_tasks.run_expansion_refresh")
+def run_expansion_refresh(workspace_id: int):
+    """Refresh expansion brief artifacts for a workspace."""
+    from app.services.company_context import build_expansion_artifacts
+
+    db = SessionLocal()
+    company_context_pack = None
+    try:
+        profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == workspace_id).first()
+        if not profile:
+            logger.warning("expansion_refresh_task_missing_profile workspace_id=%s", workspace_id)
+            return {"error": "Company profile not found", "workspace_id": workspace_id}
+
+        company_context_pack = (
+            db.query(CompanyContextPack)
+            .filter(CompanyContextPack.workspace_id == workspace_id)
+            .first()
+        )
+        if company_context_pack is None:
+            logger.warning("expansion_refresh_task_missing_pack workspace_id=%s", workspace_id)
+            return {"error": "Company context pack not found", "workspace_id": workspace_id}
+
+        sourcing_brief = company_context_pack.sourcing_brief_json or {}
+        taxonomy_nodes = company_context_pack.taxonomy_nodes_json or []
+        if not isinstance(sourcing_brief, dict) or not sourcing_brief:
+            raise ValueError("Sourcing brief must exist before expansion generation")
+
+        refreshed = build_expansion_artifacts(
+            profile,
+            sourcing_brief=sourcing_brief,
+            taxonomy_nodes=taxonomy_nodes,
+        )
+        company_context_pack.expansion_brief_json = refreshed.get("expansion_brief") or {}
+        company_context_pack.expansion_status = "ready"
+        company_context_pack.expansion_error = None
+        company_context_pack.expansion_generated_at = refreshed.get("generated_at") or datetime.utcnow()
+        company_context_pack.updated_at = datetime.utcnow()
+        db.commit()
+        logger.info(
+            "expansion_refresh_task_completed workspace_id=%s expansion_status=%s",
+            workspace_id,
+            company_context_pack.expansion_status,
+        )
+        return {
+            "workspace_id": workspace_id,
+            "status": company_context_pack.expansion_status,
+        }
+    except Exception as exc:
+        logger.exception("expansion_refresh_task_failed workspace_id=%s", workspace_id)
+        if company_context_pack is not None:
+            company_context_pack.expansion_status = "failed"
+            company_context_pack.expansion_error = str(exc)[:500] or "Expansion generation failed"
+            company_context_pack.updated_at = datetime.utcnow()
+            db.commit()
+        return {"error": str(exc), "workspace_id": workspace_id}
+    finally:
+        db.close()
+
+
 @celery_app.task(name="app.workers.workspace_tasks.run_claims_graph_refresh")
 def run_claims_graph_refresh(workspace_id: int):
     """Refresh claims graph snapshot for a workspace."""

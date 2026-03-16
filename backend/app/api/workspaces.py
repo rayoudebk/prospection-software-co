@@ -2505,8 +2505,19 @@ async def generate_expansion_brief(workspace_id: int, db: AsyncSession = Depends
     company_context_pack.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(company_context_pack)
-    asyncio.create_task(_run_expansion_refresh_inline(workspace_id))
-    logger.info("expansion_refresh_inline_scheduled workspace_id=%s", workspace_id)
+    from app.workers.workspace_tasks import run_expansion_refresh
+
+    try:
+        task_result = run_expansion_refresh.delay(workspace_id)
+        logger.info(
+            "expansion_refresh_enqueued workspace_id=%s task_id=%s",
+            workspace_id,
+            getattr(task_result, "id", None),
+        )
+    except Exception:
+        logger.exception("expansion_refresh_enqueue_failed workspace_id=%s; falling back inline", workspace_id)
+        asyncio.create_task(_run_expansion_refresh_inline(workspace_id))
+        logger.info("expansion_refresh_inline_scheduled workspace_id=%s", workspace_id)
     return _expansion_response_from_payload(
         _expansion_payload_from_pack(company_context_pack, profile=profile)
     )

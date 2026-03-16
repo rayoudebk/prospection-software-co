@@ -354,7 +354,7 @@ def test_company_context_refresh_enqueues_worker_task_and_returns_refreshing(tmp
     assert enqueued == [workspace_id]
 
 
-def test_expansion_generate_schedules_inline_task_and_returns_generating(tmp_path: Path, monkeypatch):
+def test_expansion_generate_enqueues_worker_task_and_returns_generating(tmp_path: Path, monkeypatch):
     client, session_maker = _build_test_client(tmp_path)
 
     create_response = client.post("/workspaces", json={"name": "Expansion workspace", "region_scope": "EU+UK"})
@@ -363,23 +363,23 @@ def test_expansion_generate_schedules_inline_task_and_returns_generating(tmp_pat
     _seed_company_profile(session_maker, workspace_id)
     client.get(f"/workspaces/{workspace_id}/company-context")
 
-    scheduled: list[str] = []
+    enqueued: list[int] = []
 
-    def _fake_create_task(coro):
-        scheduled.append(getattr(getattr(coro, "cr_code", None), "co_name", "unknown"))
-        coro.close()
-        future = asyncio.get_running_loop().create_future()
-        future.set_result(None)
-        return future
+    class _FakeTaskResult:
+        id = "expansion-task-123"
 
-    monkeypatch.setattr("app.api.workspaces.asyncio.create_task", _fake_create_task)
+    def _fake_delay(candidate_workspace_id: int):
+        enqueued.append(candidate_workspace_id)
+        return _FakeTaskResult()
+
+    monkeypatch.setattr("app.workers.workspace_tasks.run_expansion_refresh.delay", _fake_delay)
 
     response = client.post(f"/workspaces/{workspace_id}/expansion-brief:generate")
     assert response.status_code == 200
     payload = response.json()
 
     assert payload["status"] == "generating"
-    assert "_run_expansion_refresh_inline" in scheduled
+    assert enqueued == [workspace_id]
 
 
 def test_company_context_refresh_resets_stale_refreshing_state(tmp_path: Path, monkeypatch):
