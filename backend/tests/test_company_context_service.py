@@ -1048,6 +1048,17 @@ def test_scope_review_payload_includes_evidence_urls_for_source_nodes():
     assert source_capability["evidence_urls"][0].startswith("https://acme.example.com")
 
 
+def test_scope_review_payload_exposes_missing_expansion_state():
+    payload = build_company_context_artifacts(_build_profile())
+    payload["expansion_status"] = "not_generated"
+    payload["expansion_brief"] = {}
+
+    scope_review = derive_scope_review_payload(payload, _build_profile())
+
+    assert scope_review["expansion_status"] == "not_generated"
+    assert scope_review["adjacent_capabilities"] == []
+
+
 def test_scope_review_payload_dedupes_source_evidence_urls():
     profile = _build_profile()
     profile.context_pack_json["sites"][0]["pages"] = [

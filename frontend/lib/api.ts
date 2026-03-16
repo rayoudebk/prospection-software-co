@@ -517,6 +517,9 @@ export interface ScopeReview {
   workspace_id: number;
   workspace_geo_scope: Record<string, unknown>;
   confirmed_at?: string | null;
+  expansion_status: string;
+  expansion_warning?: string | null;
+  expansion_generated_at?: string | null;
   source_capabilities: ScopeReviewItem[];
   source_customer_segments: ScopeReviewItem[];
   source_workflows: ScopeReviewItem[];

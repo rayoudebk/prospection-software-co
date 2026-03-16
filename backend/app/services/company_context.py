@@ -5324,10 +5324,23 @@ def derive_scope_review_payload(
         taxonomy_nodes = normalize_taxonomy_nodes(company_context_pack.taxonomy_nodes_json or [])
         sourcing_brief = company_context_pack.sourcing_brief_json or {}
         expansion_brief = normalize_expansion_brief(company_context_pack.expansion_brief_json or {})
+        expansion_status = str(company_context_pack.expansion_status or "").strip() or (
+            "ready" if expansion_brief else "not_generated"
+        )
+        expansion_warning = _safe_phrase(company_context_pack.expansion_error, max_len=320) or None
+        expansion_generated_at = company_context_pack.expansion_generated_at
     else:
         taxonomy_nodes = normalize_taxonomy_nodes(company_context_pack.get("taxonomy_nodes") or [])
         sourcing_brief = company_context_pack.get("sourcing_brief") or {}
         expansion_brief = normalize_expansion_brief(company_context_pack.get("expansion_brief") or {})
+        expansion_status = str(company_context_pack.get("expansion_status") or "").strip() or (
+            "ready" if expansion_brief else "not_generated"
+        )
+        expansion_warning = _safe_phrase(
+            company_context_pack.get("expansion_warning") or company_context_pack.get("warning"),
+            max_len=320,
+        ) or None
+        expansion_generated_at = company_context_pack.get("expansion_generated_at")
 
     context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
     evidence_url_by_id: dict[str, str] = {}
@@ -5402,6 +5415,9 @@ def derive_scope_review_payload(
     return {
         "workspace_geo_scope": profile.geo_scope or {},
         "confirmed_at": expansion_brief.get("confirmed_at"),
+        "expansion_status": expansion_status,
+        "expansion_warning": expansion_warning,
+        "expansion_generated_at": expansion_generated_at,
         "source_capabilities": _source_group("capability"),
         "source_customer_segments": _source_group("customer_archetype"),
         "source_workflows": _source_group("workflow"),

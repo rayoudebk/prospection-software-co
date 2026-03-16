@@ -77,6 +77,7 @@ export default function ScopeReviewPage() {
   const generateExpansionBrief = useGenerateExpansionBrief(workspaceId);
   const isExpansionGenerating =
     generateExpansionBrief.isPending || expansionArtifact?.status === "generating";
+  const scopeNeedsExpansion = scopeReview?.expansion_status !== "ready";
 
   if (isLoading) {
     return (
@@ -162,13 +163,26 @@ export default function ScopeReviewPage() {
       )}
 
       {scopeReview && (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          <ScopeItemSection title="Source Capabilities" items={scopeReview.source_capabilities} />
-          <ScopeItemSection title="Source Customer Segments" items={scopeReview.source_customer_segments} />
-          <ScopeItemSection title="Adjacent Capabilities" items={scopeReview.adjacent_capabilities} />
-          <ScopeItemSection title="Adjacent Customer Segments" items={scopeReview.adjacent_customer_segments} />
-          <ScopeItemSection title="Named Account Anchors" items={scopeReview.named_account_anchors} />
-          <ScopeItemSection title="Geography Expansions" items={scopeReview.geography_expansions} />
+        <div className="space-y-4">
+          {scopeNeedsExpansion ? (
+            <div className="bg-warning/10 border border-warning p-4 text-sm text-warning">
+              {scopeReview.expansion_warning
+                ? scopeReview.expansion_warning
+                : "Adjacent nodes are unavailable until the expansion brief is generated. Generate tab 2 first, then validate scope here."}
+            </div>
+          ) : null}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <ScopeItemSection title="Source Capabilities" items={scopeReview.source_capabilities} />
+            <ScopeItemSection title="Source Customer Segments" items={scopeReview.source_customer_segments} />
+            {!scopeNeedsExpansion ? (
+              <>
+                <ScopeItemSection title="Adjacent Capabilities" items={scopeReview.adjacent_capabilities} />
+                <ScopeItemSection title="Adjacent Customer Segments" items={scopeReview.adjacent_customer_segments} />
+                <ScopeItemSection title="Named Account Anchors" items={scopeReview.named_account_anchors} />
+                <ScopeItemSection title="Geography Expansions" items={scopeReview.geography_expansions} />
+              </>
+            ) : null}
+          </div>
         </div>
       )}
 

@@ -415,6 +415,9 @@ class ScopeReviewResponse(BaseModel):
     workspace_id: int
     workspace_geo_scope: Dict[str, Any] = Field(default_factory=dict)
     confirmed_at: Optional[datetime] = None
+    expansion_status: str = "not_generated"
+    expansion_warning: Optional[str] = None
+    expansion_generated_at: Optional[datetime] = None
     source_capabilities: List[ScopeReviewItemResponse] = Field(default_factory=list)
     source_customer_segments: List[ScopeReviewItemResponse] = Field(default_factory=list)
     source_workflows: List[ScopeReviewItemResponse] = Field(default_factory=list)
@@ -1208,6 +1211,9 @@ def _scope_review_response_from_payload(
         workspace_id=workspace_id,
         workspace_geo_scope=payload.get("workspace_geo_scope") or {},
         confirmed_at=payload.get("confirmed_at"),
+        expansion_status=str(payload.get("expansion_status") or "not_generated"),
+        expansion_warning=payload.get("expansion_warning"),
+        expansion_generated_at=payload.get("expansion_generated_at"),
         source_capabilities=_items("source_capabilities"),
         source_customer_segments=_items("source_customer_segments"),
         source_workflows=_items("source_workflows"),
