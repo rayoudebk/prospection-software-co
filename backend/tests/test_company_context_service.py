@@ -493,6 +493,31 @@ def test_normalize_expansion_brief_filters_noisy_model_outputs():
     assert "Photo équipe BDE Lille" not in named_account_labels
 
 
+def test_build_company_context_artifacts_filters_policy_capabilities_from_sourcing():
+    profile = _build_profile()
+    profile.context_pack_json["sites"][0]["pages"] = [
+        {
+            "url": "https://acme.example.com/platform",
+            "title": "Platform",
+            "signals": [
+                {"type": "capability", "value": "Portfolio analytics", "source_url": "https://acme.example.com/platform"},
+                {
+                    "type": "capability",
+                    "value": "Politique de protection des données",
+                    "source_url": "https://acme.example.com/platform",
+                },
+            ],
+            "customer_evidence": [],
+        }
+    ]
+
+    payload = build_company_context_artifacts(profile)
+    capability_labels = [item["phrase"] for item in payload["sourcing_brief"]["capability_nodes"]]
+
+    assert "Portfolio analytics" in capability_labels
+    assert "Politique de protection des données" not in capability_labels
+
+
 def test_scope_review_decisions_compile_scope_back_into_discovery_scope_hints():
     profile = _build_profile()
     profile.geo_scope = {"region": "EU+UK", "include_countries": ["Belgium"], "exclude_countries": []}

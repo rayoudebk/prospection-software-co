@@ -1634,6 +1634,8 @@ def normalize_taxonomy_nodes(nodes: Any) -> list[dict[str, Any]]:
         phrase = _safe_phrase(item.get("phrase"), max_len=80)
         if layer not in TAXONOMY_LAYERS or not phrase:
             continue
+        if layer == "capability" and not _is_plausible_expansion_capability(phrase):
+            continue
         key = (layer, _normalize_phrase_key(phrase))
         record = grouped.get(key)
         aliases = _normalize_string_list(item.get("aliases"), max_items=12, max_len=80)
