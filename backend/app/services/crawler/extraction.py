@@ -100,6 +100,21 @@ class ContentExtractor:
         words = [word for word in re.split(r"\s+", text) if word]
         noisy_terms = (
             "award",
+            "avatar",
+            "barbu",
+            "blonde",
+            "chignon",
+            "diagramme",
+            "employee",
+            "employees",
+            "employé",
+            "employés",
+            "image",
+            "image représentant",
+            "image representing",
+            "personnage",
+            "portrait",
+            "roux",
             "provider",
             "software",
             "solution",
@@ -119,6 +134,9 @@ class ContentExtractor:
             "jpg",
             "jpeg",
             "svg",
+            "utilisateur",
+            "utilisatrice",
+            "user",
         )
         if any(token in lowered for token in noisy_terms):
             return False
@@ -825,6 +843,8 @@ class ContentExtractor:
             'logo', 'icon', 'image', 'photo', 'picture', 'img',
             'arrow', 'button', 'close', 'menu', 'search', 'loading',
             'placeholder', 'default', 'avatar', 'user', 'profile',
+            'diagramme', 'illustration', 'portrait', 'employee', 'employees',
+            'utilisateur', 'utilisatrice', 'personnage',
         ]
         
         alt_lower = alt.lower()

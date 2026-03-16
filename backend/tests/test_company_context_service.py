@@ -380,6 +380,61 @@ def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monke
     assert expansion["adjacent_capabilities"][0]["priority_tier"] == "edge_case"
 
 
+def test_build_expansion_artifacts_filters_noisy_named_account_anchors():
+    profile = _build_profile()
+    expansion = build_expansion_artifacts(
+        profile,
+        sourcing_brief={
+            "source_company": {"name": "Hublo", "website": "https://hublo.com"},
+            "capability_nodes": [{"phrase": "Shift replacement"}],
+            "customer_nodes": [{"phrase": "Hospital"}],
+            "named_customer_proof": [
+                {"name": "Adrien Beata", "source_url": "https://hublo.com/fr/customers"},
+                {"name": "Image représentant un personnage barbu", "source_url": "https://hublo.com/fr/customers"},
+                {"name": "AP-HP", "source_url": "https://hublo.com/fr/customers"},
+            ],
+        },
+        taxonomy_nodes=[],
+    )["expansion_brief"]
+
+    labels = [item["label"] for item in expansion["named_account_anchors"]]
+    assert "AP-HP" in labels
+    assert "Adrien Beata" not in labels
+    assert all("Image représentant" not in label for label in labels)
+
+
+def test_build_expansion_artifacts_filters_noisy_adjacent_capabilities():
+    profile = _build_profile()
+    noisy_input = {
+        "name": "Comp Two",
+        "website": "https://comp-two.example.com",
+        "taxonomy_nodes": [
+            {"layer": "capability", "phrase": "Politique de protection des données"},
+            {"layer": "capability", "phrase": "Créer votre vivier de remplaçants"},
+        ],
+        "named_customer_proof": [],
+        "partner_integration_proof": [],
+    }
+
+    from app.services.company_context import _build_deterministic_expansion_brief
+
+    deterministic = _build_deterministic_expansion_brief(
+        profile=profile,
+        sourcing_brief={
+            "source_company": {"name": "Hublo", "website": "https://hublo.com"},
+            "capability_nodes": [{"phrase": "Shift replacement"}],
+            "customer_nodes": [{"phrase": "Hospital"}],
+            "named_customer_proof": [],
+        },
+        taxonomy_nodes=[],
+        expansion_inputs=[noisy_input],
+    )
+
+    labels = [item["label"] for item in deterministic["adjacent_capabilities"]]
+    assert "Créer votre vivier de remplaçants" in labels
+    assert "Politique de protection des données" not in labels
+
+
 def test_scope_review_decisions_compile_scope_back_into_discovery_scope_hints():
     profile = _build_profile()
     profile.geo_scope = {"region": "EU+UK", "include_countries": ["Belgium"], "exclude_countries": []}

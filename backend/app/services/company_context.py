@@ -435,6 +435,21 @@ CUSTOMER_ARCHETYPE_PATTERNS = (
 )
 NOISY_CUSTOMER_TERMS = (
     "award",
+    "avatar",
+    "barbu",
+    "blonde",
+    "chignon",
+    "diagramme",
+    "employee",
+    "employees",
+    "employé",
+    "employés",
+    "image",
+    "image représentant",
+    "image representing",
+    "personnage",
+    "portrait",
+    "roux",
     "provider",
     "software",
     "solution",
@@ -458,14 +473,72 @@ NOISY_CUSTOMER_TERMS = (
     "jpg",
     "jpeg",
     "svg",
+    "utilisateur",
+    "utilisatrice",
+    "user",
 )
 NOISY_CUSTOMER_PREFIXES = (
     "how ",
+    "image ",
+    "illustration ",
     "why ",
     "our ",
     "with ",
     "secure ",
     "redeveloping ",
+)
+NOISY_NAMED_ACCOUNT_TERMS = (
+    *NOISY_CUSTOMER_TERMS,
+    "data protection",
+    "privacy policy",
+    "gdpr",
+)
+NOISY_EXPANSION_CAPABILITY_TERMS = (
+    "politique de protection des données",
+    "policy",
+    "privacy",
+    "protection des données",
+    "sécurité des serveurs",
+    "security of servers",
+    "server security",
+    "cookie",
+    "cookies",
+    "mentions légales",
+    "conditions générales",
+)
+INSTITUTION_SIGNAL_TOKENS = (
+    "ap-",
+    "assistance publique",
+    "bank",
+    "banque",
+    "capital",
+    "care",
+    "centre",
+    "chu",
+    "chu-",
+    "chuv",
+    "clinic",
+    "clinique",
+    "clinics",
+    "foundation",
+    "groupe",
+    "group",
+    "health",
+    "healthcare",
+    "hospital",
+    "hopital",
+    "hôpital",
+    "institute",
+    "insurance",
+    "labs",
+    "ministry",
+    "nhs",
+    "partners",
+    "pharma",
+    "pharmacie",
+    "systems",
+    "university",
+    "ventures",
 )
 
 
@@ -677,6 +750,35 @@ def _is_plausible_named_customer(
     if context_lower and "trusted by" not in context_lower and evidence_kind in {"logo_alt", "aria_label"}:
         if any(token in context_lower for token in ("latest", "results", "recent", "ability to", "designed to help")):
             return False
+    return True
+
+
+def _is_plausible_named_account_anchor(value: Any) -> bool:
+    text = _safe_phrase(value, max_len=120)
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(token in lowered for token in NOISY_NAMED_ACCOUNT_TERMS):
+        return False
+    if any(lowered.startswith(prefix) for prefix in NOISY_CUSTOMER_PREFIXES):
+        return False
+    if re.search(r"[.!?]", text):
+        return False
+    words = [word for word in re.split(r"\s+", text) if word]
+    if 2 <= len(words) <= 3:
+        if all(re.fullmatch(r"[A-ZÀ-Ý][a-zà-ÿ'-]+", word) for word in words):
+            if not any(token in lowered for token in INSTITUTION_SIGNAL_TOKENS):
+                return False
+    return True
+
+
+def _is_plausible_expansion_capability(value: Any) -> bool:
+    text = _safe_phrase(value, max_len=140)
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(token in lowered for token in NOISY_EXPANSION_CAPABILITY_TERMS):
+        return False
     return True
 
 
@@ -2777,6 +2879,8 @@ def _derive_adjacent_nodes_from_expansion_inputs(
             label = _compact_phrase(node.get("phrase"), max_words=8, max_len=120)
             if not label:
                 continue
+            if item_type == "adjacent_capability" and not _is_plausible_expansion_capability(label):
+                continue
             key = _normalize_phrase_key(label)
             if not key or key in source_keys:
                 continue
@@ -2871,6 +2975,8 @@ def _build_deterministic_expansion_brief(
             continue
         label = _compact_phrase(item.get("name"), max_words=6, max_len=120)
         if not label:
+            continue
+        if not _is_plausible_named_account_anchor(label):
             continue
         named_account_anchors.append(
             {
