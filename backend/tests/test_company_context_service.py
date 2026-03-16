@@ -406,6 +406,45 @@ def test_build_company_context_artifacts_derives_comparator_capabilities_from_pa
     assert all("Mentions légales" not in label for label in capability_labels)
 
 
+def test_build_company_context_artifacts_derives_mediflash_style_staffing_capability_from_title():
+    profile = _build_profile()
+    profile.comparator_seed_urls = ["https://mediflash.fr/"]
+    profile.context_pack_json["sites"].append(
+        {
+            "url": "https://mediflash.fr/",
+            "company_name": "Mediflash",
+            "summary": "",
+            "signals": [],
+            "customer_evidence": [],
+            "pages": [
+                {
+                    "url": "https://mediflash.fr/",
+                    "title": "Missions de renfort soignant - Mediflash",
+                    "signals": [],
+                    "blocks": [],
+                },
+                {
+                    "url": "https://mediflash.fr/politique-de-confidentialite",
+                    "title": "Politique de confidentialité - Mediflash",
+                    "signals": [],
+                    "blocks": [],
+                },
+            ],
+        }
+    )
+
+    payload = build_company_context_artifacts(profile)
+    expansion_input = payload["expansion_inputs"][0]
+    capability_labels = [
+        node["phrase"]
+        for node in expansion_input["taxonomy_nodes"]
+        if node.get("layer") == "capability"
+    ]
+
+    assert "Renfort soignant" in capability_labels
+    assert all("Politique" not in label for label in capability_labels)
+
+
 def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monkeypatch):
     profile = _build_profile()
     profile.geo_scope = {"region": "EU+UK", "include_countries": ["Belgium"], "exclude_countries": []}

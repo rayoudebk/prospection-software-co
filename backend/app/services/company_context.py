@@ -1010,6 +1010,7 @@ def _is_high_quality_adjacent_capability_candidate(value: Any) -> bool:
             "plateforme",
             "recruit",
             "recrut",
+            "renfort",
             "remplaç",
             "remplacement",
             "reporting",
@@ -1045,6 +1046,8 @@ def _comparator_page_title_capability_phrase(title: Any) -> str:
         return ""
     if "remplacement" in core.lower() and "urgence" in core.lower():
         return "Gestion des remplacements en urgence"
+    if "renfort" in core.lower() and "soignant" in core.lower():
+        return "Renfort soignant"
     compact = _compact_phrase(core, max_words=8, max_len=120)
     if compact:
         compact = compact[:1].upper() + compact[1:]
