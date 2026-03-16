@@ -4355,9 +4355,21 @@ def _normalize_report_label_text(value: Any) -> str:
     return text
 
 
+def _report_label_path_suffix(url: str) -> str:
+    path = urlparse(normalize_url(url)).path.strip("/")
+    if not path:
+        return ""
+    if len(path) > 48:
+        path = path[:48].rstrip("/")
+    return path
+
+
 def _report_source_label(url: str, *, publisher: Any = None, fallback: Any = None) -> str:
     publisher_text = _normalize_report_label_text(publisher)
     if publisher_text:
+        suffix = _report_label_path_suffix(url)
+        if suffix:
+            return f"{publisher_text} / {suffix}"[:120]
         return publisher_text[:120]
     fallback_text = _normalize_report_label_text(fallback)
     if fallback_text:

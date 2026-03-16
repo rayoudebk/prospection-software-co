@@ -7,6 +7,7 @@ from app.models.workspace import CompanyProfile
 from app.services.llm.types import LLMOrchestrationError, LLMResponse, LLMStage, ModelAttemptTrace
 from app.services.company_context import (
     _merge_reasoned_expansion_brief,
+    _report_source_label,
     _sourcing_brief_reasoning_prompt,
     apply_scope_review_decisions,
     build_expansion_artifacts,
@@ -899,6 +900,17 @@ def test_merge_reasoned_expansion_brief_unions_duplicate_capability_evidence_url
         "https://zaggo.fr/etablissements-sante",
         "https://zaggo.fr/",
     ]
+
+
+def test_report_source_label_distinguishes_deeper_comparator_pages():
+    assert _report_source_label(
+        "https://zaggo.fr/",
+        publisher="Zaggo",
+    ) == "Zaggo"
+    assert _report_source_label(
+        "https://zaggo.fr/etablissements-sante",
+        publisher="Zaggo",
+    ) == "Zaggo / etablissements-sante"
 
 
 def test_build_sourcing_report_labels_site_summary_sources_with_domain_brand():
