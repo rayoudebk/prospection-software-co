@@ -1079,6 +1079,32 @@ def test_scope_review_payload_dedupes_source_evidence_urls():
     assert source_capability["evidence_urls"] == ["https://acme.example.com/platform"]
 
 
+def test_scope_review_payload_drops_low_confidence_source_nodes_without_evidence():
+    profile = _build_profile()
+    scope_review = derive_scope_review_payload(
+        {
+            "taxonomy_nodes": [
+                {
+                    "id": "taxonomy_clinic",
+                    "layer": "customer_archetype",
+                    "phrase": "Clinic",
+                    "confidence": 0.68,
+                    "evidence_ids": [],
+                    "scope_status": "in_scope",
+                }
+            ],
+            "sourcing_brief": {
+                "customer_nodes": [{"id": "taxonomy_clinic"}],
+            },
+            "expansion_status": "not_generated",
+            "expansion_brief": {},
+        },
+        profile,
+    )
+
+    assert scope_review["source_customer_segments"] == []
+
+
 def test_capability_phrase_from_text_prefers_valid_segment_from_split_title():
     assert (
         _capability_phrase_from_text("Créer votre vivier de remplaçants - Simplifier votre")

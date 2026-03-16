@@ -5379,6 +5379,10 @@ def derive_scope_review_payload(
             label = str(node.get("phrase") or "").strip()
             if not label:
                 continue
+            confidence = _clamp_confidence(node.get("confidence"), default=0.68)
+            evidence_ids = _normalize_string_list(node.get("evidence_ids"), max_items=8, max_len=96)
+            if not evidence_ids and confidence <= 0.68:
+                continue
             rows.append(
                 {
                     "id": str(node.get("id") or ""),
@@ -5386,12 +5390,12 @@ def derive_scope_review_payload(
                     "scope_item_type": _group_scope_item_type(layer),
                     "origin": "source_brief",
                     "status": _scope_status_from_taxonomy_scope(node.get("scope_status")),
-                    "confidence": _clamp_confidence(node.get("confidence"), default=0.68),
-                    "evidence_ids": _normalize_string_list(node.get("evidence_ids"), max_items=8, max_len=96),
+                    "confidence": confidence,
+                    "evidence_ids": evidence_ids,
                     "evidence_urls": _normalize_string_list(
                         [
                             evidence_url_by_id[evidence_id]
-                            for evidence_id in _normalize_string_list(node.get("evidence_ids"), max_items=8, max_len=96)
+                            for evidence_id in evidence_ids
                             if evidence_id in evidence_url_by_id
                         ],
                         max_items=6,
@@ -5400,7 +5404,7 @@ def derive_scope_review_payload(
                     "supporting_node_ids": [str(node.get("id") or "")] if str(node.get("id") or "").strip() else [],
                     "source_entity_names": [],
                     "why_it_matters": None,
-                    "priority_tier": "core" if str(node.get("id") or "") in selected_ids else "supporting",
+                    "priority_tier": "core" if str(node.get("id") or "") in selected_ids and evidence_ids else "supporting",
                 }
             )
         return sorted(
