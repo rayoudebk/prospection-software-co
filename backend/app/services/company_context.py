@@ -450,6 +450,8 @@ NOISY_CUSTOMER_TERMS = (
     "personnage",
     "portrait",
     "roux",
+    "schema",
+    "schéma",
     "provider",
     "software",
     "solution",

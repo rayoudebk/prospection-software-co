@@ -418,6 +418,11 @@ def test_build_company_context_artifacts_filters_person_like_named_customer_proo
                     "source_url": "https://acme.example.com/customers",
                     "evidence_type": "logo_alt",
                 },
+                {
+                    "name": "Le schéma Hublo et agences",
+                    "source_url": "https://acme.example.com/customers",
+                    "evidence_type": "logo_alt",
+                },
                 {"name": "Northwind Capital", "source_url": "https://acme.example.com/customers", "evidence_type": "logo_alt"},
             ],
         }
@@ -430,6 +435,7 @@ def test_build_company_context_artifacts_filters_person_like_named_customer_proo
     assert "Northwind Capital" in labels
     assert "Adrien Beata" not in labels
     assert all("Image représentant" not in label for label in labels)
+    assert "Le schéma Hublo et agences" not in labels
 
 
 def test_build_expansion_artifacts_filters_noisy_adjacent_capabilities():

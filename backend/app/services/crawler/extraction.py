@@ -115,6 +115,8 @@ class ContentExtractor:
             "personnage",
             "portrait",
             "roux",
+            "schema",
+            "schéma",
             "provider",
             "software",
             "solution",
