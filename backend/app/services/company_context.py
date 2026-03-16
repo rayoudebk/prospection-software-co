@@ -3857,7 +3857,7 @@ def _merge_expansion_group(
     prefer_fallback: bool = False,
 ) -> list[dict[str, Any]]:
     ordered: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    by_key: dict[str, dict[str, Any]] = {}
 
     filtered_reasoned = [
         item
@@ -3879,10 +3879,35 @@ def _merge_expansion_group(
             if not isinstance(item, dict):
                 continue
             key = _normalize_phrase_key(item.get("label"))
-            if not key or key in seen:
+            if not key:
                 continue
-            seen.add(key)
-            ordered.append(item)
+            existing = by_key.get(key)
+            if existing is None:
+                copy = dict(item)
+                by_key[key] = copy
+                ordered.append(copy)
+                continue
+            existing["evidence_urls"] = _normalize_string_list(
+                list(existing.get("evidence_urls") or []) + list(item.get("evidence_urls") or []),
+                max_items=6,
+                max_len=500,
+            )
+            existing["source_entity_names"] = _normalize_string_list(
+                list(existing.get("source_entity_names") or []) + list(item.get("source_entity_names") or []),
+                max_items=6,
+                max_len=120,
+            )
+            existing["supporting_node_ids"] = _normalize_string_list(
+                list(existing.get("supporting_node_ids") or []) + list(item.get("supporting_node_ids") or []),
+                max_items=8,
+                max_len=120,
+            )
+            if not str(existing.get("why_it_matters") or "").strip() and str(item.get("why_it_matters") or "").strip():
+                existing["why_it_matters"] = item.get("why_it_matters")
+            existing["confidence"] = max(
+                _clamp_confidence(existing.get("confidence"), default=0.6),
+                _clamp_confidence(item.get("confidence"), default=0.6),
+            )
     return ordered
 
 

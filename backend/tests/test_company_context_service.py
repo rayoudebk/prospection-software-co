@@ -6,6 +6,7 @@ import pytest
 from app.models.workspace import CompanyProfile
 from app.services.llm.types import LLMOrchestrationError, LLMResponse, LLMStage, ModelAttemptTrace
 from app.services.company_context import (
+    _merge_reasoned_expansion_brief,
     _sourcing_brief_reasoning_prompt,
     apply_scope_review_decisions,
     build_expansion_artifacts,
@@ -858,6 +859,46 @@ def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_kee
     assert "Des professionnels des secteurs conseil juridique" not in capability_labels
     assert "Client reporting" in capability_labels
     assert "Établissements de santé" in segment_labels
+
+
+def test_merge_reasoned_expansion_brief_unions_duplicate_capability_evidence_urls():
+    fallback_brief = normalize_expansion_brief(
+        {
+            "adjacent_capabilities": [
+                {
+                    "label": "Recrutement de personnel médical en remplacement",
+                    "evidence_urls": ["https://zaggo.fr/etablissements-sante"],
+                    "source_entity_names": ["Zaggo"],
+                }
+            ]
+        }
+    )
+
+    merged = _merge_reasoned_expansion_brief(
+        response_text=json.dumps(
+            {
+                "adjacent_capabilities": [
+                    {
+                        "label": "Recrutement de personnel médical en remplacement",
+                        "evidence_urls": ["https://zaggo.fr/"],
+                        "source_entity_names": ["Zaggo"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        fallback_brief=fallback_brief,
+        taxonomy_nodes=[],
+        source_company={"name": "Hublo", "website": "https://hublo.com"},
+        comparator_domains={"zaggo.fr"},
+    )
+
+    capability = merged["adjacent_capabilities"][0]
+    assert capability["label"] == "Recrutement de personnel médical en remplacement"
+    assert capability["evidence_urls"] == [
+        "https://zaggo.fr/etablissements-sante",
+        "https://zaggo.fr/",
+    ]
 
 
 def test_build_sourcing_report_labels_site_summary_sources_with_domain_brand():
