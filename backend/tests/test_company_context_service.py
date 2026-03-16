@@ -360,6 +360,52 @@ def test_build_company_context_artifacts_uses_domain_brand_for_generic_comparato
     assert payload["expansion_inputs"][0]["name"] == "Zaggo"
 
 
+def test_build_company_context_artifacts_derives_comparator_capabilities_from_page_titles():
+    profile = _build_profile()
+    profile.comparator_seed_urls = ["https://www.zaggo.fr/"]
+    profile.context_pack_json["sites"].append(
+        {
+            "url": "https://www.zaggo.fr/",
+            "company_name": "Gestion des remplacements en urgence",
+            "summary": "",
+            "signals": [],
+            "customer_evidence": [],
+            "pages": [
+                {
+                    "url": "https://www.zaggo.fr/",
+                    "title": "Gestion des remplacements en urgence - Santé et médico-social",
+                    "signals": [],
+                    "blocks": [],
+                },
+                {
+                    "url": "https://www.zaggo.fr/etablissements-sante",
+                    "title": "Solution de recrutement de personnel médical en remplacement",
+                    "signals": [],
+                    "blocks": [],
+                },
+                {
+                    "url": "https://www.zaggo.fr/mentions-legales",
+                    "title": "Mentions légales - Zaggo.fr",
+                    "signals": [],
+                    "blocks": [],
+                },
+            ],
+        }
+    )
+
+    payload = build_company_context_artifacts(profile)
+    expansion_input = payload["expansion_inputs"][0]
+    capability_labels = [
+        node["phrase"]
+        for node in expansion_input["taxonomy_nodes"]
+        if node.get("layer") == "capability"
+    ]
+
+    assert "Gestion des remplacements en urgence" in capability_labels
+    assert "Recrutement de personnel médical en remplacement" in capability_labels
+    assert all("Mentions légales" not in label for label in capability_labels)
+
+
 def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monkeypatch):
     profile = _build_profile()
     profile.geo_scope = {"region": "EU+UK", "include_countries": ["Belgium"], "exclude_countries": []}

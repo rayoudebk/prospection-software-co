@@ -606,6 +606,37 @@ NOISY_NAMED_ACCOUNT_CONTEXT_TERMS = (
     "series b",
     "student",
 )
+NOISY_COMPARATOR_PAGE_URL_TOKENS = (
+    "/a-propos",
+    "/about",
+    "/abonnement",
+    "/cgu",
+    "/conditions",
+    "/contact",
+    "/cookies",
+    "/faq",
+    "/inscription",
+    "/login",
+    "/mentions-legales",
+    "/parrainage",
+    "/partenariat",
+    "/politique",
+    "/privacy",
+    "/signup",
+)
+NOISY_COMPARATOR_PAGE_TITLE_TERMS = (
+    "abonnement",
+    "conditions générales",
+    "contact",
+    "cookies",
+    "faq",
+    "inscription",
+    "mentions légales",
+    "partenariat",
+    "politique de confidentialité",
+    "privacy",
+    "qui sommes nous",
+)
 INSTITUTION_SIGNAL_TOKENS = (
     "ap-",
     "assistance publique",
@@ -990,6 +1021,71 @@ def _is_high_quality_adjacent_capability_candidate(value: Any) -> bool:
     ):
         return True
     return False
+
+
+def _is_noisy_comparator_page(*, url: str, title: str) -> bool:
+    lowered_url = normalize_url(url).lower()
+    lowered_title = _safe_phrase(title, max_len=160).lower()
+    return any(token in lowered_url for token in NOISY_COMPARATOR_PAGE_URL_TOKENS) or any(
+        token in lowered_title for token in NOISY_COMPARATOR_PAGE_TITLE_TERMS
+    )
+
+
+def _comparator_page_title_capability_phrase(title: Any) -> str:
+    text = _safe_phrase(title, max_len=160)
+    if not text:
+        return ""
+    core = re.split(r"\s[-–|:]\s", text, maxsplit=1)[0].strip()
+    core = re.sub(r"^(?:solution de|logiciel de)\s+", "", core, flags=re.IGNORECASE).strip()
+    core = re.sub(r"^trouvez\s+(?:des|de)\s+", "", core, flags=re.IGNORECASE).strip()
+    core = re.sub(r"^vidéo\s+", "", core, flags=re.IGNORECASE).strip()
+    if not core:
+        return ""
+    if core.lower().startswith(("je ", "nous ", "vous ", "renforcez ", "parraine", "partenariat ")):
+        return ""
+    if "remplacement" in core.lower() and "urgence" in core.lower():
+        return "Gestion des remplacements en urgence"
+    compact = _compact_phrase(core, max_words=8, max_len=120)
+    if compact:
+        compact = compact[:1].upper() + compact[1:]
+    return compact
+
+
+def _derive_comparator_page_capability_nodes(
+    *,
+    scoped_sites: list[dict[str, Any]],
+    comparator_name: str,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for site in scoped_sites:
+        for page in site.get("pages") or []:
+            if not isinstance(page, dict):
+                continue
+            url = normalize_url(page.get("url") or site.get("website") or site.get("url") or "")
+            title = str(page.get("title") or "").strip()
+            if not url or not title or _is_noisy_comparator_page(url=url, title=title):
+                continue
+            phrase = _comparator_page_title_capability_phrase(title)
+            if not phrase or not _is_high_quality_adjacent_capability_candidate(phrase):
+                continue
+            key = _normalize_phrase_key(phrase)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                {
+                    "id": _stable_id("taxonomy", comparator_name, "capability", phrase),
+                    "layer": "capability",
+                    "phrase": phrase,
+                    "aliases": [],
+                    "confidence": 0.66,
+                    "evidence_ids": [],
+                    "source_url": url,
+                    "scope_status": "in_scope",
+                }
+            )
+    return candidates[:8]
 
 
 def _is_plausible_comparator_name(value: Any) -> bool:
@@ -4007,6 +4103,16 @@ def build_expansion_inputs(
                 continue
             if entity_key:
                 seen_entities.add(entity_key)
+            page_capability_nodes = _derive_comparator_page_capability_nodes(
+                scoped_sites=scoped_sites,
+                comparator_name=comparator_name,
+            )
+            if page_capability_nodes:
+                taxonomy_nodes = normalize_taxonomy_nodes([*taxonomy_nodes, *page_capability_nodes])
+                nodes_by_layer = {
+                    layer: [node for node in taxonomy_nodes if node.get("layer") == layer]
+                    for layer in TAXONOMY_LAYERS
+                }
             contexts.append(
                 {
                     "name": comparator_name,
