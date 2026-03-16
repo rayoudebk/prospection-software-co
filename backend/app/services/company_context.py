@@ -569,6 +569,14 @@ NOISY_EXPANSION_CAPABILITY_TERMS = (
     "secteur rh",
     "conditions générales",
 )
+NOISY_SOURCE_CAPABILITY_TERMS = (
+    "on recrute",
+    "join us",
+    "we're hiring",
+    "we are hiring",
+    "career",
+    "careers",
+)
 NOISY_ADJACENT_CUSTOMER_SEGMENT_TERMS = (
     "administrator",
     "administrators",
@@ -1743,6 +1751,8 @@ def _is_valid_taxonomy_phrase(
         if any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
             return False
     elif layer == "capability":
+        if any(token in lowered for token in NOISY_SOURCE_CAPABILITY_TERMS):
+            return False
         if any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
             return False
         if any(keyword in lowered for keyword in CUSTOMER_KEYWORDS):

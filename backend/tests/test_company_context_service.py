@@ -1059,6 +1059,36 @@ def test_capability_phrase_from_text_drops_brand_only_split_titles():
     assert _capability_phrase_from_text("Hublo - Mstaff") == ""
 
 
+def test_build_company_context_artifacts_drops_career_language_from_source_capabilities():
+    profile = _build_profile()
+    profile.context_pack_json = {
+        "sites": [
+            {
+                "url": "https://hublo.example.com",
+                "company_name": "Hublo",
+                "summary": "Gestion des remplacements pour établissements de santé.",
+                "signals": [],
+                "customer_evidence": [],
+                "pages": [
+                    {
+                        "url": "https://hublo.example.com/fr/solution",
+                        "title": "Solution",
+                        "page_type": "solutions",
+                        "blocks": [{"type": "heading", "content": "On recrute"}],
+                        "signals": [],
+                        "customer_evidence": [],
+                    }
+                ],
+            }
+        ]
+    }
+
+    payload = build_company_context_artifacts(profile)
+    capability_labels = [node["phrase"] for node in payload["taxonomy_nodes"] if node.get("layer") == "capability"]
+
+    assert "On recrute" not in capability_labels
+
+
 def test_build_company_context_artifacts_ignores_comparator_context_for_empty_buyer_site():
     profile = CompanyProfile(
         workspace_id=3,
