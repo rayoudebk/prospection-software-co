@@ -791,6 +791,10 @@ def _is_plausible_expansion_capability(value: Any) -> bool:
     if not text:
         return False
     lowered = text.lower()
+    if "?" in text:
+        return False
+    if lowered.startswith("vous êtes "):
+        return False
     if any(token in lowered for token in NOISY_EXPANSION_CAPABILITY_TERMS):
         return False
     return True

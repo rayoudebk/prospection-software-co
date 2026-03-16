@@ -506,6 +506,11 @@ def test_build_company_context_artifacts_filters_policy_capabilities_from_sourci
                     "value": "Politique de protection des données",
                     "source_url": "https://acme.example.com/platform",
                 },
+                {
+                    "type": "capability",
+                    "value": "Vous êtes une agence d’intérim ?",
+                    "source_url": "https://acme.example.com/platform",
+                },
             ],
             "customer_evidence": [],
         }
@@ -516,6 +521,7 @@ def test_build_company_context_artifacts_filters_policy_capabilities_from_sourci
 
     assert "Portfolio analytics" in capability_labels
     assert "Politique de protection des données" not in capability_labels
+    assert "Vous êtes une agence d’intérim ?" not in capability_labels
 
 
 def test_scope_review_decisions_compile_scope_back_into_discovery_scope_hints():
