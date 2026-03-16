@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from app.config import get_settings
 from app.models.company_context import CompanyContextPack
@@ -1955,6 +1956,7 @@ def normalize_taxonomy_nodes(nodes: Any) -> list[dict[str, Any]]:
         aliases = _normalize_string_list(item.get("aliases"), max_items=12, max_len=80)
         aliases = [alias for alias in aliases if _normalize_phrase_key(alias) != key[1]]
         evidence_ids = _normalize_string_list(item.get("evidence_ids"), max_items=12, max_len=96)
+        source_url = normalize_url(item.get("source_url"))
         scope_status = str(item.get("scope_status") or "in_scope").strip().lower()
         if scope_status not in TAXONOMY_SCOPE_STATUSES:
             scope_status = "in_scope"
@@ -1966,6 +1968,7 @@ def normalize_taxonomy_nodes(nodes: Any) -> list[dict[str, Any]]:
                 "aliases": aliases,
                 "confidence": _clamp_confidence(item.get("confidence"), default=0.68),
                 "evidence_ids": evidence_ids,
+                "source_url": source_url,
                 "scope_status": scope_status,
             }
             grouped[key] = record
@@ -1974,6 +1977,12 @@ def normalize_taxonomy_nodes(nodes: Any) -> list[dict[str, Any]]:
         record["aliases"] = _normalize_string_list(record.get("aliases", []) + aliases, max_items=12, max_len=80)
         record["evidence_ids"] = _normalize_string_list(record.get("evidence_ids", []) + evidence_ids, max_items=12, max_len=96)
         record["confidence"] = _clamp_confidence(max(float(record.get("confidence") or 0.0), float(item.get("confidence") or 0.0)), default=0.68)
+        if source_url:
+            existing_source_url = normalize_url(record.get("source_url"))
+            existing_path = urlparse(existing_source_url).path if existing_source_url else ""
+            candidate_path = urlparse(source_url).path
+            if not existing_source_url or len(candidate_path) > len(existing_path):
+                record["source_url"] = source_url
         if record.get("scope_status") != "removed":
             record["scope_status"] = scope_status
     normalized = _suppress_redundant_taxonomy_nodes(normalized)
