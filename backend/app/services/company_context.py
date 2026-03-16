@@ -1380,6 +1380,9 @@ def _is_valid_taxonomy_phrase(
     elif layer == "capability":
         if any(keyword in lowered for keyword in DELIVERY_OR_INTEGRATION_KEYWORDS):
             return False
+        if any(keyword in lowered for keyword in CUSTOMER_KEYWORDS):
+            if not any(keyword in lowered for keyword in CAPABILITY_QUALITY_KEYWORDS):
+                return False
         if word_count < 2 and "/" not in normalized and not normalized.isupper():
             return False
         if any(lowered.startswith(prefix) for prefix in SENTENCE_LIKE_CAPABILITY_PREFIXES):
