@@ -738,6 +738,8 @@ def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_kee
                 {"label": "Des consultants du secteur RH et recrutement formation"},
                 {"label": "Management de la sécurité"},
                 {"label": "Reportings des remplacement effectués"},
+                {"label": "Candidatdésigne une personne libre de tout engagement inscrite"},
+                {"label": "Date de la notification"},
                 {"label": "Urgent replacement management"},
             ],
             "adjacent_customer_segments": [
@@ -753,6 +755,8 @@ def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_kee
     assert "Des consultants du secteur RH et recrutement formation" not in capability_labels
     assert "Management de la sécurité" not in capability_labels
     assert "Reportings des remplacement effectués" not in capability_labels
+    assert "Candidatdésigne une personne libre de tout engagement inscrite" not in capability_labels
+    assert "Date de la notification" not in capability_labels
     assert "Établissements de santé" in segment_labels
 
 

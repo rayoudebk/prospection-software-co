@@ -520,17 +520,30 @@ NOISY_NAMED_ACCOUNT_TERMS = (
 NOISY_EXPANSION_CAPABILITY_TERMS = (
     "about",
     "à propos",
+    "accompagnée de toute documentation utile",
+    "candidatdésigne",
+    "ce procédé de chiffrement",
+    "clientdésigne",
+    "compte valide",
+    "comptedésigne",
     "data protection",
     "contact",
     "contact us",
+    "date de la notification",
+    "désigne",
+    "des dirigeants",
+    "devenir un acteur",
+    "documentation utile",
     "espace presse",
     "faq",
     "press",
+    "procédé de chiffrement",
     "politique de protection des données",
     "policy",
     "policies",
     "privacy",
     "protection des données",
+    "souscrivant",
     "security",
     "sécurité des serveurs",
     "security of servers",
@@ -909,6 +922,21 @@ def _is_plausible_expansion_capability(value: Any) -> bool:
     if lowered.startswith("vous êtes "):
         return False
     if any(token in lowered for token in NOISY_EXPANSION_CAPABILITY_TERMS):
+        return False
+    return True
+
+
+def _is_plausible_comparator_adjacent_capability(value: Any) -> bool:
+    text = _safe_phrase(value, max_len=140)
+    if not _is_plausible_expansion_capability(text):
+        return False
+    lowered = text.lower()
+    words = [word for word in re.split(r"\s+", text) if word]
+    if len(words) > 6:
+        return False
+    if any(lowered.startswith(prefix) for prefix in ("ce ", "cette ", "date ", "des ", "devenir ")):
+        return False
+    if lowered.startswith("clientdésigne") or lowered.startswith("comptedésigne") or lowered.startswith("compte valide"):
         return False
     return True
 
@@ -3044,7 +3072,7 @@ def _derive_adjacent_nodes_from_expansion_inputs(
             label = _compact_phrase(node.get("phrase"), max_words=8, max_len=120)
             if not label:
                 continue
-            if item_type == "adjacent_capability" and not _is_plausible_expansion_capability(label):
+            if item_type == "adjacent_capability" and not _is_plausible_comparator_adjacent_capability(label):
                 continue
             key = _normalize_phrase_key(label)
             if not key or key in source_keys:
