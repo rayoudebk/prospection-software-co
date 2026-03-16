@@ -1,8 +1,10 @@
 from app.models.workspace import CompanyProfile
+from app.models.company_context import CompanyContextPack
 from app.services.company_context_graph import (
     _build_secondary_queries,
     build_company_context_graph,
     build_company_context_payload,
+    sync_company_context_pack_graph,
 )
 from app.services.company_context import build_company_context_artifacts
 
@@ -463,3 +465,31 @@ def test_low_signal_host_result_is_not_treated_as_customer_corroboration(monkeyp
 
     assert payload["sourcing_brief"]["customer_partner_corroboration"] == []
     assert payload["sourcing_brief"]["secondary_evidence_proof"] == []
+
+
+def test_sync_company_context_pack_graph_persists_deep_research_handoff(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context_graph.Neo4jCompanyContextGraphStore.sync_graph",
+        lambda self, graph: {"status": "success", "error": None, "graph_ref": graph.get("graph_ref")},
+    )
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    profile = _build_profile()
+    pack = CompanyContextPack(workspace_id=42)
+
+    payload = sync_company_context_pack_graph(
+        pack,
+        profile,
+        payload_override=build_company_context_artifacts(profile),
+    )
+
+    assert payload["deep_research_handoff"]["source_company_truth"]["source_company"]["name"] == "4TPM"
+    assert pack.company_context_graph_cache_json["deep_research_handoff"]["source_company_truth"]["source_company"]["name"] == "4TPM"

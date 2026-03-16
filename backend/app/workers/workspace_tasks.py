@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from html import unescape
 import hashlib
 import json
+import logging
 import re
 from difflib import SequenceMatcher
 import time
@@ -68,6 +69,7 @@ from app.services.claims_graph import rebuild_workspace_claims_graph
 from app.services.llm.orchestrator import LLMOrchestrator
 from app.services.llm.types import LLMRequest, LLMStage, LLMOrchestrationError
 from app.services.retrieval.crawl_connectors import fetch_page_fast
+from app.services.company_context_graph import sync_company_context_pack_graph
 from app.models.external_search import ExternalSearchRun, ExternalSearchResult
 from app.services.retrieval.search_orchestrator import run_external_search_queries
 from app.services.retrieval.url_normalization import normalize_url
@@ -83,6 +85,8 @@ from app.services.quality_audit import (
     normalize_quality_audit_v1,
     quality_audit_thresholds_from_settings,
 )
+
+logger = logging.getLogger(__name__)
 
 MIN_PUBLIC_PRICE_USD = 250.0
 MIN_SOFTWARE_HEAVINESS = 3
@@ -6786,7 +6790,73 @@ def run_monitoring_delta(job_id: int):
             job.error_message = str(exc)
             job.finished_at = datetime.utcnow()
             db.commit()
-        return {"error": str(exc)}
+            return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.workspace_tasks.run_company_context_refresh")
+def run_company_context_refresh(workspace_id: int):
+    """Refresh sourcing graph/brief artifacts for a workspace."""
+    from app.services.company_context import build_company_context_artifacts
+
+    db = SessionLocal()
+    company_context_pack = None
+    try:
+        profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == workspace_id).first()
+        if not profile:
+            logger.warning("company_context_refresh_task_missing_profile workspace_id=%s", workspace_id)
+            return {"error": "Company profile not found", "workspace_id": workspace_id}
+
+        company_context_pack = (
+            db.query(CompanyContextPack)
+            .filter(CompanyContextPack.workspace_id == workspace_id)
+            .first()
+        )
+        refreshed = build_company_context_artifacts(profile)
+
+        if company_context_pack is None:
+            company_context_pack = CompanyContextPack(workspace_id=workspace_id)
+            db.add(company_context_pack)
+            db.flush()
+
+        company_context_pack.sourcing_brief_json = refreshed.get("sourcing_brief") or {}
+        company_context_pack.expansion_brief_json = {}
+        company_context_pack.expansion_status = "not_generated"
+        company_context_pack.expansion_error = None
+        company_context_pack.expansion_generated_at = None
+        company_context_pack.taxonomy_nodes_json = refreshed.get("taxonomy_nodes") or []
+        company_context_pack.taxonomy_edges_json = refreshed.get("taxonomy_edges") or []
+        company_context_pack.lens_seeds_json = refreshed.get("lens_seeds") or []
+        company_context_pack.generated_at = refreshed.get("generated_at")
+        company_context_pack.confirmed_at = None
+        company_context_pack.updated_at = datetime.utcnow()
+        sync_company_context_pack_graph(
+            company_context_pack,
+            profile,
+            payload_override=refreshed,
+        )
+        company_context_pack.updated_at = datetime.utcnow()
+        db.commit()
+        logger.info(
+            "company_context_refresh_task_completed workspace_id=%s graph_status=%s",
+            workspace_id,
+            company_context_pack.graph_sync_status,
+        )
+        return {
+            "workspace_id": workspace_id,
+            "status": company_context_pack.graph_sync_status,
+            "graph_ref": company_context_pack.company_context_graph_ref,
+        }
+    except Exception as exc:
+        logger.exception("company_context_refresh_task_failed workspace_id=%s", workspace_id)
+        if company_context_pack is not None:
+            company_context_pack.graph_sync_status = "failed"
+            company_context_pack.graph_sync_error = "Worker sourcing refresh failed"
+            company_context_pack.graph_synced_at = datetime.utcnow()
+            company_context_pack.updated_at = datetime.utcnow()
+            db.commit()
+        return {"error": str(exc), "workspace_id": workspace_id}
     finally:
         db.close()
 

@@ -327,7 +327,7 @@ def test_scope_review_contract_updates_and_confirms_scope(tmp_path: Path, monkey
     assert gates_response.json()["scope_review"] is True
 
 
-def test_company_context_refresh_schedules_inline_task_and_returns_refreshing(tmp_path: Path, monkeypatch):
+def test_company_context_refresh_enqueues_worker_task_and_returns_refreshing(tmp_path: Path, monkeypatch):
     client, session_maker = _build_test_client(tmp_path)
 
     create_response = client.post("/workspaces", json={"name": "Refresh workspace", "region_scope": "EU+UK"})
@@ -335,23 +335,23 @@ def test_company_context_refresh_schedules_inline_task_and_returns_refreshing(tm
     workspace_id = create_response.json()["id"]
     _seed_company_profile(session_maker, workspace_id)
 
-    scheduled: list[str] = []
+    enqueued: list[int] = []
 
-    def _fake_create_task(coro):
-        scheduled.append(getattr(getattr(coro, "cr_code", None), "co_name", "unknown"))
-        coro.close()
-        future = asyncio.get_running_loop().create_future()
-        future.set_result(None)
-        return future
+    class _FakeTaskResult:
+        id = "task-123"
 
-    monkeypatch.setattr("app.api.workspaces.asyncio.create_task", _fake_create_task)
+    def _fake_delay(workspace_id: int):
+        enqueued.append(workspace_id)
+        return _FakeTaskResult()
+
+    monkeypatch.setattr("app.workers.workspace_tasks.run_company_context_refresh.delay", _fake_delay)
 
     response = client.post(f"/workspaces/{workspace_id}/company-context:refresh")
     assert response.status_code == 200
     payload = response.json()
 
     assert payload["graph_status"] == "refreshing"
-    assert "_run_company_context_refresh_inline" in scheduled
+    assert enqueued == [workspace_id]
 
 
 def test_expansion_generate_schedules_inline_task_and_returns_generating(tmp_path: Path, monkeypatch):
@@ -407,6 +407,33 @@ def test_company_context_refresh_resets_stale_refreshing_state(tmp_path: Path, m
 
     asyncio.run(seed_stale_pack())
 
+    enqueued: list[int] = []
+
+    class _FakeTaskResult:
+        id = "task-456"
+
+    def _fake_delay(value: int):
+        enqueued.append(value)
+        return _FakeTaskResult()
+
+    monkeypatch.setattr("app.workers.workspace_tasks.run_company_context_refresh.delay", _fake_delay)
+
+    response = client.post(f"/workspaces/{workspace_id}/company-context:refresh")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["graph_status"] == "refreshing"
+    assert enqueued == [workspace_id]
+
+
+def test_company_context_refresh_falls_back_inline_when_enqueue_fails(tmp_path: Path, monkeypatch):
+    client, session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Refresh workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+    _seed_company_profile(session_maker, workspace_id)
+
     scheduled: list[str] = []
 
     def _fake_create_task(coro):
@@ -416,6 +443,10 @@ def test_company_context_refresh_resets_stale_refreshing_state(tmp_path: Path, m
         future.set_result(None)
         return future
 
+    monkeypatch.setattr(
+        "app.workers.workspace_tasks.run_company_context_refresh.delay",
+        lambda _workspace_id: (_ for _ in ()).throw(RuntimeError("broker down")),
+    )
     monkeypatch.setattr("app.api.workspaces.asyncio.create_task", _fake_create_task)
 
     response = client.post(f"/workspaces/{workspace_id}/company-context:refresh")

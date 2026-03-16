@@ -57,8 +57,7 @@ from app.services.reporting import (
 )
 from app.services.quality_audit import normalize_quality_audit_v1
 from app.services.company_context_graph import (
-    Neo4jCompanyContextGraphStore,
-    build_company_context_payload,
+    sync_company_context_pack_graph,
 )
 from app.services.company_context import (
     assess_buyer_evidence,
@@ -1356,32 +1355,11 @@ async def _sync_company_context_graph(
     *,
     payload_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    payload = (
-        build_company_context_payload(payload_override, profile)
-        if isinstance(payload_override, dict)
-        else build_company_context_payload(company_context_pack, profile)
+    return sync_company_context_pack_graph(
+        company_context_pack,
+        profile,
+        payload_override=payload_override,
     )
-    graph_payload = payload.get("company_context_graph") or {}
-    sync_result = Neo4jCompanyContextGraphStore().sync_graph(graph_payload)
-    sync_status = str(sync_result.get("status") or "failed")
-    graph_ref = (
-        payload.get("company_context_graph_ref")
-        or graph_payload.get("graph_ref")
-        or sync_result.get("graph_ref")
-    )
-    company_context_pack.company_context_graph_ref = graph_ref
-    company_context_pack.company_context_graph_cache_json = graph_payload
-    company_context_pack.graph_stats_json = payload.get("graph_stats") or {}
-    company_context_pack.graph_sync_status = sync_status
-    company_context_pack.graph_sync_error = sync_result.get("error")
-    company_context_pack.graph_synced_at = datetime.utcnow()
-    company_context_pack.sourcing_brief_json = payload.get("sourcing_brief") or company_context_pack.sourcing_brief_json or {}
-    payload["graph_status"] = sync_status
-    payload["graph_warning"] = sync_result.get("error")
-    payload["graph_synced_at"] = company_context_pack.graph_synced_at
-    payload["company_context_graph_ref"] = graph_ref
-    payload["source_documents"] = graph_payload.get("source_documents") or []
-    return payload
 
 
 async def _ensure_company_context_pack(
@@ -2457,8 +2435,21 @@ async def refresh_company_context(
     company_context_pack.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(company_context_pack)
-    asyncio.create_task(_run_company_context_refresh_inline(workspace_id))
-    logger.info("company_context_refresh_inline_scheduled workspace_id=%s", workspace_id)
+    from app.workers.workspace_tasks import run_company_context_refresh
+
+    try:
+        task_result = run_company_context_refresh.delay(workspace_id)
+        logger.info(
+            "company_context_refresh_enqueued workspace_id=%s task_id=%s",
+            workspace_id,
+            getattr(task_result, "id", None),
+        )
+    except Exception:
+        asyncio.create_task(_run_company_context_refresh_inline(workspace_id))
+        logger.exception(
+            "company_context_refresh_enqueue_failed_falling_back_inline workspace_id=%s",
+            workspace_id,
+        )
     payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
     payload["workspace_id"] = workspace_id
     payload["id"] = company_context_pack.id
