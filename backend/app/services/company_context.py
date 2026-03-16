@@ -432,6 +432,14 @@ CUSTOMER_ARCHETYPE_PATTERNS = (
     ("bourse en ligne", "online brokerage"),
     ("sociétés de gestion", "asset manager"),
     ("épargne retraite et salariale", "employee savings provider"),
+    ("établissement de santé", "healthcare provider"),
+    ("établissements de santé", "healthcare provider"),
+    ("etablissement de santé", "healthcare provider"),
+    ("etablissements de santé", "healthcare provider"),
+    ("médico-social", "healthcare provider"),
+    ("medico-social", "healthcare provider"),
+    ("structure sanitaire", "healthcare provider"),
+    ("structures sanitaires", "healthcare provider"),
 )
 NOISY_CUSTOMER_TERMS = (
     "award",
@@ -527,9 +535,14 @@ NOISY_EXPANSION_CAPABILITY_TERMS = (
     "sécurité des serveurs",
     "security of servers",
     "server security",
+    "consultant",
+    "consultants",
     "cookie",
     "cookies",
+    "formation",
     "mentions légales",
+    "recrutement formation",
+    "secteur rh",
     "conditions générales",
 )
 NOISY_ADJACENT_CUSTOMER_SEGMENT_TERMS = (
@@ -894,6 +907,22 @@ def _is_plausible_expansion_capability(value: Any) -> bool:
     if lowered.startswith("vous êtes "):
         return False
     if any(token in lowered for token in NOISY_EXPANSION_CAPABILITY_TERMS):
+        return False
+    return True
+
+
+def _is_plausible_comparator_name(value: Any) -> bool:
+    text = _safe_phrase(value, max_len=140)
+    if not text:
+        return False
+    lowered = text.lower()
+    words = [word for word in re.split(r"\s+", text) if word]
+    if len(words) > 6:
+        return False
+    if any(token in lowered for token in ("gestion", "mission", "missions", "replacement", "remplacements", "urgent", "urgence")):
+        if not any(token in lowered for token in INSTITUTION_SIGNAL_TOKENS):
+            return False
+    if text.endswith(("!", ".", "?")):
         return False
     return True
 
@@ -3779,13 +3808,8 @@ def build_expansion_inputs(
             primary_site = scoped_sites[0]
             raw_name = str(primary_site.get("company_name") or "").strip()
             domain_name = _domain_brand_name(primary_site.get("website") or primary_site.get("url") or comparator_domain)
-            name_word_count = len([part for part in re.split(r"\s+", raw_name) if part])
             comparator_name = raw_name or domain_name or comparator_domain
-            if (
-                not raw_name
-                or name_word_count > 8
-                or any(token in raw_name.lower() for token in ("solutions for", "find out more", "changing the game", "provides"))
-            ):
+            if not raw_name or not _is_plausible_comparator_name(raw_name):
                 comparator_name = domain_name or comparator_name
             entity_key = _normalize_phrase_key(comparator_name)
             if entity_key and entity_key in seen_entities:

@@ -334,6 +334,32 @@ def test_build_company_context_artifacts_derives_expansion_brief_from_comparator
     assert any(item["label"] == "Belgium" for item in expansion["geography_expansions"])
 
 
+def test_build_company_context_artifacts_uses_domain_brand_for_generic_comparator_titles():
+    profile = _build_profile()
+    profile.comparator_seed_urls = ["https://www.zaggo.fr/"]
+    profile.context_pack_json["sites"].append(
+        {
+            "url": "https://www.zaggo.fr/",
+            "company_name": "Gestion des remplacements en urgence",
+            "summary": "L'application Zaggo permet une gestion des remplacements urgents et imprévus.",
+            "signals": [
+                {
+                    "type": "capability",
+                    "value": "Gestion des remplacements en urgence",
+                    "source_url": "https://www.zaggo.fr/",
+                }
+            ],
+            "customer_evidence": [],
+            "pages": [],
+        }
+    )
+
+    payload = build_company_context_artifacts(profile)
+
+    assert payload["expansion_inputs"]
+    assert payload["expansion_inputs"][0]["name"] == "Zaggo"
+
+
 def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monkeypatch):
     profile = _build_profile()
     profile.geo_scope = {"region": "EU+UK", "include_countries": ["Belgium"], "exclude_countries": []}
@@ -545,6 +571,27 @@ def test_normalize_expansion_brief_filters_noisy_model_outputs():
     assert "Northwind Capital" in named_account_labels
     assert "Photo équipe BDE Lille" not in named_account_labels
     assert "Rothschild & Co" not in named_account_labels
+
+
+def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_keeps_healthcare_provider():
+    normalized = normalize_expansion_brief(
+        {
+            "adjacent_capabilities": [
+                {"label": "Des consultants du secteur RH et recrutement formation"},
+                {"label": "Urgent replacement management"},
+            ],
+            "adjacent_customer_segments": [
+                {"label": "Établissements de santé"},
+            ],
+        }
+    )
+
+    capability_labels = [item["label"] for item in normalized["adjacent_capabilities"]]
+    segment_labels = [item["label"] for item in normalized["adjacent_customer_segments"]]
+
+    assert "Urgent replacement management" in capability_labels
+    assert "Des consultants du secteur RH et recrutement formation" not in capability_labels
+    assert "Établissements de santé" in segment_labels
 
 
 def test_build_company_context_artifacts_filters_policy_capabilities_from_sourcing():
