@@ -3253,6 +3253,17 @@ def _merge_reasoned_expansion_brief(
         }
 
     normalized = normalize_expansion_brief(parsed)
+    fallback_normalized = normalize_expansion_brief(fallback_brief)
+    for key in (
+        "adjacent_capabilities",
+        "adjacent_customer_segments",
+        "named_account_anchors",
+        "geography_expansions",
+    ):
+        if normalized.get(key):
+            continue
+        if fallback_normalized.get(key):
+            normalized[key] = fallback_normalized[key]
     for key, layers in (
         ("adjacent_capabilities", {"capability"}),
         ("adjacent_customer_segments", {"customer_archetype"}),

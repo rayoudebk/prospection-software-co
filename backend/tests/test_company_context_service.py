@@ -448,6 +448,65 @@ def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monke
     assert expansion["adjacent_capabilities"][0]["priority_tier"] == "edge_case"
 
 
+def test_build_company_context_artifacts_keeps_fallback_customer_segments_when_model_omits_them(monkeypatch):
+    profile = _build_profile()
+    profile.context_pack_json["sites"].append(
+        {
+            "url": "https://comp-one.example.com",
+            "company_name": "Comp One",
+            "summary": "Solutions de staffing pour établissements de santé.",
+            "signals": [
+                {
+                    "type": "customer",
+                    "value": "Établissements de santé",
+                    "source_url": "https://comp-one.example.com/clients",
+                }
+            ],
+            "customer_evidence": [],
+            "pages": [],
+        }
+    )
+
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    monkeypatch.setattr("app.services.company_context.get_settings", lambda: type("S", (), {
+        "gemini_api_key": "x",
+        "openai_api_key": "",
+        "anthropic_api_key": "",
+    })())
+
+    def _fake_run_stage(_self, request):
+        if request.stage == LLMStage.expansion_brief_reasoning:
+            return LLMResponse(
+                text=json.dumps(
+                    {
+                        "adjacent_capabilities": [],
+                        "adjacent_customer_segments": [],
+                        "named_account_anchors": [],
+                        "geography_expansions": [],
+                    }
+                ),
+                provider="gemini",
+                model="gemini-2.0-flash",
+            )
+        raise AssertionError(f"Unexpected stage: {request.stage}")
+
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator.run_stage", _fake_run_stage)
+
+    payload = build_company_context_artifacts(profile)
+    expansion = _build_expansion_payload(profile, payload)["expansion_brief"]
+
+    assert any(item["label"] == "Healthcare provider" for item in expansion["adjacent_customer_segments"])
+
+
 def test_build_expansion_artifacts_filters_noisy_named_account_anchors():
     profile = _build_profile()
     expansion = build_expansion_artifacts(
