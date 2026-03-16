@@ -6,6 +6,7 @@ import pytest
 from app.models.workspace import CompanyProfile
 from app.services.llm.types import LLMOrchestrationError, LLMResponse, LLMStage, ModelAttemptTrace
 from app.services.company_context import (
+    _capability_phrase_from_text,
     _merge_reasoned_expansion_brief,
     _report_source_label,
     _sourcing_brief_reasoning_prompt,
@@ -1045,6 +1046,17 @@ def test_scope_review_payload_includes_evidence_urls_for_source_nodes():
     assert source_capability["evidence_ids"]
     assert source_capability["evidence_urls"]
     assert source_capability["evidence_urls"][0].startswith("https://acme.example.com")
+
+
+def test_capability_phrase_from_text_prefers_valid_segment_from_split_title():
+    assert (
+        _capability_phrase_from_text("Créer votre vivier de remplaçants - Simplifier votre")
+        == "Créer votre vivier de remplaçants"
+    )
+
+
+def test_capability_phrase_from_text_drops_brand_only_split_titles():
+    assert _capability_phrase_from_text("Hublo - Mstaff") == ""
 
 
 def test_build_company_context_artifacts_ignores_comparator_context_for_empty_buyer_site():

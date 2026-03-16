@@ -294,6 +294,13 @@ TRAILING_CONNECTOR_WORDS = {
     "au",
     "aux",
     "with",
+    "your",
+    "my",
+    "our",
+    "votre",
+    "vos",
+    "notre",
+    "nos",
 }
 OPEN_QUESTION_BLOCKLIST_TERMS = (
     "roadmap",
@@ -770,6 +777,56 @@ def _capability_phrase_from_text(value: Any) -> str:
     text = re.sub(r"\s*[:;].*$", "", text).strip()
     text = re.sub(r"\s*\([^)]*\)\s*$", "", text).strip()
     text = re.sub(r"^(?:our|we|this|these)\s+", "", text, flags=re.IGNORECASE)
+    if " - " in text:
+        candidate_segments: list[tuple[int, str]] = []
+        for raw_segment in text.split(" - "):
+            segment = _safe_phrase(raw_segment, max_len=120)
+            if not segment:
+                continue
+            segment = re.sub(r"^(?:our|we|this|these)\s+", "", segment, flags=re.IGNORECASE).strip()
+            segment_parts = segment.split()
+            while segment_parts and segment_parts[-1].lower() in TRAILING_CONNECTOR_WORDS:
+                segment_parts.pop()
+            segment = " ".join(segment_parts).strip()
+            if not segment:
+                continue
+            lowered_segment = segment.lower()
+            word_count = _phrase_word_count(segment)
+            score = 0
+            if 2 <= word_count <= 8:
+                score += 2
+            elif word_count == 1 and not segment.isupper():
+                score -= 2
+            if any(keyword in lowered_segment for keyword in CAPABILITY_QUALITY_KEYWORDS):
+                score += 2
+            if any(
+                token in lowered_segment
+                for token in (
+                    "gestion",
+                    "gérer",
+                    "recrut",
+                    "remplacement",
+                    "planning",
+                    "contrat",
+                    "reporting",
+                    "analytics",
+                    "analyse",
+                    "pilot",
+                    "piloter",
+                    "cré",
+                    "vivier",
+                    "pool",
+                    "staff",
+                )
+            ):
+                score += 1
+            candidate_segments.append((score, segment))
+        if candidate_segments:
+            candidate_segments.sort(key=lambda item: (item[0], _phrase_word_count(item[1])), reverse=True)
+            if candidate_segments[0][0] > 0:
+                text = candidate_segments[0][1]
+            else:
+                return ""
     parts = text.split()
     if len(parts) > 6 and "," in text:
         text = text.split(",", 1)[0].strip()
@@ -1691,6 +1748,8 @@ def _is_valid_taxonomy_phrase(
         if any(keyword in lowered for keyword in CUSTOMER_KEYWORDS):
             if not any(keyword in lowered for keyword in CAPABILITY_QUALITY_KEYWORDS):
                 return False
+        if " - " in normalized and not any(keyword in lowered for keyword in CAPABILITY_QUALITY_KEYWORDS):
+            return False
         if word_count < 2 and "/" not in normalized and not normalized.isupper():
             return False
         if any(lowered.startswith(prefix) for prefix in SENTENCE_LIKE_CAPABILITY_PREFIXES):
