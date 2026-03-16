@@ -904,8 +904,15 @@ def build_context_pack_v2(context_pack_json: Any) -> dict[str, Any]:
                 "career_pages_selected": 0,
             },
         }
-    if _context_pack_version(context_pack_json) == "v2":
-        return context_pack_json
+    version = _context_pack_version(context_pack_json)
+    if version == "v2":
+        sites = [site for site in (context_pack_json.get("sites") or []) if isinstance(site, dict)]
+        has_raw_site_inputs = any(
+            site.get("pages") or site.get("signals") or site.get("customer_evidence")
+            for site in sites
+        )
+        if not has_raw_site_inputs:
+            return context_pack_json
 
     sites_out: list[dict[str, Any]] = []
     aggregate_evidence: dict[str, dict[str, Any]] = {}

@@ -421,6 +421,7 @@ def test_build_company_context_artifacts_filters_person_like_named_customer_proo
             ],
         }
     ]
+    profile.context_pack_json = build_context_pack_v2(profile.context_pack_json)
 
     payload = build_company_context_artifacts(profile)
     labels = [item["name"] for item in payload["sourcing_brief"]["named_customer_proof"]]
