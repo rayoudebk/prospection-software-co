@@ -5260,6 +5260,26 @@ def derive_scope_review_payload(
         sourcing_brief = company_context_pack.get("sourcing_brief") or {}
         expansion_brief = normalize_expansion_brief(company_context_pack.get("expansion_brief") or {})
 
+    context_pack_v2 = build_context_pack_v2(profile.context_pack_json or {})
+    evidence_url_by_id: dict[str, str] = {}
+    for item in (context_pack_v2.get("evidence_items") or []):
+        if not isinstance(item, dict):
+            continue
+        evidence_id = str(item.get("id") or "").strip()
+        url = normalize_url(item.get("url"))
+        if evidence_id and url:
+            evidence_url_by_id[evidence_id] = url
+    for site in (context_pack_v2.get("sites") or []):
+        if not isinstance(site, dict):
+            continue
+        for item in (site.get("evidence_items") or []):
+            if not isinstance(item, dict):
+                continue
+            evidence_id = str(item.get("id") or "").strip()
+            url = normalize_url(item.get("url"))
+            if evidence_id and url:
+                evidence_url_by_id[evidence_id] = url
+
     selected_ids = {
         str(item.get("id") or "")
         for key in ("customer_nodes", "workflow_nodes", "capability_nodes", "delivery_or_integration_nodes")
@@ -5286,7 +5306,11 @@ def derive_scope_review_payload(
                     "status": _scope_status_from_taxonomy_scope(node.get("scope_status")),
                     "confidence": _clamp_confidence(node.get("confidence"), default=0.68),
                     "evidence_ids": _normalize_string_list(node.get("evidence_ids"), max_items=8, max_len=96),
-                    "evidence_urls": [],
+                    "evidence_urls": [
+                        evidence_url_by_id[evidence_id]
+                        for evidence_id in _normalize_string_list(node.get("evidence_ids"), max_items=8, max_len=96)
+                        if evidence_id in evidence_url_by_id
+                    ][:6],
                     "supporting_node_ids": [str(node.get("id") or "")] if str(node.get("id") or "").strip() else [],
                     "source_entity_names": [],
                     "why_it_matters": None,

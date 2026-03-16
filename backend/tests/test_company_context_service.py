@@ -1035,6 +1035,18 @@ def test_scope_review_decisions_compile_scope_back_into_discovery_scope_hints():
     assert "Proxy voting" in scope_hints["adjacent_capabilities"]
 
 
+def test_scope_review_payload_includes_evidence_urls_for_source_nodes():
+    profile = _build_profile()
+    payload = build_company_context_artifacts(profile)
+
+    scope_review = derive_scope_review_payload(payload, profile)
+    source_capability = next(item for item in scope_review["source_capabilities"] if item["label"] == "Portfolio analytics")
+
+    assert source_capability["evidence_ids"]
+    assert source_capability["evidence_urls"]
+    assert source_capability["evidence_urls"][0].startswith("https://acme.example.com")
+
+
 def test_build_company_context_artifacts_ignores_comparator_context_for_empty_buyer_site():
     profile = CompanyProfile(
         workspace_id=3,
