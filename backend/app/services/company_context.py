@@ -3227,6 +3227,7 @@ def _derive_adjacent_nodes_from_expansion_inputs(
             key = _normalize_phrase_key(label)
             if not key or key in source_keys:
                 continue
+            evidence_url = normalize_url(node.get("source_url") or comparator_url)
             entry = candidates.setdefault(
                 key,
                 {
@@ -3239,8 +3240,8 @@ def _derive_adjacent_nodes_from_expansion_inputs(
             )
             if comparator_name not in entry["comparators"]:
                 entry["comparators"].append(comparator_name)
-            if comparator_url and comparator_url not in entry["evidence_urls"]:
-                entry["evidence_urls"].append(comparator_url)
+            if evidence_url and evidence_url not in entry["evidence_urls"]:
+                entry["evidence_urls"].append(evidence_url)
 
     results: list[dict[str, Any]] = []
     for entry in sorted(

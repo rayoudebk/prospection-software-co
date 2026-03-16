@@ -755,7 +755,11 @@ def test_build_expansion_artifacts_filters_noisy_adjacent_capabilities():
         "website": "https://comp-two.example.com",
         "taxonomy_nodes": [
             {"layer": "capability", "phrase": "Politique de protection des données"},
-            {"layer": "capability", "phrase": "Créer votre vivier de remplaçants"},
+            {
+                "layer": "capability",
+                "phrase": "Créer votre vivier de remplaçants",
+                "source_url": "https://comp-two.example.com/replacement-pool",
+            },
         ],
         "named_customer_proof": [],
         "partner_integration_proof": [],
@@ -778,6 +782,11 @@ def test_build_expansion_artifacts_filters_noisy_adjacent_capabilities():
     labels = [item["label"] for item in deterministic["adjacent_capabilities"]]
     assert "Créer votre vivier de remplaçants" in labels
     assert "Politique de protection des données" not in labels
+    evidence_urls = {
+        item["label"]: item.get("evidence_urls") or []
+        for item in deterministic["adjacent_capabilities"]
+    }
+    assert evidence_urls["Créer votre vivier de remplaçants"] == ["https://comp-two.example.com/replacement-pool"]
 
 
 def test_normalize_expansion_brief_filters_noisy_model_outputs():
