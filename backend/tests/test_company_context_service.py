@@ -1048,6 +1048,26 @@ def test_scope_review_payload_includes_evidence_urls_for_source_nodes():
     assert source_capability["evidence_urls"][0].startswith("https://acme.example.com")
 
 
+def test_scope_review_payload_dedupes_source_evidence_urls():
+    profile = _build_profile()
+    profile.context_pack_json["sites"][0]["pages"] = [
+        {
+            "url": "https://acme.example.com/platform",
+            "title": "Platform",
+            "page_type": "solutions",
+            "blocks": [{"type": "heading", "content": "Portfolio analytics"}],
+            "signals": [],
+            "customer_evidence": [],
+        }
+    ]
+
+    payload = build_company_context_artifacts(profile)
+    scope_review = derive_scope_review_payload(payload, profile)
+    source_capability = next(item for item in scope_review["source_capabilities"] if item["label"] == "Portfolio analytics")
+
+    assert source_capability["evidence_urls"] == ["https://acme.example.com/platform"]
+
+
 def test_capability_phrase_from_text_prefers_valid_segment_from_split_title():
     assert (
         _capability_phrase_from_text("Créer votre vivier de remplaçants - Simplifier votre")

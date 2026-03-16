@@ -5375,11 +5375,15 @@ def derive_scope_review_payload(
                     "status": _scope_status_from_taxonomy_scope(node.get("scope_status")),
                     "confidence": _clamp_confidence(node.get("confidence"), default=0.68),
                     "evidence_ids": _normalize_string_list(node.get("evidence_ids"), max_items=8, max_len=96),
-                    "evidence_urls": [
-                        evidence_url_by_id[evidence_id]
-                        for evidence_id in _normalize_string_list(node.get("evidence_ids"), max_items=8, max_len=96)
-                        if evidence_id in evidence_url_by_id
-                    ][:6],
+                    "evidence_urls": _normalize_string_list(
+                        [
+                            evidence_url_by_id[evidence_id]
+                            for evidence_id in _normalize_string_list(node.get("evidence_ids"), max_items=8, max_len=96)
+                            if evidence_id in evidence_url_by_id
+                        ],
+                        max_items=6,
+                        max_len=500,
+                    ),
                     "supporting_node_ids": [str(node.get("id") or "")] if str(node.get("id") or "").strip() else [],
                     "source_entity_names": [],
                     "why_it_matters": None,
