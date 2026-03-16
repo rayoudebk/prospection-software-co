@@ -700,6 +700,7 @@ def test_normalize_expansion_brief_filters_noisy_model_outputs():
         {
             "adjacent_capabilities": [
                 {"label": "Data protection and security policies"},
+                {"label": "Regulatory compliance assurance"},
                 {"label": "Workforce replacement pool management"},
             ],
             "adjacent_customer_segments": [
@@ -724,6 +725,7 @@ def test_normalize_expansion_brief_filters_noisy_model_outputs():
 
     assert "Workforce replacement pool management" in capability_labels
     assert "Data protection and security policies" not in capability_labels
+    assert "Regulatory compliance assurance" not in capability_labels
     assert "Hospitals" in segment_labels
     assert "Nurses and paramedical professionals" not in segment_labels
     assert "Northwind Capital" in named_account_labels

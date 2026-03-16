@@ -963,8 +963,6 @@ def _is_high_quality_adjacent_capability_candidate(value: Any) -> bool:
         )
     ):
         return False
-    if len(words) <= 3:
-        return True
     if any(
         token in lowered
         for token in (
@@ -2981,7 +2979,7 @@ def normalize_expansion_items(
             continue
         if item_type == "named_account_anchor" and not _is_plausible_named_account_anchor_item({**raw, "label": label}):
             continue
-        if item_type == "adjacent_capability" and not _is_plausible_expansion_capability(label):
+        if item_type == "adjacent_capability" and not _is_high_quality_adjacent_capability_candidate(label):
             continue
         if item_type == "adjacent_customer_segment" and not _is_plausible_adjacent_customer_segment(label):
             continue
