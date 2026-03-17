@@ -139,23 +139,24 @@ def _seed_expansion_brief(session_maker: async_sessionmaker[AsyncSession], works
                 taxonomy_nodes=pack.taxonomy_nodes_json or [],
             )
             expansion_brief = expansion_payload.get("expansion_brief") or {}
-            if not expansion_brief.get("adjacent_capabilities"):
-                expansion_brief["adjacent_capabilities"] = [
+            if not expansion_brief.get("adjacency_boxes"):
+                expansion_brief["adjacency_boxes"] = [
                     {
-                        "id": "expansion_adjacent_reporting",
+                        "id": "adj_box_client_reporting",
                         "label": "Client reporting",
-                        "expansion_type": "adjacent_capability",
+                        "adjacency_kind": "adjacent_capability",
                         "status": "corroborated_expansion",
                         "confidence": 0.62,
                         "why_it_matters": "Common adjacent workflow for adjacent discovery.",
-                        "evidence_urls": ["https://comp-one.example.com/reporting"],
+                        "evidence": [{"url": "https://comp-one.example.com/reporting", "source_entity_name": "Comp One"}],
                         "supporting_node_ids": [],
-                        "source_entity_names": ["Comp One"],
-                        "market_importance": "medium",
-                        "operational_centrality": "meaningful",
-                        "workflow_criticality": "medium",
-                        "daily_operator_usage": "medium",
-                        "switching_cost_intensity": "medium",
+                        "criticality": {
+                            "market_importance": "medium",
+                            "operational_centrality": "meaningful",
+                            "workflow_criticality": "medium",
+                            "daily_operator_usage": "medium",
+                            "switching_cost_intensity": "medium",
+                        },
                         "priority_tier": "meaningful_adjacent",
                     }
                 ]

@@ -7,6 +7,7 @@ import {
   useUpdateCompany,
   useCreateCompany,
   useTopCandidates,
+  useExpansionBrief,
   useGates,
   useWorkspaceJobs,
   useWorkspaceJobWithPolling,
@@ -23,6 +24,9 @@ import {
   CheckCircle,
   AlertCircle,
   Building2,
+  Network,
+  Tags,
+  Sparkles,
 } from "lucide-react";
 import { StepHeader } from "@/components/StepHeader";
 import { JobProgressPanel } from "@/components/JobProgressPanel";
@@ -35,6 +39,14 @@ const CLASSIFICATION_LABELS: Record<string, string> = {
   not_good_target: "Not good",
   insufficient_evidence: "Insufficient evidence",
 };
+
+function prettyLabel(raw: string | null | undefined) {
+  if (!raw) return "Unknown";
+  return raw
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
 
 function classificationBadgeClass(classification?: string | null) {
   if (classification === "good_target") return "badge-success";
@@ -102,6 +114,7 @@ export default function UniversePage() {
   const [allowDegradedRun, setAllowDegradedRun] = useState(false);
 
   const { data: companies, isLoading, refetch } = useCompanies(workspaceId);
+  const { data: expansionArtifact } = useExpansionBrief(workspaceId);
   const {
     data: topCandidates,
     error: topCandidatesError,
@@ -167,6 +180,16 @@ export default function UniversePage() {
   const insufficientCount =
     nonSolutionCompanies.filter((company) => (company.decision_classification || "insufficient_evidence") === "insufficient_evidence").length || 0;
   const latestCompletedDiscoveryJob = discoveryJobs?.find((job) => job.state === "completed") ?? null;
+  const expansionBrief = expansionArtifact?.expansion_brief;
+  const adjacencyBoxes = expansionBrief?.adjacency_boxes || [];
+  const companySeeds = expansionBrief?.company_seeds || [];
+  const technologyShiftClaims = expansionBrief?.technology_shift_claims || [];
+  const prioritizedLanes = adjacencyBoxes
+    .filter((box) => box.status !== "user_removed" && box.status !== "user_deprioritized")
+    .slice(0, 4);
+  const prioritizedSeeds = companySeeds
+    .filter((seed) => seed.status !== "rejected")
+    .slice(0, 6);
 
   if (isLoading) {
     return (
@@ -210,6 +233,136 @@ export default function UniversePage() {
       )}
 
       {!jobRunner.isRunning && <JobRunSummary job={latestCompletedDiscoveryJob} />}
+
+      <section className="border border-steel-200 bg-steel-50 p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.18em] text-steel-400">
+              Discovery Inputs
+            </div>
+            <h3 className="text-lg font-semibold text-oxford mt-1">
+              Universe is now driven by canonical adjacency lanes and seed companies
+            </h3>
+            <p className="text-sm text-steel-600 mt-1 max-w-3xl">
+              Discovery reads reviewed `adjacency_boxes` and `company_seeds` from the expansion brief, then falls back only if that canonical layer is missing.
+            </p>
+          </div>
+          {expansionBrief?.fallback_mode ? (
+            <span className="inline-flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
+              <AlertCircle className="w-4 h-4" />
+              Expansion brief is in fallback mode
+            </span>
+          ) : null}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="border border-steel-200 bg-white p-3">
+            <div className="text-xs uppercase tracking-[0.14em] text-steel-400">Adjacency lanes</div>
+            <div className="text-2xl font-semibold text-oxford mt-1">{adjacencyBoxes.length}</div>
+          </div>
+          <div className="border border-steel-200 bg-white p-3">
+            <div className="text-xs uppercase tracking-[0.14em] text-steel-400">Company seeds</div>
+            <div className="text-2xl font-semibold text-oxford mt-1">{companySeeds.length}</div>
+          </div>
+          <div className="border border-steel-200 bg-white p-3">
+            <div className="text-xs uppercase tracking-[0.14em] text-steel-400">Technology shifts</div>
+            <div className="text-2xl font-semibold text-oxford mt-1">{technologyShiftClaims.length}</div>
+          </div>
+        </div>
+
+        {expansionBrief?.normalization_warning ? (
+          <div className="border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+            {expansionBrief.normalization_warning}
+          </div>
+        ) : null}
+
+        {prioritizedLanes.length ? (
+          <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_1fr] gap-4">
+            <div className="border border-steel-200 bg-white p-4 space-y-3">
+              <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-steel-400">
+                <Network className="w-4 h-4" />
+                Reviewed Adjacency Lanes
+              </div>
+              <div className="space-y-3">
+                {prioritizedLanes.map((box) => (
+                  <div key={box.id} className="border border-steel-200 bg-steel-50 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-oxford">{box.label}</div>
+                        <div className="text-xs text-steel-500 mt-1">
+                          {prettyLabel(box.adjacency_kind)} · {prettyLabel(box.priority_tier)}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-[11px]">
+                        <span className="border border-info/30 bg-info/10 px-2 py-1 text-info">
+                          Workflow {prettyLabel(box.criticality.workflow_criticality)}
+                        </span>
+                        <span className="border border-info/30 bg-info/10 px-2 py-1 text-info">
+                          Switching {prettyLabel(box.criticality.switching_cost_intensity)}
+                        </span>
+                      </div>
+                    </div>
+                    {box.why_it_matters ? (
+                      <p className="text-sm text-steel-700 mt-3">{box.why_it_matters}</p>
+                    ) : null}
+                    {box.retrieval_query_seeds.length ? (
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        {box.retrieval_query_seeds.slice(0, 3).map((query) => (
+                          <span
+                            key={`${box.id}-${query}`}
+                            className="border border-steel-200 bg-white px-2 py-1 text-[11px] text-steel-700"
+                          >
+                            {query}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="border border-steel-200 bg-white p-4 space-y-3">
+              <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-steel-400">
+                <Tags className="w-4 h-4" />
+                Seed Companies
+              </div>
+              {prioritizedSeeds.length ? (
+                <div className="space-y-2">
+                  {prioritizedSeeds.map((seed) => (
+                    <div key={seed.id} className="border border-steel-200 bg-steel-50 p-3">
+                      <div className="text-sm font-semibold text-oxford">{seed.name}</div>
+                      <div className="text-xs text-steel-500 mt-1">
+                        {prettyLabel(seed.seed_type)}
+                        {seed.seed_role ? ` · ${prettyLabel(seed.seed_role)}` : ""}
+                      </div>
+                      {seed.website ? (
+                        <a
+                          href={seed.website}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 mt-2 text-xs text-info hover:underline"
+                        >
+                          {new URL(seed.website).hostname}
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="border border-dashed border-steel-300 bg-steel-50 p-4 text-sm text-steel-500">
+                  No canonical seed companies available yet.
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="border border-dashed border-steel-300 bg-white p-4 text-sm text-steel-500">
+            Generate and confirm the expansion brief to populate canonical discovery lanes before running Universe.
+          </div>
+        )}
+      </section>
 
       {/* Header */}
       <div className="flex items-center justify-between">

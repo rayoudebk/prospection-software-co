@@ -3810,98 +3810,8 @@ def _validate_normalized_expansion_brief(
     return validated_boxes, validated_seeds, validated_shifts, deduped_gaps[:10]
 
 
-def _legacy_item_from_adjacency_box(box: dict[str, Any]) -> Optional[dict[str, Any]]:
-    if not isinstance(box, dict):
-        return None
-    kind = str(box.get("adjacency_kind") or "").strip().lower()
-    if kind not in {"adjacent_capability", "adjacent_customer_segment", "adjacent_workflow"}:
-        return None
-    criticality = _normalize_expansion_criticality(box.get("criticality"))
-    evidence = _normalize_expansion_evidence_items(box.get("evidence"), max_items=6)
-    source_entity_names = _normalize_string_list(
-        [item.get("source_entity_name") for item in evidence if isinstance(item, dict)],
-        max_items=6,
-        max_len=120,
-    )
-    evidence_urls = _normalize_string_list(
-        [item.get("url") for item in evidence if isinstance(item, dict) and item.get("url")],
-        max_items=6,
-        max_len=500,
-    )
-    expansion_type = "adjacent_customer_segment" if kind == "adjacent_customer_segment" else "adjacent_capability"
-    return {
-        "id": str(box.get("id") or _stable_id("expansion", expansion_type, box.get("label"))),
-        "label": str(box.get("label") or "").strip(),
-        "expansion_type": expansion_type,
-        "status": str(box.get("status") or "hypothesis").strip().lower(),
-        "confidence": _clamp_confidence(box.get("confidence"), default=0.6),
-        "why_it_matters": _safe_phrase(box.get("why_it_matters"), max_len=400),
-        "evidence_urls": [normalize_url(url) for url in evidence_urls if normalize_url(url)],
-        "supporting_node_ids": _normalize_string_list(box.get("supporting_node_ids"), max_items=8, max_len=120),
-        "source_entity_names": source_entity_names,
-        "market_importance": criticality["market_importance"],
-        "operational_centrality": criticality["operational_centrality"],
-        "workflow_criticality": criticality["workflow_criticality"],
-        "daily_operator_usage": criticality["daily_operator_usage"],
-        "switching_cost_intensity": criticality["switching_cost_intensity"],
-        "priority_tier": _normalize_expansion_priority_tier(
-            box.get("priority_tier"),
-            criticality=criticality,
-        ),
-    }
-
-
-def _derive_company_seeds_from_legacy_groups(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
-    seed_map: dict[str, dict[str, Any]] = {}
-    for group in groups:
-        for item in group:
-            if not isinstance(item, dict):
-                continue
-            box_id = str(item.get("id") or "").strip()
-            for name in _normalize_string_list(item.get("source_entity_names"), max_items=6, max_len=120):
-                key = _normalize_phrase_key(name)
-                if not key:
-                    continue
-                seed = seed_map.setdefault(
-                    key,
-                    {
-                        "id": _stable_id("company_seed", name),
-                        "name": name,
-                        "website": None,
-                        "seed_type": "specialist",
-                        "status": "hypothesis",
-                        "confidence": _clamp_confidence(item.get("confidence"), default=0.58),
-                        "why_relevant": _safe_phrase(
-                            item.get("why_it_matters") or f"Surfaced in adjacent expansion research around {item.get('label')}.",
-                            max_len=400,
-                        ),
-                        "fit_to_adjacency_box_ids": [],
-                        "evidence": [],
-                    },
-                )
-                if box_id and box_id not in seed["fit_to_adjacency_box_ids"]:
-                    seed["fit_to_adjacency_box_ids"].append(box_id)
-                for url in _normalize_string_list(item.get("evidence_urls"), max_items=6, max_len=500):
-                    normalized_url = normalize_url(url)
-                    if not normalized_url:
-                        continue
-                    if normalized_url not in {e.get("url") for e in seed["evidence"] if isinstance(e, dict)}:
-                        seed["evidence"].append({"url": normalized_url, "source_entity_name": name})
-    return list(seed_map.values())[:16]
-
-
 def normalize_expansion_brief(expansion_brief: Any) -> dict[str, Any]:
     payload = expansion_brief if isinstance(expansion_brief, dict) else {}
-    legacy_adjacent_capabilities = normalize_expansion_items(
-        payload.get("adjacent_capabilities"),
-        item_type="adjacent_capability",
-        max_items=10,
-    )
-    legacy_adjacent_customer_segments = normalize_expansion_items(
-        payload.get("adjacent_customer_segments"),
-        item_type="adjacent_customer_segment",
-        max_items=8,
-    )
     named_account_anchors = normalize_expansion_items(
         payload.get("named_account_anchors"),
         item_type="named_account_anchor",
@@ -3913,52 +3823,6 @@ def normalize_expansion_brief(expansion_brief: Any) -> dict[str, Any]:
         max_items=8,
     )
     adjacency_boxes = normalize_adjacency_boxes(payload.get("adjacency_boxes"), max_items=12)
-    if not adjacency_boxes:
-        adjacency_boxes = normalize_adjacency_boxes(
-            [
-                {
-                    "id": item.get("id"),
-                    "label": item.get("label"),
-                    "adjacency_kind": (
-                        "adjacent_customer_segment"
-                        if str(item.get("expansion_type") or "") == "adjacent_customer_segment"
-                        else "adjacent_capability"
-                    ),
-                    "status": item.get("status"),
-                    "confidence": item.get("confidence"),
-                    "why_it_matters": item.get("why_it_matters"),
-                    "criticality": {
-                        "market_importance": item.get("market_importance"),
-                        "operational_centrality": item.get("operational_centrality"),
-                        "workflow_criticality": item.get("workflow_criticality"),
-                        "daily_operator_usage": item.get("daily_operator_usage"),
-                        "switching_cost_intensity": item.get("switching_cost_intensity"),
-                    },
-                    "priority_tier": item.get("priority_tier"),
-                    "supporting_node_ids": item.get("supporting_node_ids"),
-                    "related_source_node_ids": item.get("supporting_node_ids"),
-                    "likely_customer_segments": (
-                        [item.get("label")]
-                        if str(item.get("expansion_type") or "") == "adjacent_customer_segment"
-                        else []
-                    ),
-                    "likely_workflows": [],
-                    "evidence": [
-                        {
-                            "url": url,
-                            "source_entity_name": name,
-                        }
-                        for url, name in zip(
-                            _normalize_string_list(item.get("evidence_urls"), max_items=6, max_len=500),
-                            (_normalize_string_list(item.get("source_entity_names"), max_items=6, max_len=120) + [""] * 6),
-                        )
-                    ],
-                }
-                for item in (legacy_adjacent_capabilities + legacy_adjacent_customer_segments)
-                if isinstance(item, dict)
-            ],
-            max_items=12,
-        )
     normalized_boxes: list[dict[str, Any]] = []
     derived_technology_shift_claims: list[dict[str, Any]] = []
     for box in adjacency_boxes:
@@ -3979,13 +3843,6 @@ def normalize_expansion_brief(expansion_brief: Any) -> dict[str, Any]:
         normalized_boxes.append(box)
     adjacency_boxes = normalized_boxes
     company_seeds = normalize_company_seeds(payload.get("company_seeds"), max_items=16)
-    if not company_seeds:
-        company_seeds = normalize_company_seeds(
-            _derive_company_seeds_from_legacy_groups(
-                [legacy_adjacent_capabilities, legacy_adjacent_customer_segments]
-            ),
-            max_items=16,
-        )
     technology_shift_claims = normalize_technology_shift_claims(
         payload.get("technology_shift_claims") or derived_technology_shift_claims,
         max_items=6,
@@ -4014,29 +3871,6 @@ def normalize_expansion_brief(expansion_brief: Any) -> dict[str, Any]:
         company_seeds=company_seeds,
         technology_shift_claims=technology_shift_claims,
     )
-    if normalized_boxes:
-        derived_capabilities: list[dict[str, Any]] = []
-        derived_customer_segments: list[dict[str, Any]] = []
-        for box in normalized_boxes:
-            item = _legacy_item_from_adjacency_box(box)
-            if not item:
-                continue
-            if str(item.get("expansion_type") or "") == "adjacent_customer_segment":
-                derived_customer_segments.append(item)
-            else:
-                derived_capabilities.append(item)
-        if derived_capabilities:
-            legacy_adjacent_capabilities = normalize_expansion_items(
-                derived_capabilities,
-                item_type="adjacent_capability",
-                max_items=10,
-            )
-        if derived_customer_segments:
-            legacy_adjacent_customer_segments = normalize_expansion_items(
-                derived_customer_segments,
-                item_type="adjacent_customer_segment",
-                max_items=8,
-            )
     confidence_gaps = _normalize_string_list(
         list(payload.get("confidence_gaps") or []) + validator_gaps,
         max_items=10,
@@ -4061,8 +3895,6 @@ def normalize_expansion_brief(expansion_brief: Any) -> dict[str, Any]:
         "adjacency_boxes": normalized_boxes,
         "company_seeds": company_seeds,
         "technology_shift_claims": technology_shift_claims,
-        "adjacent_capabilities": legacy_adjacent_capabilities,
-        "adjacent_customer_segments": legacy_adjacent_customer_segments,
         "named_account_anchors": named_account_anchors,
         "geography_expansions": geography_expansions,
         "confidence_gaps": confidence_gaps,
@@ -4292,6 +4124,51 @@ def _build_deterministic_expansion_brief(
         for item in adjacent_customer_segments
     ]
 
+    deterministic_boxes = normalize_adjacency_boxes(
+        [
+            {
+                "id": item.get("id"),
+                "label": item.get("label"),
+                "adjacency_kind": (
+                    "adjacent_customer_segment"
+                    if str(item.get("expansion_type") or "") == "adjacent_customer_segment"
+                    else "adjacent_capability"
+                ),
+                "status": item.get("status"),
+                "confidence": item.get("confidence"),
+                "why_it_matters": item.get("why_it_matters"),
+                "criticality": {
+                    "market_importance": item.get("market_importance"),
+                    "operational_centrality": item.get("operational_centrality"),
+                    "workflow_criticality": item.get("workflow_criticality"),
+                    "daily_operator_usage": item.get("daily_operator_usage"),
+                    "switching_cost_intensity": item.get("switching_cost_intensity"),
+                },
+                "priority_tier": item.get("priority_tier"),
+                "supporting_node_ids": item.get("supporting_node_ids"),
+                "related_source_node_ids": item.get("supporting_node_ids"),
+                "likely_customer_segments": (
+                    [item.get("label")]
+                    if str(item.get("expansion_type") or "") == "adjacent_customer_segment"
+                    else []
+                ),
+                "evidence": [
+                    {
+                        "url": url,
+                        "source_entity_name": name,
+                    }
+                    for url, name in zip(
+                        _normalize_string_list(item.get("evidence_urls"), max_items=6, max_len=500),
+                        (_normalize_string_list(item.get("source_entity_names"), max_items=6, max_len=120) + [""] * 6),
+                    )
+                ],
+            }
+            for item in (adjacent_capabilities + adjacent_customer_segments)
+            if isinstance(item, dict)
+        ],
+        max_items=12,
+    )
+
     return normalize_expansion_brief(
         {
             "reasoning_status": "not_run",
@@ -4301,8 +4178,7 @@ def _build_deterministic_expansion_brief(
             ),
             "fallback_mode": True,
             "normalization_status": "not_run",
-            "adjacent_capabilities": adjacent_capabilities,
-            "adjacent_customer_segments": adjacent_customer_segments,
+            "adjacency_boxes": deterministic_boxes,
             "named_account_anchors": named_account_anchors,
             "geography_expansions": geography_expansions,
         }
@@ -4347,19 +4223,6 @@ def _merge_reasoned_expansion_brief(
 
     normalized = normalize_expansion_brief(parsed)
     fallback_normalized = normalize_expansion_brief(fallback_brief)
-    for key in ("adjacent_capabilities", "adjacent_customer_segments"):
-        normalized[key] = _merge_expansion_group(
-            item_type=(
-                "adjacent_capability"
-                if key == "adjacent_capabilities"
-                else "adjacent_customer_segment"
-            ),
-            fallback_items=list(fallback_normalized.get(key) or []),
-            reasoned_items=list(normalized.get(key) or []),
-            source_company=source_company,
-            comparator_domains=comparator_domains,
-            prefer_fallback=True,
-        )
     for key in (
         "named_account_anchors",
         "geography_expansions",
@@ -4368,24 +4231,24 @@ def _merge_reasoned_expansion_brief(
             continue
         if fallback_normalized.get(key):
             normalized[key] = fallback_normalized[key]
-    for key, layers in (
-        ("adjacent_capabilities", {"capability"}),
-        ("adjacent_customer_segments", {"customer_archetype"}),
-    ):
-        enriched: list[dict[str, Any]] = []
-        for item in normalized.get(key) or []:
-            enriched.append(
-                {
-                    **item,
-                    "supporting_node_ids": item.get("supporting_node_ids")
-                    or _supporting_node_ids_for_phrase(
-                        item.get("label"),
-                        taxonomy_nodes,
-                        layers=layers,
-                    ),
-                }
-            )
-        normalized[key] = enriched
+    enriched_boxes: list[dict[str, Any]] = []
+    for box in normalized.get("adjacency_boxes") or []:
+        if not isinstance(box, dict):
+            continue
+        kind = str(box.get("adjacency_kind") or "").strip().lower()
+        layers = {"customer_archetype"} if kind == "adjacent_customer_segment" else {"capability"}
+        enriched_boxes.append(
+            {
+                **box,
+                "supporting_node_ids": box.get("supporting_node_ids")
+                or _supporting_node_ids_for_phrase(
+                    box.get("label"),
+                    taxonomy_nodes,
+                    layers=layers,
+                ),
+            }
+        )
+    normalized["adjacency_boxes"] = normalize_adjacency_boxes(enriched_boxes, max_items=12)
     return {
         **normalized,
         "reasoning_status": str(parsed.get("reasoning_status") or "success"),
@@ -6030,19 +5893,59 @@ def build_expansion_report_artifact(
             claim_scope="about_subject_company",
         )
 
+    def _box_sources(box: dict[str, Any]) -> list[dict[str, Any]]:
+        evidence = box.get("evidence") or []
+        urls = [
+            item.get("url")
+            for item in evidence
+            if isinstance(item, dict) and item.get("url")
+        ]
+        publishers = _normalize_string_list(
+            [item.get("source_entity_name") for item in evidence if isinstance(item, dict)],
+            max_items=6,
+            max_len=120,
+        )
+        return _resolve_report_sources(
+            evidence_ids=[],
+            urls=urls,
+            source_documents_by_url=source_documents_by_url,
+            evidence_by_id=evidence_by_id,
+            fallback_label=box.get("label"),
+            publisher=", ".join(publishers) or None,
+            publisher_channel="expansion_input",
+            publisher_type="other",
+            source_tier="secondary",
+            source_kind=box.get("adjacency_kind") or "expansion_signal",
+            evidence_type=box.get("adjacency_kind") or "expansion_signal",
+            claim_scope="about_subject_company",
+        )
+
     sections: list[dict[str, Any]] = []
+    adjacency_boxes = [
+        box
+        for box in (brief.get("adjacency_boxes") or [])
+        if isinstance(box, dict)
+    ]
 
     summary_bits: list[str] = []
-    if (brief.get("adjacent_capabilities") or []):
+    capability_boxes = [
+        box for box in adjacency_boxes
+        if str(box.get("adjacency_kind") or "").strip().lower() in {"adjacent_capability", "adjacent_workflow"}
+    ]
+    customer_boxes = [
+        box for box in adjacency_boxes
+        if str(box.get("adjacency_kind") or "").strip().lower() == "adjacent_customer_segment"
+    ]
+    if capability_boxes:
         summary_bits.append(
             "Adjacent capabilities center on "
-            + ", ".join(str(item.get("label") or "").strip() for item in (brief.get("adjacent_capabilities") or [])[:3] if str(item.get("label") or "").strip())
+            + ", ".join(str(item.get("label") or "").strip() for item in capability_boxes[:3] if str(item.get("label") or "").strip())
             + "."
         )
-    if (brief.get("adjacent_customer_segments") or []):
+    if customer_boxes:
         summary_bits.append(
             "Adjacent customer segments include "
-            + ", ".join(str(item.get("label") or "").strip() for item in (brief.get("adjacent_customer_segments") or [])[:3] if str(item.get("label") or "").strip())
+            + ", ".join(str(item.get("label") or "").strip() for item in customer_boxes[:3] if str(item.get("label") or "").strip())
             + "."
         )
     if (brief.get("named_account_anchors") or []):
@@ -6053,7 +5956,9 @@ def build_expansion_report_artifact(
         )
     summary_text = " ".join(bit for bit in summary_bits if bit.strip()).strip()
     summary_sources: list[dict[str, Any]] = []
-    for group in ("adjacent_capabilities", "adjacent_customer_segments", "named_account_anchors", "geography_expansions"):
+    for box in adjacency_boxes[:2]:
+        summary_sources.extend(_box_sources(box))
+    for group in ("named_account_anchors", "geography_expansions"):
         for item in (brief.get(group) or [])[:2]:
             if isinstance(item, dict):
                 summary_sources.extend(_item_sources(item))
@@ -6076,7 +5981,15 @@ def build_expansion_report_artifact(
 
     corroborated_items: list[tuple[str, list[dict[str, Any]]]] = []
     hypothesis_items: list[tuple[str, list[dict[str, Any]]]] = []
-    for group in ("adjacent_capabilities", "adjacent_customer_segments", "named_account_anchors", "geography_expansions"):
+    for box in adjacency_boxes:
+        text = str(box.get("why_it_matters") or box.get("label") or "").strip()
+        if text and text != str(box.get("label") or "").strip():
+            text = f"{box.get('label')}: {text}"
+        else:
+            text = str(box.get("label") or "").strip()
+        bucket = corroborated_items if str(box.get("status") or "").strip() in {"corroborated_expansion", "source_grounded", "user_kept"} else hypothesis_items
+        bucket.append((text, _box_sources(box)))
+    for group in ("named_account_anchors", "geography_expansions"):
         for item in (brief.get(group) or []):
             if not isinstance(item, dict):
                 continue
@@ -6308,8 +6221,7 @@ def derive_scope_review_payload(
         "source_customer_segments": _source_group("customer_archetype"),
         "source_workflows": _source_group("workflow"),
         "source_delivery_or_integration": _source_group("delivery_or_integration"),
-        "adjacent_capabilities": expansion_brief.get("adjacent_capabilities") or [],
-        "adjacent_customer_segments": expansion_brief.get("adjacent_customer_segments") or [],
+        "adjacency_boxes": expansion_brief.get("adjacency_boxes") or [],
         "named_account_anchors": expansion_brief.get("named_account_anchors") or [],
         "geography_expansions": expansion_brief.get("geography_expansions") or [],
     }
@@ -6339,12 +6251,7 @@ def apply_scope_review_decisions(
         if isinstance(box, dict) and str(box.get("id") or "").strip()
     }
 
-    expansion_groups = (
-        "adjacent_capabilities",
-        "adjacent_customer_segments",
-        "named_account_anchors",
-        "geography_expansions",
-    )
+    expansion_groups = ("named_account_anchors", "geography_expansions")
 
     for raw in decisions or []:
         if not isinstance(raw, dict):
@@ -6383,6 +6290,11 @@ def derive_discovery_scope_hints(
     profile: CompanyProfile,
 ) -> dict[str, Any]:
     scope = derive_scope_review_payload(company_context_pack, profile)
+    expansion_brief = normalize_expansion_brief(
+        company_context_pack.expansion_brief_json or {}
+        if isinstance(company_context_pack, CompanyContextPack)
+        else company_context_pack.get("expansion_brief") or {}
+    )
 
     source_capabilities = [
         item["label"]
@@ -6399,31 +6311,148 @@ def derive_discovery_scope_hints(
         for item in scope["source_customer_segments"]
         if item.get("status") in {"source_grounded", "user_kept"}
     ]
-    adjacent_capabilities = [
-        item["label"]
-        for item in scope["adjacent_capabilities"]
-        if item.get("status") in {"source_grounded", "corroborated_expansion", "user_kept"}
-        and (item.get("priority_tier") != "edge_case" or item.get("status") == "user_kept")
-    ]
-    adjacent_customers = [
-        item["label"]
-        for item in scope["adjacent_customer_segments"]
-        if item.get("status") in {"source_grounded", "corroborated_expansion", "user_kept"}
-        and (item.get("priority_tier") != "edge_case" or item.get("status") == "user_kept")
-    ]
     named_accounts = [
         item["label"]
         for item in scope["named_account_anchors"]
         if item.get("status") in {"source_grounded", "corroborated_expansion", "user_kept"}
     ]
+    geography_expansions = [
+        item["label"]
+        for item in scope["geography_expansions"]
+        if item.get("status") in {"source_grounded", "corroborated_expansion", "user_kept"}
+    ]
+
+    priority_rank = {"core_adjacent": 0, "meaningful_adjacent": 1, "edge_case": 2}
+    status_rank = {
+        "user_kept": 0,
+        "source_grounded": 1,
+        "corroborated_expansion": 2,
+        "hypothesis": 3,
+        "user_deprioritized": 4,
+        "user_removed": 5,
+    }
+
+    def _box_status(raw_box: dict[str, Any]) -> str:
+        value = str(raw_box.get("status") or "").strip().lower()
+        return value if value in EXPANSION_ITEM_STATUSES else "hypothesis"
+
+    def _box_is_discovery_active(raw_box: dict[str, Any]) -> bool:
+        status = _box_status(raw_box)
+        if status == "user_kept":
+            return True
+        if status not in {"source_grounded", "corroborated_expansion"}:
+            return False
+        return str(raw_box.get("priority_tier") or "").strip().lower() != "edge_case"
+
+    def _sorted_boxes(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(
+            items,
+            key=lambda box: (
+                priority_rank.get(str(box.get("priority_tier") or "").strip().lower(), 9),
+                status_rank.get(_box_status(box), 9),
+                -float(box.get("confidence") or 0.0),
+                str(box.get("label") or ""),
+            ),
+        )
+
+    all_boxes = [
+        box
+        for box in (expansion_brief.get("adjacency_boxes") or [])
+        if isinstance(box, dict) and str(box.get("label") or "").strip()
+    ]
+    active_boxes = [box for box in all_boxes if _box_is_discovery_active(box)]
+    if not active_boxes:
+        active_boxes = [
+            box
+            for box in all_boxes
+            if _box_status(box) == "hypothesis"
+            and str(box.get("priority_tier") or "").strip().lower() != "edge_case"
+        ]
+    ordered_boxes = _sorted_boxes(active_boxes)[:8]
+
+    adjacency_box_hints: list[dict[str, Any]] = []
+    adjacent_capabilities_from_boxes: list[str] = []
+    adjacent_customers_from_boxes: list[str] = []
+    adjacency_box_labels: list[str] = []
+    for box in ordered_boxes:
+        label = str(box.get("label") or "").strip()
+        if not label:
+            continue
+        kind = str(box.get("adjacency_kind") or "").strip().lower() or "adjacent_capability"
+        likely_customers = _normalize_string_list(box.get("likely_customer_segments"), max_items=4, max_len=140)
+        likely_workflows = _normalize_string_list(box.get("likely_workflows"), max_items=4, max_len=140)
+        retrieval_query_seeds = _normalize_string_list(box.get("retrieval_query_seeds"), max_items=4, max_len=180)
+        adjacency_box_labels.append(label)
+        if kind in {"adjacent_capability", "adjacent_workflow"}:
+            adjacent_capabilities_from_boxes.append(label)
+        elif kind == "adjacent_customer_segment":
+            adjacent_customers_from_boxes.append(label)
+        adjacency_box_hints.append(
+            {
+                "id": str(box.get("id") or ""),
+                "label": label,
+                "adjacency_kind": kind,
+                "status": _box_status(box),
+                "priority_tier": str(box.get("priority_tier") or "").strip().lower() or "meaningful_adjacent",
+                "confidence": _clamp_confidence(box.get("confidence"), default=0.6),
+                "likely_customer_segments": likely_customers,
+                "likely_workflows": likely_workflows,
+                "retrieval_query_seeds": retrieval_query_seeds,
+            }
+        )
+
+    adjacent_capabilities = _normalize_string_list(adjacent_capabilities_from_boxes, max_items=10, max_len=140)
+    adjacent_customers = _normalize_string_list(adjacent_customers_from_boxes, max_items=8, max_len=140)
+
+    company_seeds: list[dict[str, Any]] = []
+    company_seed_urls: list[str] = []
+    for seed in (expansion_brief.get("company_seeds") or []):
+        if not isinstance(seed, dict):
+            continue
+        status = str(seed.get("status") or "").strip().lower() or "hypothesis"
+        if status == "rejected":
+            continue
+        name = _safe_phrase(seed.get("name"), max_len=140)
+        if not name:
+            continue
+        website = normalize_url(seed.get("website")) if seed.get("website") else None
+        if website:
+            company_seed_urls.append(website)
+        company_seeds.append(
+            {
+                "id": str(seed.get("id") or ""),
+                "name": name,
+                "website": website,
+                "seed_type": _safe_phrase(seed.get("seed_type"), max_len=40),
+                "seed_role": _safe_phrase(seed.get("seed_role"), max_len=48),
+                "status": status,
+                "fit_to_adjacency_box_ids": _normalize_string_list(
+                    seed.get("fit_to_adjacency_box_ids"),
+                    max_items=8,
+                    max_len=120,
+                ),
+            }
+        )
+        if len(company_seeds) >= 16:
+            break
 
     return {
         "source_capabilities": _normalize_string_list(source_capabilities + source_workflows[:2], max_items=8, max_len=140)
         or _normalize_string_list(source_workflows, max_items=6, max_len=140),
-        "adjacent_capabilities": _normalize_string_list(adjacent_capabilities, max_items=8, max_len=140),
         "source_customer_segments": _normalize_string_list(source_customers, max_items=6, max_len=140),
-        "adjacent_customer_segments": _normalize_string_list(adjacent_customers, max_items=6, max_len=140),
+        "adjacent_lanes": _normalize_string_list(
+            adjacent_capabilities
+            + adjacent_customers
+            + adjacency_box_labels,
+            max_items=12,
+            max_len=140,
+        ),
+        "adjacency_box_labels": _normalize_string_list(adjacency_box_labels, max_items=10, max_len=140),
+        "adjacency_boxes": adjacency_box_hints,
         "named_account_anchors": _normalize_string_list(named_accounts, max_items=8, max_len=140),
+        "geography_expansions": _normalize_string_list(geography_expansions, max_items=8, max_len=96),
+        "company_seeds": company_seeds,
+        "company_seed_urls": _normalize_string_list(company_seed_urls, max_items=16, max_len=240),
         "comparator_seed_urls": [
             normalized
             for normalized in (
@@ -6432,11 +6461,5 @@ def derive_discovery_scope_hints(
             )
             if normalized
         ],
-        "confirmed": bool(
-            normalize_expansion_brief(
-                company_context_pack.expansion_brief_json or {}
-                if isinstance(company_context_pack, CompanyContextPack)
-                else company_context_pack.get("expansion_brief") or {}
-            ).get("confirmed_at")
-        ),
+        "confirmed": bool(expansion_brief.get("confirmed_at")),
     }

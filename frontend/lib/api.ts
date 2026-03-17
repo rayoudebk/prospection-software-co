@@ -481,14 +481,138 @@ export interface ExpansionBriefItem {
   priority_tier: string;
 }
 
+export interface ModelAttemptTrace {
+  stage?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  latency_ms: number;
+  status?: string | null;
+  retry_count: number;
+  error_class?: string | null;
+  error_message?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+}
+
+export interface ExpansionEvidence {
+  url: string;
+  title?: string | null;
+  publisher?: string | null;
+  publisher_type?: string | null;
+  language?: string | null;
+  evidence_tier?: string | null;
+  source_entity_name?: string | null;
+  claim_text?: string | null;
+  supports: string[];
+}
+
+export interface ExpansionEmergingSignal {
+  label: string;
+  theme_type: string;
+  confidence: number;
+  why_it_matters?: string | null;
+}
+
+export interface ExpansionSourceFit {
+  shared_buyers: string[];
+  shared_workflows: string[];
+  shared_data_objects: string[];
+  shared_integrations: string[];
+  rationale?: string | null;
+}
+
+export interface ExpansionCriticality {
+  market_importance: string;
+  operational_centrality: string;
+  workflow_criticality: string;
+  daily_operator_usage: string;
+  switching_cost_intensity: string;
+  strategic_value_hypothesis?: string | null;
+  replicability: string;
+  market_density: string;
+  adjacency_confidence: number;
+  switching_cost_confidence: number;
+  trend_confidence: number;
+}
+
+export interface ExpansionWorkflowAnatomy {
+  primary_operators: string[];
+  primary_triggers: string[];
+  core_actions: string[];
+  systems_touched: string[];
+  frequency: string;
+  failure_cost?: string | null;
+  management_value?: string | null;
+}
+
+export interface AdjacencyBox {
+  id: string;
+  label: string;
+  canonical_concept_key: string;
+  adjacency_kind: string;
+  status: string;
+  confidence: number;
+  why_it_matters?: string | null;
+  source_fit: ExpansionSourceFit;
+  criticality: ExpansionCriticality;
+  workflow_anatomy: ExpansionWorkflowAnatomy;
+  supporting_node_ids: string[];
+  related_source_node_ids: string[];
+  likely_customer_segments: string[];
+  likely_workflows: string[];
+  evidence: ExpansionEvidence[];
+  emerging_signals: ExpansionEmergingSignal[];
+  company_seed_ids: string[];
+  retrieval_query_seeds: string[];
+  original_language_aliases: string[];
+  language_specific_query_seeds: Array<Record<string, unknown>>;
+  priority_tier: string;
+}
+
+export interface CompanySeed {
+  id: string;
+  name: string;
+  website?: string | null;
+  seed_type: string;
+  seed_role?: string | null;
+  status: string;
+  confidence: number;
+  why_relevant?: string | null;
+  fit_to_adjacency_box_ids: string[];
+  evidence: ExpansionEvidence[];
+}
+
+export interface TechnologyShiftClaim {
+  id: string;
+  label: string;
+  status: string;
+  confidence: number;
+  why_it_matters?: string | null;
+  affected_adjacency_box_ids: string[];
+  company_seed_ids: string[];
+  evidence: ExpansionEvidence[];
+}
+
 export interface ExpansionBrief {
+  version?: string;
   reasoning_status?: "success" | "degraded" | "not_run" | "not_applicable" | string;
   reasoning_warning?: string | null;
+  fallback_mode?: boolean;
+  research_report_markdown?: string | null;
+  research_attempts?: ModelAttemptTrace[];
+  normalization_status?: string;
+  normalization_warning?: string | null;
+  normalization_provider?: string | null;
+  normalization_model?: string | null;
+  normalization_attempts?: ModelAttemptTrace[];
   reasoning_provider?: string | null;
   reasoning_model?: string | null;
   confirmed_at?: string | null;
-  adjacent_capabilities: ExpansionBriefItem[];
-  adjacent_customer_segments: ExpansionBriefItem[];
+  adjacency_boxes?: AdjacencyBox[];
+  company_seeds?: CompanySeed[];
+  technology_shift_claims?: TechnologyShiftClaim[];
+  confidence_gaps?: string[];
+  open_questions?: string[];
   named_account_anchors: ExpansionBriefItem[];
   geography_expansions: ExpansionBriefItem[];
 }
@@ -524,8 +648,7 @@ export interface ScopeReview {
   source_customer_segments: ScopeReviewItem[];
   source_workflows: ScopeReviewItem[];
   source_delivery_or_integration: ScopeReviewItem[];
-  adjacent_capabilities: ScopeReviewItem[];
-  adjacent_customer_segments: ScopeReviewItem[];
+  adjacency_boxes: AdjacencyBox[];
   named_account_anchors: ScopeReviewItem[];
   geography_expansions: ScopeReviewItem[];
 }

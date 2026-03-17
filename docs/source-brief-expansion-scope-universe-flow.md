@@ -494,66 +494,93 @@ The output should separate:
 - `corroborated`: not directly first-party, but supported by multiple external signals
 - `hypothesis`: plausible one-hop expansion with some support, but not yet strong enough to act as fact
 
+The canonical artifact is now `Expansion Brief v3`.
+
+That means the deep-research report is normalized into:
+
+- `adjacency_boxes`
+- `company_seeds`
+- `technology_shift_claims`
+- `confidence_gaps`
+- `open_questions`
+
+Grouped adjacent capability/customer lists are no longer part of the canonical artifact. Review and discovery read from `adjacency_boxes` directly.
+
 ### Example Expansion Output For 4TPM
 
 ```json
 {
-  "adjacent_capabilities": [
+  "adjacency_boxes": [
     {
-      "label": "Voting rights / proxy voting",
-      "status": "hypothesis",
-      "confidence": 0.58,
-      "why_it_matters": "Adjacent to securities administration and portfolio operations workflows evidenced around the source company.",
-      "evidence_urls": [
-        "https://example-directory.com/wealth-operations-vendors",
-        "https://example-partner.com/securities-operations"
-      ]
-    },
-    {
+      "id": "adj-box-client-reporting",
       "label": "Client reporting",
-      "status": "corroborated",
+      "canonical_concept_key": "client_reporting",
+      "adjacency_kind": "adjacent_capability",
+      "priority_tier": "core_adjacent",
+      "status": "hypothesis",
       "confidence": 0.77,
       "why_it_matters": "Frequently coupled with the same portfolio and front-office workflows evidenced in the source graph.",
-      "evidence_urls": [
-        "https://example-vendor.com/platform",
-        "https://example-customer-announcement.com/reporting-stack"
+      "criticality": {
+        "market_importance": "high",
+        "operational_centrality": "meaningful",
+        "workflow_criticality": "high",
+        "daily_operator_usage": "medium",
+        "switching_cost_intensity": "medium",
+        "replicability": "moderate",
+        "market_density": "fragmented",
+        "adjacency_confidence": 0.79,
+        "switching_cost_confidence": 0.62,
+        "trend_confidence": 0.44
+      },
+      "workflow_anatomy": {
+        "primary_operators": ["portfolio manager", "relationship manager"],
+        "primary_triggers": ["portfolio review", "client communication cycle"],
+        "core_actions": ["prepare reports", "publish client-ready views"],
+        "systems_touched": ["portfolio accounting", "document generation"],
+        "frequency": "recurring"
+      },
+      "evidence": [
+        {
+          "url": "https://example-vendor.com/platform",
+          "supports": ["buyer_overlap", "workflow_criticality"]
+        }
+      ],
+      "retrieval_query_seeds": [
+        "private banking client reporting software",
+        "wealth client reporting platform"
       ]
     }
   ],
-  "adjacent_customer_segments": [
+  "company_seeds": [
     {
-      "label": "Fund administrator",
+      "id": "seed-objectway",
+      "name": "Objectway",
+      "website": "https://www.objectway.com",
+      "seed_type": "company",
+      "seed_role": "adjacent_specialist",
       "status": "hypothesis",
-      "confidence": 0.61,
-      "why_it_matters": "Neighboring buyer group with overlapping positions, reporting, and securities-processing needs.",
-      "evidence_urls": [
-        "https://example-market-map.com/fund-admin-software"
+      "confidence": 0.68,
+      "fit_to_adjacency_box_ids": ["adj-box-client-reporting"],
+      "evidence": [
+        {
+          "url": "https://example-market-map.com/fund-admin-software",
+          "supports": ["seed_fit"]
+        }
       ]
     }
   ],
-  "named_account_anchors": [
+  "technology_shift_claims": [
     {
-      "label": "BNP Paribas",
-      "status": "corroborated",
-      "confidence": 0.81,
-      "why_it_matters": "Useful anchor institution for tracing peer vendors and adjacent modules in the same buying environment.",
-      "evidence_urls": [
-        "https://example-source.com/customers",
-        "https://example-third-party.com/announcement"
-      ]
-    }
-  ],
-  "geography_expansions": [
-    {
-      "label": "Belgium",
+      "id": "shift-api-first-wealth",
+      "label": "API-first digital wealth orchestration",
       "status": "hypothesis",
-      "confidence": 0.56,
-      "why_it_matters": "Adjacent search geography for wealth-tech and securities-workflow vendors near the current source market box.",
-      "evidence_urls": [
-        "https://example-directory.com/belgium-financial-software"
-      ]
+      "confidence": 0.57,
+      "affected_adjacency_box_ids": ["adj-box-client-reporting"],
+      "company_seed_ids": ["seed-objectway"]
     }
-  ]
+  ],
+  "confidence_gaps": ["Public evidence on switching cost is still thin for this lane."],
+  "open_questions": ["Is client reporting bundled or sold as a distinct buying motion in this segment?"]
 }
 ```
 
@@ -573,15 +600,22 @@ the product should ask:
 
 ### What The User Reviews
 
-The user sees grouped node sets:
+The user sees:
 
-- source-grounded capabilities
-- source-grounded customer segments
-- source-grounded workflows
-- expanded adjacent capabilities
-- expanded adjacent customer segments
-- named-account anchors
-- geography expansions
+- the canonical expansion artifact:
+  - `adjacency_boxes`
+  - `company_seeds`
+  - `technology_shift_claims`
+- grouped review buckets compiled from that artifact and from source-grounded nodes:
+  - source-grounded capabilities
+  - source-grounded customer segments
+  - source-grounded workflows
+  - expanded adjacent capabilities
+  - expanded adjacent customer segments
+  - named-account anchors
+  - geography expansions
+
+The grouped review buckets are a review UX layer, not the primary expansion data model.
 
 ### Allowed User Actions
 
@@ -821,12 +855,10 @@ to:
 
 The main missing pieces are:
 
-- a clean graph-derived structured packet handoff into deep research
-- a dedicated `Expansion Brief` artifact
-- bounded deep-research logic for expansion
-- graph support for expansion nodes and statuses
-- a `Scope Review` UI step
-- compilation from approved nodes to internal query packs
+- a full scope-review UI migration away from compatibility-only grouped fields
+- full deletion of legacy grouped-field dependencies in scope review responses
+- stronger claim-level evidence preservation and multilingual normalization
+- stable end-to-end provider reliability for long-running deep-research jobs
 
 ## Recommended Product Architecture
 
@@ -859,13 +891,17 @@ Suggested fields:
 
 ```json
 {
-  "adjacent_capabilities": [],
-  "adjacent_customer_segments": [],
-  "named_account_anchors": [],
-  "geography_expansions": [],
+  "version": "v3",
+  "adjacency_boxes": [],
+  "company_seeds": [],
+  "technology_shift_claims": [],
+  "confidence_gaps": [],
+  "open_questions": [],
   "generated_at": "2026-03-15T12:00:00Z"
 }
 ```
+
+Compatibility-only grouped lists may still be derived from the canonical artifact for review UX, but they should not be treated as the primary stored model anymore.
 
 ### Graph Node Status
 

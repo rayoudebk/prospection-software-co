@@ -191,25 +191,24 @@ def test_sourcing_report_summary_prefers_first_party_sources_over_secondary_page
 
 def test_expansion_report_summary_dedupes_repeated_citations():
     expansion_brief = {
-        "adjacent_capabilities": [
+        "adjacency_boxes": [
             {
+                "id": "box_portfolio_analytics",
                 "label": "Portfolio analytics",
+                "adjacency_kind": "adjacent_capability",
                 "why_it_matters": "Common adjacent module",
                 "status": "corroborated_expansion",
-                "evidence_urls": ["https://example.com/alpha"],
-                "source_entity_names": ["Example Source"],
-                "expansion_type": "adjacent_capability",
+                "evidence": [{"url": "https://example.com/alpha", "source_entity_name": "Example Source"}],
             },
             {
+                "id": "box_risk_reporting",
                 "label": "Risk reporting",
+                "adjacency_kind": "adjacent_capability",
                 "why_it_matters": "Often bundled nearby",
                 "status": "corroborated_expansion",
-                "evidence_urls": ["https://example.com/alpha"],
-                "source_entity_names": ["Example Source"],
-                "expansion_type": "adjacent_capability",
+                "evidence": [{"url": "https://example.com/alpha", "source_entity_name": "Example Source"}],
             },
         ],
-        "adjacent_customer_segments": [],
         "named_account_anchors": [],
         "geography_expansions": [],
     }
@@ -236,6 +235,71 @@ def test_derive_discovery_scope_hints_prefers_source_and_adjacent_scope():
     assert "Portfolio analytics" in scope_hints["source_capabilities"]
     assert "Northwind Capital" in scope_hints["named_account_anchors"]
     assert scope_hints["confirmed"] is False
+
+
+def test_derive_discovery_scope_hints_prefers_canonical_boxes_and_seeds():
+    profile = _build_profile()
+    payload = build_company_context_artifacts(profile)
+    payload["expansion_brief"] = normalize_expansion_brief(
+        {
+            "adjacency_boxes": [
+                {
+                    "id": "adj_box_staffing",
+                    "label": "Workforce planning",
+                    "adjacency_kind": "adjacent_capability",
+                    "status": "corroborated_expansion",
+                    "priority_tier": "core_adjacent",
+                    "confidence": 0.79,
+                    "likely_customer_segments": ["Hospital operators"],
+                    "likely_workflows": ["Shift planning"],
+                    "retrieval_query_seeds": ["hospital workforce planning software"],
+                    "evidence": [
+                        {
+                            "url": "https://example.com/workforce-planning",
+                            "source_entity_name": "PlannerCo",
+                            "supports": ["workflow_criticality"],
+                        }
+                    ],
+                },
+                {
+                    "id": "adj_box_edge",
+                    "label": "Cafeteria menu tooling",
+                    "adjacency_kind": "adjacent_capability",
+                    "status": "corroborated_expansion",
+                    "priority_tier": "edge_case",
+                    "confidence": 0.62,
+                    "evidence": [
+                        {
+                            "url": "https://example.com/menu",
+                            "source_entity_name": "MenuApp",
+                            "supports": ["market_signal"],
+                        }
+                    ],
+                },
+            ],
+            "company_seeds": [
+                {
+                    "id": "seed_plannerco",
+                    "name": "PlannerCo",
+                    "website": "https://plannerco.example.com",
+                    "seed_type": "specialist",
+                    "seed_role": "adjacent_specialist",
+                    "status": "corroborated_expansion",
+                    "fit_to_adjacency_box_ids": ["adj_box_staffing"],
+                }
+            ],
+            "named_account_anchors": [],
+            "geography_expansions": [],
+        }
+    )
+
+    scope_hints = derive_discovery_scope_hints(payload, profile)
+
+    assert "Workforce planning" in scope_hints["adjacent_lanes"]
+    assert "Cafeteria menu tooling" not in scope_hints["adjacent_lanes"]
+    assert scope_hints["adjacency_boxes"][0]["label"] == "Workforce planning"
+    assert scope_hints["company_seeds"][0]["name"] == "PlannerCo"
+    assert any(url.startswith("https://plannerco.example.com") for url in scope_hints["company_seed_urls"])
 
 
 def test_build_company_context_artifacts_builds_expansion_inputs_from_non_buyer_sites():
@@ -332,8 +396,8 @@ def test_build_company_context_artifacts_derives_expansion_brief_from_comparator
     payload = build_company_context_artifacts(profile)
     expansion = _build_expansion_payload(profile, payload)["expansion_brief"]
 
-    assert any(item["label"] == "Client reporting" for item in expansion["adjacent_capabilities"])
-    assert any(item["label"] == "Fund administrator" for item in expansion["adjacent_customer_segments"])
+    assert any(item["label"] == "Client reporting" for item in expansion["adjacency_boxes"])
+    assert any(item["label"] == "Fund administrator" for item in expansion["adjacency_boxes"])
     assert any(item["label"] == "Belgium" for item in expansion["geography_expansions"])
 
 
@@ -473,18 +537,21 @@ def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monke
             return LLMResponse(
                 text=json.dumps(
                     {
-                        "adjacent_capabilities": [
+                        "adjacency_boxes": [
                             {
+                                "id": "expansion_voting",
                                 "label": "Voting rights / proxy voting",
+                                "adjacency_kind": "adjacent_capability",
                                 "why_it_matters": "Adjacent governance workflow around securities operations.",
-                                "evidence_urls": ["https://example.com/voting"],
-                                "source_entity_names": ["Comparator A"],
-                                "market_importance": "low",
-                                "operational_centrality": "peripheral",
+                                "evidence": [{"url": "https://example.com/voting", "source_entity_name": "Comparator A"}],
+                                "criticality": {
+                                    "market_importance": "low",
+                                    "operational_centrality": "peripheral",
+                                },
                                 "confidence": 0.58,
+                                "priority_tier": "edge_case",
                             }
                         ],
-                        "adjacent_customer_segments": [],
                         "named_account_anchors": [],
                         "geography_expansions": [],
                     }
@@ -498,23 +565,23 @@ def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monke
                     {
                         "reasoning_status": "success",
                         "reasoning_warning": None,
-                        "adjacent_capabilities": [
+                        "adjacency_boxes": [
                             {
                                 "id": "expansion_voting",
                                 "label": "Voting rights / proxy voting",
-                                "expansion_type": "adjacent_capability",
+                                "adjacency_kind": "adjacent_capability",
                                 "status": "hypothesis",
                                 "confidence": 0.58,
                                 "why_it_matters": "Adjacent governance workflow around securities operations.",
-                                "evidence_urls": ["https://example.com/voting"],
+                                "evidence": [{"url": "https://example.com/voting", "source_entity_name": "Comparator A"}],
                                 "supporting_node_ids": [],
-                                "source_entity_names": ["Comparator A"],
-                                "market_importance": "low",
-                                "operational_centrality": "peripheral",
+                                "criticality": {
+                                    "market_importance": "low",
+                                    "operational_centrality": "peripheral",
+                                },
                                 "priority_tier": "edge_case",
                             }
                         ],
-                        "adjacent_customer_segments": [],
                         "named_account_anchors": [],
                         "geography_expansions": [],
                     }
@@ -530,10 +597,10 @@ def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monke
     expansion = _build_expansion_payload(profile, payload)["expansion_brief"]
 
     assert expansion["reasoning_status"] == "success"
-    assert expansion["adjacent_capabilities"][0]["label"] == "Voting rights / proxy voting"
-    assert expansion["adjacent_capabilities"][0]["market_importance"] == "low"
-    assert expansion["adjacent_capabilities"][0]["operational_centrality"] == "peripheral"
-    assert expansion["adjacent_capabilities"][0]["priority_tier"] == "edge_case"
+    assert expansion["adjacency_boxes"][0]["label"] == "Voting rights / proxy voting"
+    assert expansion["adjacency_boxes"][0]["criticality"]["market_importance"] == "low"
+    assert expansion["adjacency_boxes"][0]["criticality"]["operational_centrality"] == "peripheral"
+    assert expansion["adjacency_boxes"][0]["priority_tier"] == "edge_case"
 
 
 def test_build_expansion_artifacts_accepts_text_research_report(monkeypatch):
@@ -694,7 +761,7 @@ def test_build_expansion_artifacts_accepts_text_research_report(monkeypatch):
     assert expansion["normalization_attempts"][0]["provider"] == "openai"
     assert expansion["adjacency_boxes"][0]["label"] == "Client reporting"
     assert expansion["company_seeds"][0]["name"] == "Comp One"
-    assert any(item["label"] == "Client reporting" for item in expansion["adjacent_capabilities"])
+    assert any(item["label"] == "Client reporting" for item in expansion["adjacency_boxes"])
 
 
 def test_build_expansion_artifacts_preserves_research_report_when_normalization_fails(monkeypatch):
@@ -776,7 +843,7 @@ def test_build_expansion_artifacts_preserves_research_report_when_normalization_
     assert expansion["normalization_model"] == "gpt-4.1-mini"
     assert expansion["normalization_attempts"][0]["error_message"] == "429 RESOURCE_EXHAUSTED"
     assert "normalization failed after model retries" in str(expansion["reasoning_warning"]).lower()
-    assert expansion["adjacent_capabilities"] == []
+    assert expansion["adjacency_boxes"] == []
 
 
 def test_build_expansion_artifacts_returns_hublo_style_v2_expansion_brief(monkeypatch):
@@ -1075,7 +1142,7 @@ def test_build_expansion_artifacts_returns_hublo_style_v2_expansion_brief(monkey
     assert expansion["adjacency_boxes"][0]["emerging_signals"][0]["label"] == "AI-assisted shift forecasting"
     assert expansion["company_seeds"][0]["name"] == "PlannerCo"
     assert expansion["company_seeds"][0]["fit_to_adjacency_box_ids"] == ["adj_box_workforce_planning"]
-    assert any(item["label"] == "Workforce planning" for item in expansion["adjacent_capabilities"])
+    assert any(item["label"] == "Workforce planning" for item in expansion["adjacency_boxes"])
     assert expansion["named_account_anchors"][0]["label"] == "AP-HP"
 
 
@@ -1119,16 +1186,16 @@ def test_build_company_context_artifacts_prefers_comparator_capabilities_over_so
             return LLMResponse(
                 text=json.dumps(
                     {
-                        "adjacent_capabilities": [
+                        "adjacency_boxes": [
                             {
+                                "id": "expansion_source_self",
                                 "label": "Portfolio analytics automation",
+                                "adjacency_kind": "adjacent_capability",
                                 "why_it_matters": "Restates the source company capability.",
-                                "evidence_urls": ["https://acme.example.com/platform"],
-                                "source_entity_names": ["Acme"],
+                                "evidence": [{"url": "https://acme.example.com/platform", "source_entity_name": "Acme"}],
                                 "status": "source_grounded",
                             }
                         ],
-                        "adjacent_customer_segments": [],
                         "named_account_anchors": [],
                         "geography_expansions": [],
                     }
@@ -1142,23 +1209,23 @@ def test_build_company_context_artifacts_prefers_comparator_capabilities_over_so
                     {
                         "reasoning_status": "success",
                         "reasoning_warning": None,
-                        "adjacent_capabilities": [
+                        "adjacency_boxes": [
                             {
                                 "id": "expansion_source_self",
                                 "label": "Portfolio analytics automation",
-                                "expansion_type": "adjacent_capability",
+                                "adjacency_kind": "adjacent_capability",
                                 "status": "source_grounded",
                                 "confidence": 0.7,
                                 "why_it_matters": "Restates the source company capability.",
-                                "evidence_urls": ["https://acme.example.com/platform"],
+                                "evidence": [{"url": "https://acme.example.com/platform", "source_entity_name": "Acme"}],
                                 "supporting_node_ids": [],
-                                "source_entity_names": ["Acme"],
-                                "market_importance": "medium",
-                                "operational_centrality": "core",
+                                "criticality": {
+                                    "market_importance": "medium",
+                                    "operational_centrality": "core",
+                                },
                                 "priority_tier": "meaningful_adjacent",
                             }
                         ],
-                        "adjacent_customer_segments": [],
                         "named_account_anchors": [],
                         "geography_expansions": [],
                     }
@@ -1173,12 +1240,12 @@ def test_build_company_context_artifacts_prefers_comparator_capabilities_over_so
     payload = build_company_context_artifacts(profile)
     expansion = _build_expansion_payload(profile, payload)["expansion_brief"]
 
-    capability_labels = [item["label"] for item in expansion["adjacent_capabilities"]]
+    capability_labels = [item["label"] for item in expansion["adjacency_boxes"]]
     assert "Proxy voting" in capability_labels
     assert "Portfolio analytics automation" not in capability_labels
 
 
-def test_build_company_context_artifacts_keeps_fallback_customer_segments_when_model_omits_them(monkeypatch):
+def test_build_company_context_artifacts_does_not_backfill_customer_segments_when_model_omits_them(monkeypatch):
     profile = _build_profile()
     profile.context_pack_json["sites"].append(
         {
@@ -1218,8 +1285,7 @@ def test_build_company_context_artifacts_keeps_fallback_customer_segments_when_m
             return LLMResponse(
                 text=json.dumps(
                     {
-                        "adjacent_capabilities": [],
-                        "adjacent_customer_segments": [],
+                        "adjacency_boxes": [],
                         "named_account_anchors": [],
                         "geography_expansions": [],
                     }
@@ -1234,7 +1300,7 @@ def test_build_company_context_artifacts_keeps_fallback_customer_segments_when_m
     payload = build_company_context_artifacts(profile)
     expansion = _build_expansion_payload(profile, payload)["expansion_brief"]
 
-    assert any(item["label"] == "Healthcare provider" for item in expansion["adjacent_customer_segments"])
+    assert all(item["label"] != "Healthcare provider" for item in expansion["adjacency_boxes"])
 
 
 def test_build_expansion_artifacts_filters_noisy_named_account_anchors():
@@ -1325,12 +1391,12 @@ def test_build_expansion_artifacts_filters_noisy_adjacent_capabilities():
         expansion_inputs=[noisy_input],
     )
 
-    labels = [item["label"] for item in deterministic["adjacent_capabilities"]]
+    labels = [item["label"] for item in deterministic["adjacency_boxes"]]
     assert "Créer votre vivier de remplaçants" in labels
     assert "Politique de protection des données" not in labels
     evidence_urls = {
-        item["label"]: item.get("evidence_urls") or []
-        for item in deterministic["adjacent_capabilities"]
+        item["label"]: [e["url"] for e in (item.get("evidence") or []) if isinstance(e, dict) and e.get("url")]
+        for item in deterministic["adjacency_boxes"]
     }
     assert evidence_urls["Créer votre vivier de remplaçants"] == ["https://comp-two.example.com/replacement-pool"]
 
@@ -1338,14 +1404,12 @@ def test_build_expansion_artifacts_filters_noisy_adjacent_capabilities():
 def test_normalize_expansion_brief_filters_noisy_model_outputs():
     normalized = normalize_expansion_brief(
         {
-            "adjacent_capabilities": [
-                {"label": "Data protection and security policies"},
-                {"label": "Regulatory compliance assurance"},
-                {"label": "Workforce replacement pool management"},
-            ],
-            "adjacent_customer_segments": [
-                {"label": "Nurses and paramedical professionals"},
-                {"label": "Hospitals"},
+            "adjacency_boxes": [
+                {"label": "Data protection and security policies", "adjacency_kind": "adjacent_capability"},
+                {"label": "Regulatory compliance assurance", "adjacency_kind": "adjacent_capability"},
+                {"label": "Workforce replacement pool management", "adjacency_kind": "adjacent_capability"},
+                {"label": "Nurses and paramedical professionals", "adjacency_kind": "adjacent_customer_segment"},
+                {"label": "Hospitals", "adjacency_kind": "adjacent_customer_segment"},
             ],
             "named_account_anchors": [
                 {"label": "Photo équipe BDE Lille"},
@@ -1359,8 +1423,8 @@ def test_normalize_expansion_brief_filters_noisy_model_outputs():
         }
     )
 
-    capability_labels = [item["label"] for item in normalized["adjacent_capabilities"]]
-    segment_labels = [item["label"] for item in normalized["adjacent_customer_segments"]]
+    capability_labels = [item["label"] for item in normalized["adjacency_boxes"] if item["adjacency_kind"] != "adjacent_customer_segment"]
+    segment_labels = [item["label"] for item in normalized["adjacency_boxes"] if item["adjacency_kind"] == "adjacent_customer_segment"]
     named_account_labels = [item["label"] for item in normalized["named_account_anchors"]]
 
     assert "Workforce replacement pool management" in capability_labels
@@ -1376,24 +1440,22 @@ def test_normalize_expansion_brief_filters_noisy_model_outputs():
 def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_keeps_healthcare_provider():
     normalized = normalize_expansion_brief(
         {
-            "adjacent_capabilities": [
-                {"label": "Des consultants du secteur RH et recrutement formation"},
-                {"label": "Management de la sécurité"},
-                {"label": "Reportings des remplacement effectués"},
-                {"label": "Candidatdésigne une personne libre de tout engagement inscrite"},
-                {"label": "Date de la notification"},
-                {"label": "Des professionnels des secteurs conseil juridique"},
-                {"label": "Urgent replacement management"},
-                {"label": "Client reporting"},
-            ],
-            "adjacent_customer_segments": [
-                {"label": "Établissements de santé"},
+            "adjacency_boxes": [
+                {"label": "Des consultants du secteur RH et recrutement formation", "adjacency_kind": "adjacent_capability"},
+                {"label": "Management de la sécurité", "adjacency_kind": "adjacent_capability"},
+                {"label": "Reportings des remplacement effectués", "adjacency_kind": "adjacent_capability"},
+                {"label": "Candidatdésigne une personne libre de tout engagement inscrite", "adjacency_kind": "adjacent_capability"},
+                {"label": "Date de la notification", "adjacency_kind": "adjacent_capability"},
+                {"label": "Des professionnels des secteurs conseil juridique", "adjacency_kind": "adjacent_capability"},
+                {"label": "Urgent replacement management", "adjacency_kind": "adjacent_capability"},
+                {"label": "Client reporting", "adjacency_kind": "adjacent_capability"},
+                {"label": "Établissements de santé", "adjacency_kind": "adjacent_customer_segment"},
             ],
         }
     )
 
-    capability_labels = [item["label"] for item in normalized["adjacent_capabilities"]]
-    segment_labels = [item["label"] for item in normalized["adjacent_customer_segments"]]
+    capability_labels = [item["label"] for item in normalized["adjacency_boxes"] if item["adjacency_kind"] != "adjacent_customer_segment"]
+    segment_labels = [item["label"] for item in normalized["adjacency_boxes"] if item["adjacency_kind"] == "adjacent_customer_segment"]
 
     assert "Urgent replacement management" in capability_labels
     assert "Des consultants du secteur RH et recrutement formation" not in capability_labels
@@ -1406,43 +1468,17 @@ def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_kee
     assert "Établissements de santé" in segment_labels
 
 
-def test_normalize_expansion_brief_derives_v2_boxes_and_company_seeds_from_legacy_groups():
+def test_normalize_expansion_brief_requires_canonical_boxes_and_company_seeds():
     normalized = normalize_expansion_brief(
         {
-            "adjacent_capabilities": [
-                {
-                    "label": "Client reporting",
-                    "status": "corroborated_expansion",
-                    "confidence": 0.77,
-                    "why_it_matters": "Frequently coupled with portfolio workflows.",
-                    "evidence_urls": ["https://comp-one.example.com/reporting"],
-                    "source_entity_names": ["Comp One"],
-                    "market_importance": "high",
-                    "operational_centrality": "core",
-                    "workflow_criticality": "high",
-                    "daily_operator_usage": "medium",
-                    "switching_cost_intensity": "high",
-                }
-            ],
-            "adjacent_customer_segments": [
-                {
-                    "label": "Fund administrator",
-                    "status": "hypothesis",
-                    "confidence": 0.61,
-                    "why_it_matters": "Neighboring buyer segment.",
-                    "evidence_urls": ["https://comp-one.example.com/clients"],
-                    "source_entity_names": ["Comp One"],
-                }
-            ],
+            "adjacency_boxes": [],
+            "company_seeds": [],
         }
     )
 
     assert normalized["version"] == "expansion_brief_v3"
-    assert normalized["adjacency_boxes"]
-    assert normalized["company_seeds"]
-    assert any(box["label"] == "Client reporting" for box in normalized["adjacency_boxes"])
-    assert any(seed["name"] == "Comp One" for seed in normalized["company_seeds"])
-    assert any(item["label"] == "Client reporting" for item in normalized["adjacent_capabilities"])
+    assert normalized["adjacency_boxes"] == []
+    assert normalized["company_seeds"] == []
     assert "technology_shift_claims" in normalized
     assert "confidence_gaps" in normalized
     assert "open_questions" in normalized
@@ -1525,7 +1561,7 @@ def test_normalize_expansion_brief_preserves_boxes_and_derives_legacy_groups():
     assert normalized["company_seeds"][0]["seed_role"] == "adjacent_specialist"
     assert normalized["technology_shift_claims"][0]["label"] == "AI-assisted staffing forecasts"
     assert normalized["open_questions"] == ["How embedded is staffing forecasting today?"]
-    assert any(item["label"] == "Workforce planning" for item in normalized["adjacent_capabilities"])
+    assert "adjacent_capabilities" not in normalized
 
 
 def test_normalize_expansion_brief_downgrades_unsupported_core_adjacent():
@@ -1567,14 +1603,15 @@ def test_normalize_expansion_brief_downgrades_unsupported_core_adjacent():
     assert any("Thin evidence for adjacency box" in gap for gap in normalized["confidence_gaps"])
 
 
-def test_merge_reasoned_expansion_brief_unions_duplicate_capability_evidence_urls():
+def test_merge_reasoned_expansion_brief_does_not_union_fallback_box_evidence_on_success():
     fallback_brief = normalize_expansion_brief(
         {
-            "adjacent_capabilities": [
+            "adjacency_boxes": [
                 {
+                    "id": "box_recrutement_remplacement",
                     "label": "Recrutement de personnel médical en remplacement",
-                    "evidence_urls": ["https://zaggo.fr/etablissements-sante"],
-                    "source_entity_names": ["Zaggo"],
+                    "adjacency_kind": "adjacent_capability",
+                    "evidence": [{"url": "https://zaggo.fr/etablissements-sante", "source_entity_name": "Zaggo"}],
                 }
             ]
         }
@@ -1583,11 +1620,12 @@ def test_merge_reasoned_expansion_brief_unions_duplicate_capability_evidence_url
     merged = _merge_reasoned_expansion_brief(
         response_text=json.dumps(
             {
-                "adjacent_capabilities": [
+                "adjacency_boxes": [
                     {
+                        "id": "box_recrutement_remplacement",
                         "label": "Recrutement de personnel médical en remplacement",
-                        "evidence_urls": ["https://zaggo.fr/"],
-                        "source_entity_names": ["Zaggo"],
+                        "adjacency_kind": "adjacent_capability",
+                        "evidence": [{"url": "https://zaggo.fr/", "source_entity_name": "Zaggo"}],
                     }
                 ]
             },
@@ -1599,12 +1637,9 @@ def test_merge_reasoned_expansion_brief_unions_duplicate_capability_evidence_url
         comparator_domains={"zaggo.fr"},
     )
 
-    capability = merged["adjacent_capabilities"][0]
+    capability = merged["adjacency_boxes"][0]
     assert capability["label"] == "Recrutement de personnel médical en remplacement"
-    assert capability["evidence_urls"] == [
-        "https://zaggo.fr/etablissements-sante",
-        "https://zaggo.fr/",
-    ]
+    assert [item["url"] for item in capability["evidence"]] == ["https://zaggo.fr/"]
 
 
 def test_report_source_label_distinguishes_deeper_comparator_pages():
@@ -1721,15 +1756,15 @@ def test_scope_review_decisions_compile_scope_back_into_discovery_scope_hints():
     payload["expansion_brief"] = _build_expansion_payload(profile, payload)["expansion_brief"]
     scope_review = derive_scope_review_payload(payload, profile)
     source_capability = next(item for item in scope_review["source_capabilities"] if item["label"] == "Portfolio analytics")
-    adjacent_capability = next(
-        item for item in scope_review["adjacent_capabilities"] if item["label"] == "Proxy voting"
+    adjacency_box = next(
+        item for item in scope_review["adjacency_boxes"] if item["label"] == "Proxy voting"
     )
 
     adjusted = apply_scope_review_decisions(
         payload,
         [
             {"id": source_capability["id"], "status": "user_removed"},
-            {"id": adjacent_capability["id"], "status": "user_kept"},
+            {"id": adjacency_box["id"], "status": "user_kept"},
         ],
     )
 
@@ -1737,7 +1772,7 @@ def test_scope_review_decisions_compile_scope_back_into_discovery_scope_hints():
     adjusted_node = next(node for node in adjusted["taxonomy_nodes"] if node["id"] == source_capability["id"])
 
     assert adjusted_node["scope_status"] == "removed"
-    assert "Proxy voting" in scope_hints["adjacent_capabilities"]
+    assert "Proxy voting" in scope_hints["adjacent_lanes"]
 
 
 def test_scope_review_payload_includes_evidence_urls_for_source_nodes():
@@ -1760,7 +1795,7 @@ def test_scope_review_payload_exposes_missing_expansion_state():
     scope_review = derive_scope_review_payload(payload, _build_profile())
 
     assert scope_review["expansion_status"] == "not_generated"
-    assert scope_review["adjacent_capabilities"] == []
+    assert scope_review["adjacency_boxes"] == []
 
 
 def test_scope_review_payload_dedupes_source_evidence_urls():

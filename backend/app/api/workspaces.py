@@ -370,8 +370,6 @@ class ExpansionBriefResponse(BaseModel):
     adjacency_boxes: List[AdjacencyBoxResponse] = Field(default_factory=list)
     company_seeds: List[CompanySeedResponse] = Field(default_factory=list)
     technology_shift_claims: List[TechnologyShiftClaimResponse] = Field(default_factory=list)
-    adjacent_capabilities: List[ExpansionBriefItemResponse] = Field(default_factory=list)
-    adjacent_customer_segments: List[ExpansionBriefItemResponse] = Field(default_factory=list)
     named_account_anchors: List[ExpansionBriefItemResponse] = Field(default_factory=list)
     geography_expansions: List[ExpansionBriefItemResponse] = Field(default_factory=list)
     confidence_gaps: List[str] = Field(default_factory=list)
@@ -548,8 +546,7 @@ class ScopeReviewResponse(BaseModel):
     source_customer_segments: List[ScopeReviewItemResponse] = Field(default_factory=list)
     source_workflows: List[ScopeReviewItemResponse] = Field(default_factory=list)
     source_delivery_or_integration: List[ScopeReviewItemResponse] = Field(default_factory=list)
-    adjacent_capabilities: List[ScopeReviewItemResponse] = Field(default_factory=list)
-    adjacent_customer_segments: List[ScopeReviewItemResponse] = Field(default_factory=list)
+    adjacency_boxes: List[AdjacencyBoxResponse] = Field(default_factory=list)
     named_account_anchors: List[ScopeReviewItemResponse] = Field(default_factory=list)
     geography_expansions: List[ScopeReviewItemResponse] = Field(default_factory=list)
 
@@ -1320,8 +1317,6 @@ def _scope_review_response_from_payload(
     payload: Dict[str, Any],
 ) -> ScopeReviewResponse:
     defaults_by_key = {
-        "adjacent_capabilities": {"scope_item_type": "adjacent_capability", "origin": "expansion_brief"},
-        "adjacent_customer_segments": {"scope_item_type": "adjacent_customer_segment", "origin": "expansion_brief"},
         "named_account_anchors": {"scope_item_type": "named_account_anchor", "origin": "expansion_brief"},
         "geography_expansions": {"scope_item_type": "geography_expansion", "origin": "expansion_brief"},
     }
@@ -1344,8 +1339,11 @@ def _scope_review_response_from_payload(
         source_customer_segments=_items("source_customer_segments"),
         source_workflows=_items("source_workflows"),
         source_delivery_or_integration=_items("source_delivery_or_integration"),
-        adjacent_capabilities=_items("adjacent_capabilities"),
-        adjacent_customer_segments=_items("adjacent_customer_segments"),
+        adjacency_boxes=[
+            AdjacencyBoxResponse.model_validate(item)
+            for item in (payload.get("adjacency_boxes") or [])
+            if isinstance(item, dict)
+        ],
         named_account_anchors=_items("named_account_anchors"),
         geography_expansions=_items("geography_expansions"),
     )
@@ -5093,22 +5091,28 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         if company_context_pack:
             scope_payload = derive_scope_review_payload(company_context_pack, profile)
             discovery_scope_hints = derive_discovery_scope_hints(company_context_pack, profile)
+            expansion_brief = normalize_expansion_brief(company_context_pack.expansion_brief_json or {})
+            adjacent_lanes = (
+                discovery_scope_hints.get("adjacent_lanes")
+                or discovery_scope_hints.get("adjacency_box_labels")
+                or []
+            )
             if not (discovery_scope_hints.get("source_capabilities") or []):
                 missing_items["scope_review"].append("Keep at least 1 source capability or workflow in scope")
-            if not (discovery_scope_hints.get("adjacent_capabilities") or []):
-                missing_items["scope_review"].append("Approve at least 1 adjacent capability before discovery")
-            if not normalize_expansion_brief(company_context_pack.expansion_brief_json or {}).get("confirmed_at"):
+            if not adjacent_lanes:
+                missing_items["scope_review"].append("Approve at least 1 adjacency lane before discovery")
+            if not expansion_brief.get("confirmed_at"):
                 missing_items["scope_review"].append("Confirm the reviewed scope before universe discovery")
             if not (
                 scope_payload.get("source_capabilities")
-                or scope_payload.get("adjacent_capabilities")
-                or scope_payload.get("adjacent_customer_segments")
+                or scope_payload.get("adjacency_boxes")
+                or (expansion_brief.get("adjacency_boxes") or [])
             ):
                 missing_items["scope_review"].append("Generate the expansion brief before scope review")
             scope_review_ready = bool(
-                normalize_expansion_brief(company_context_pack.expansion_brief_json or {}).get("confirmed_at")
+                expansion_brief.get("confirmed_at")
                 and (discovery_scope_hints.get("source_capabilities") or [])
-                and (discovery_scope_hints.get("adjacent_capabilities") or [])
+                and adjacent_lanes
             )
         else:
             missing_items["scope_review"].append("Generate company context first")
@@ -5164,7 +5168,6 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         missing_items["universe"].append(
             f"Evidence insufficiency ratio too high ({round(insufficient_ratio, 2)} > {max_insufficient_ratio})"
         )
-    # Legacy fallback messaging (one release cycle)
     if kept_companies_count < 5:
         missing_items["universe"].append(f"Keep at least 5 companies ({kept_companies_count} kept)")
     

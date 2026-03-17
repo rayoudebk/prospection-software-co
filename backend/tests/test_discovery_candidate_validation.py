@@ -55,9 +55,20 @@ def test_closed_world_candidate_validation_drops_unknown_url():
 def test_scope_hints_driven_query_plan_overrides_legacy_brick_hints():
     scope_hints = {
         "source_capabilities": ["Portfolio analytics", "Fund reporting"],
-        "adjacent_capabilities": ["Voting rights workflow"],
         "source_customer_segments": ["private equity"],
-        "adjacent_customer_segments": ["fund ops"],
+        "adjacency_boxes": [
+            {
+                "label": "Voting rights workflow",
+                "adjacency_kind": "adjacent_workflow",
+                "status": "corroborated_expansion",
+                "priority_tier": "meaningful_adjacent",
+                "confidence": 0.74,
+                "likely_customer_segments": ["fund ops"],
+                "likely_workflows": ["proxy voting"],
+                "retrieval_query_seeds": ["proxy voting workflow software"],
+            }
+        ],
+        "adjacent_lanes": ["Voting rights workflow"],
         "named_account_anchors": ["Northwind Capital"],
         "comparator_seed_urls": ["https://comp-one.example.com"],
         "confirmed": True,
@@ -81,3 +92,56 @@ def test_scope_hints_driven_query_plan_overrides_legacy_brick_hints():
     assert any(query["scope_bucket"] == "adjacent" for query in queries)
     assert "private equity" in queries[0]["must_include_terms"]
     assert summary["scope_buckets"] == ["core", "adjacent"]
+
+
+def test_scope_hints_query_plan_prioritizes_canonical_adjacency_boxes_and_seed_urls():
+    scope_hints = {
+        "source_capabilities": ["Clinical staffing"],
+        "source_customer_segments": ["Hospital operators"],
+        "named_account_anchors": ["CHU Lille"],
+        "adjacency_boxes": [
+            {
+                "label": "Workforce planning",
+                "adjacency_kind": "adjacent_capability",
+                "status": "corroborated_expansion",
+                "priority_tier": "core_adjacent",
+                "confidence": 0.81,
+                "likely_customer_segments": ["Hospital operators"],
+                "likely_workflows": ["Shift planning"],
+                "retrieval_query_seeds": ["hospital workforce planning software"],
+            },
+            {
+                "label": "Cafeteria menu tooling",
+                "adjacency_kind": "adjacent_capability",
+                "status": "corroborated_expansion",
+                "priority_tier": "edge_case",
+                "confidence": 0.62,
+                "likely_customer_segments": ["Hospital operators"],
+                "likely_workflows": ["Menu scheduling"],
+            },
+        ],
+        "company_seeds": [
+            {
+                "name": "PlannerCo",
+                "website": "https://plannerco.example.com",
+                "status": "corroborated_expansion",
+                "fit_to_adjacency_box_ids": ["adj_box_staffing"],
+            }
+        ],
+        "company_seed_urls": ["https://plannerco.example.com"],
+        "comparator_seed_urls": ["https://hublo.example.com"],
+        "confirmed": True,
+    }
+
+    plan = workspace_tasks._default_discovery_query_plan(
+        taxonomy_bricks=[{"name": "Legacy brick"}],
+        geo_scope={"region": "EU"},
+        vertical_focus=["legacy_vertical"],
+        scope_hints=scope_hints,
+    )
+
+    recall_texts = [entry["query_text"] for entry in plan["recall_queries"]]
+    assert any("Workforce planning" in text for text in recall_texts)
+    assert all("Cafeteria menu tooling" not in text for text in recall_texts)
+    assert "https://plannerco.example.com" in plan["seed_urls"]
+    assert "https://hublo.example.com" in plan["seed_urls"]

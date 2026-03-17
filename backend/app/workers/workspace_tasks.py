@@ -4973,12 +4973,92 @@ def _normalize_query_entries(values: Any, max_items: int = 6) -> list[dict[str, 
 
 def _normalize_scope_hints(scope_hints: Any) -> dict[str, Any]:
     payload = scope_hints if isinstance(scope_hints, dict) else {}
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    adjacency_boxes: list[dict[str, Any]] = []
+    if isinstance(payload.get("adjacency_boxes"), list):
+        for raw in payload.get("adjacency_boxes") or []:
+            if not isinstance(raw, dict):
+                continue
+            label = str(raw.get("label") or "").strip()
+            if not label:
+                continue
+            kind = str(raw.get("adjacency_kind") or "adjacent_capability").strip().lower() or "adjacent_capability"
+            if kind not in {"adjacent_capability", "adjacent_customer_segment", "adjacent_workflow"}:
+                kind = "adjacent_capability"
+            status = str(raw.get("status") or "hypothesis").strip().lower() or "hypothesis"
+            priority_tier = str(raw.get("priority_tier") or "meaningful_adjacent").strip().lower() or "meaningful_adjacent"
+            adjacency_boxes.append(
+                {
+                    "id": str(raw.get("id") or "").strip() or None,
+                    "label": label[:140],
+                    "adjacency_kind": kind,
+                    "status": status,
+                    "priority_tier": priority_tier,
+                    "confidence": _safe_float(raw.get("confidence"), default=0.0),
+                    "likely_customer_segments": _normalize_string_list(raw.get("likely_customer_segments"), max_items=4, max_len=120),
+                    "likely_workflows": _normalize_string_list(raw.get("likely_workflows"), max_items=4, max_len=120),
+                    "retrieval_query_seeds": _normalize_string_list(raw.get("retrieval_query_seeds"), max_items=4, max_len=180),
+                }
+            )
+            if len(adjacency_boxes) >= 10:
+                break
+
+    company_seeds: list[dict[str, Any]] = []
+    if isinstance(payload.get("company_seeds"), list):
+        for raw in payload.get("company_seeds") or []:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name:
+                continue
+            website = str(raw.get("website") or "").strip() or None
+            company_seeds.append(
+                {
+                    "id": str(raw.get("id") or "").strip() or None,
+                    "name": name[:140],
+                    "website": website[:220] if website else None,
+                    "status": str(raw.get("status") or "").strip().lower() or None,
+                    "seed_type": str(raw.get("seed_type") or "").strip().lower() or None,
+                    "seed_role": str(raw.get("seed_role") or "").strip().lower() or None,
+                    "fit_to_adjacency_box_ids": _normalize_string_list(raw.get("fit_to_adjacency_box_ids"), max_items=8, max_len=120),
+                }
+            )
+            if len(company_seeds) >= 16:
+                break
+
+    company_seed_urls = _normalize_string_list(payload.get("company_seed_urls"), max_items=16, max_len=220)
+    for seed in company_seeds:
+        website = str(seed.get("website") or "").strip()
+        if website:
+            company_seed_urls.append(website)
+
+    adjacency_box_labels = _normalize_string_list(
+        payload.get("adjacency_box_labels")
+        or [box.get("label") for box in adjacency_boxes if isinstance(box, dict)],
+        max_items=10,
+        max_len=140,
+    )
+    adjacent_lanes = _normalize_string_list(
+        payload.get("adjacent_lanes")
+        or adjacency_box_labels,
+        max_items=12,
+        max_len=140,
+    )
     return {
         "source_capabilities": _normalize_string_list(payload.get("source_capabilities"), max_items=10, max_len=140),
-        "adjacent_capabilities": _normalize_string_list(payload.get("adjacent_capabilities"), max_items=10, max_len=140),
         "source_customer_segments": _normalize_string_list(payload.get("source_customer_segments"), max_items=8, max_len=120),
-        "adjacent_customer_segments": _normalize_string_list(payload.get("adjacent_customer_segments"), max_items=8, max_len=120),
         "named_account_anchors": _normalize_string_list(payload.get("named_account_anchors"), max_items=8, max_len=120),
+        "geography_expansions": _normalize_string_list(payload.get("geography_expansions"), max_items=8, max_len=96),
+        "adjacency_boxes": adjacency_boxes,
+        "adjacency_box_labels": adjacency_box_labels,
+        "adjacent_lanes": adjacent_lanes,
+        "company_seeds": company_seeds,
+        "company_seed_urls": _dedupe_strings(company_seed_urls)[:16],
         "comparator_seed_urls": _normalize_string_list(payload.get("comparator_seed_urls"), max_items=8, max_len=220),
         "confirmed": bool(payload.get("confirmed")),
     }
@@ -4988,16 +5068,113 @@ def _taxonomy_compatible_hints_from_scope_hints(
     scope_hints: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     normalized_scope = _normalize_scope_hints(scope_hints)
+    box_capability_hints = [
+        str(box.get("label") or "").strip()
+        for box in (normalized_scope.get("adjacency_boxes") or [])
+        if isinstance(box, dict)
+        and str(box.get("adjacency_kind") or "").strip().lower() in {"adjacent_capability", "adjacent_workflow"}
+        and str(box.get("label") or "").strip()
+    ]
+    box_customer_hints = [
+        hint
+        for box in (normalized_scope.get("adjacency_boxes") or [])
+        if isinstance(box, dict)
+        for hint in _normalize_string_list(box.get("likely_customer_segments"), max_items=4, max_len=120)
+    ]
     capability_hints = _dedupe_strings(
         (normalized_scope.get("source_capabilities") or [])
-        + (normalized_scope.get("adjacent_capabilities") or [])
+        + box_capability_hints
     )
     segment_hints = _dedupe_strings(
         (normalized_scope.get("source_customer_segments") or [])
-        + (normalized_scope.get("adjacent_customer_segments") or [])
         + (normalized_scope.get("named_account_anchors") or [])
+        + box_customer_hints
     )
     return ([{"name": name} for name in capability_hints], segment_hints)
+
+
+def _adjacency_lane_candidates(normalized_scope: dict[str, Any]) -> list[dict[str, Any]]:
+    priority_rank = {"core_adjacent": 0, "meaningful_adjacent": 1, "edge_case": 2}
+    status_rank = {
+        "user_kept": 0,
+        "source_grounded": 1,
+        "corroborated_expansion": 2,
+        "hypothesis": 3,
+        "user_deprioritized": 4,
+        "user_removed": 5,
+    }
+
+    boxes = [
+        box
+        for box in (normalized_scope.get("adjacency_boxes") or [])
+        if isinstance(box, dict) and str(box.get("label") or "").strip()
+    ]
+
+    def _is_active(box: dict[str, Any]) -> bool:
+        status = str(box.get("status") or "").strip().lower()
+        if status == "user_kept":
+            return True
+        if status not in {"source_grounded", "corroborated_expansion"}:
+            return False
+        return str(box.get("priority_tier") or "").strip().lower() != "edge_case"
+
+    selected = [box for box in boxes if _is_active(box)]
+    if not selected:
+        selected = [
+            box
+            for box in boxes
+            if str(box.get("status") or "").strip().lower() == "hypothesis"
+            and str(box.get("priority_tier") or "").strip().lower() != "edge_case"
+        ]
+
+    selected = sorted(
+        selected,
+        key=lambda box: (
+            priority_rank.get(str(box.get("priority_tier") or "").strip().lower(), 9),
+            status_rank.get(str(box.get("status") or "").strip().lower(), 9),
+            -float(box.get("confidence") or 0.0),
+            str(box.get("label") or ""),
+        ),
+    )
+
+    lanes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for box in selected:
+        label = str(box.get("label") or "").strip()
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        lanes.append(
+            {
+                "label": label,
+                "adjacency_kind": str(box.get("adjacency_kind") or "").strip().lower() or "adjacent_capability",
+                "likely_customer_segments": _normalize_string_list(box.get("likely_customer_segments"), max_items=4, max_len=120),
+                "likely_workflows": _normalize_string_list(box.get("likely_workflows"), max_items=4, max_len=120),
+                "retrieval_query_seeds": _normalize_string_list(box.get("retrieval_query_seeds"), max_items=4, max_len=180),
+            }
+        )
+        if len(lanes) >= 6:
+            break
+
+    if not lanes:
+        for label in _normalize_string_list(
+            normalized_scope.get("adjacent_lanes"),
+            max_items=6,
+            max_len=140,
+        ):
+            lanes.append(
+                {
+                    "label": label,
+                    "adjacency_kind": "adjacent_capability",
+                    "likely_customer_segments": [],
+                    "likely_workflows": [],
+                    "retrieval_query_seeds": [],
+                }
+            )
+    return lanes
 
 
 def _default_discovery_query_plan(
@@ -5009,12 +5186,27 @@ def _default_discovery_query_plan(
     normalized_scope = _normalize_scope_hints(scope_hints)
     brick_names = [str(b.get("name") or "").strip() for b in (taxonomy_bricks or []) if str(b.get("name") or "").strip()]
     region = str((geo_scope or {}).get("region") or "EU+UK")
-    if normalized_scope.get("source_capabilities") or normalized_scope.get("adjacent_capabilities"):
-        customer_hint = ", ".join(
-            ((normalized_scope.get("source_customer_segments") or []) + (normalized_scope.get("adjacent_customer_segments") or []))[:2]
-        ) or "B2B software"
-        core_capabilities = normalized_scope.get("source_capabilities") or ["core workflow"]
-        adjacent_capabilities = normalized_scope.get("adjacent_capabilities") or ["adjacent workflow"]
+    seed_urls = _dedupe_strings(
+        (normalized_scope.get("comparator_seed_urls") or [])
+        + (normalized_scope.get("company_seed_urls") or [])
+    )[:10]
+    lane_candidates = _adjacency_lane_candidates(normalized_scope)
+
+    if normalized_scope.get("source_capabilities") or lane_candidates:
+        lane_customer_terms = _dedupe_strings(
+            [
+                term
+                for box in lane_candidates
+                for term in _normalize_string_list(box.get("likely_customer_segments"), max_items=4, max_len=120)
+            ]
+        )
+        customer_terms = _dedupe_strings(
+            (normalized_scope.get("source_customer_segments") or [])
+            + lane_customer_terms
+            + (normalized_scope.get("named_account_anchors") or [])
+        )
+        customer_hint = ", ".join(customer_terms[:2]) or "B2B software"
+        core_capabilities = normalized_scope.get("source_capabilities") or brick_names or ["core workflow"]
         precision_queries = [
             {
                 "query_text": f"{customer_hint} {core_capabilities[0]} software company {region}",
@@ -5029,22 +5221,51 @@ def _default_discovery_query_plan(
                 "scope_bucket": "core",
             },
         ]
-        recall_queries = [
-            {
-                "query_text": f"{customer_hint} {adjacent_capabilities[0]} software {region}",
-                "query_intent": "adjacent",
-                "brick_name": adjacent_capabilities[0],
-                "scope_bucket": "adjacent",
-            }
-        ]
+        recall_queries: list[dict[str, Any]] = []
+        for lane in lane_candidates[:2]:
+            lane_label = str(lane.get("label") or "").strip()
+            if not lane_label:
+                continue
+            lane_customer_terms = _dedupe_strings(
+                (lane.get("likely_customer_segments") or []) + customer_terms
+            )
+            lane_workflow = next(
+                (
+                    text
+                    for text in _normalize_string_list(lane.get("likely_workflows"), max_items=4, max_len=120)
+                    if text.lower() != lane_label.lower()
+                ),
+                None,
+            )
+            lane_customer_hint = ", ".join(lane_customer_terms[:2]) or customer_hint
+            query_text = f"{lane_customer_hint} {lane_label} software {region}"
+            if lane_workflow:
+                query_text = f"{lane_customer_hint} {lane_label} {lane_workflow} software {region}"
+            recall_queries.append(
+                {
+                    "query_text": query_text,
+                    "query_intent": "adjacent",
+                    "brick_name": lane_label,
+                    "scope_bucket": "adjacent",
+                }
+            )
+        if not recall_queries:
+            recall_queries = [
+                {
+                    "query_text": f"{customer_hint} adjacent workflow software {region}",
+                    "query_intent": "adjacent",
+                    "brick_name": None,
+                    "scope_bucket": "adjacent",
+                }
+            ]
         return {
             "precision_queries": precision_queries,
             "recall_queries": recall_queries,
-            "seed_urls": _dedupe_strings(normalized_scope.get("comparator_seed_urls") or [])[:8],
+            "seed_urls": seed_urls,
             "must_include_terms": _dedupe_strings(
-                (normalized_scope.get("source_customer_segments") or [])
-                + (normalized_scope.get("adjacent_customer_segments") or [])
-                + (normalized_scope.get("named_account_anchors") or [])
+                customer_terms
+                + (normalized_scope.get("adjacency_box_labels") or [])
+                + (normalized_scope.get("geography_expansions") or [])
             )[:10],
             "must_exclude_terms": [],
             "preferred_countries": [],
@@ -5067,7 +5288,7 @@ def _default_discovery_query_plan(
     return {
         "precision_queries": precision_queries,
         "recall_queries": recall_queries,
-        "seed_urls": [],
+        "seed_urls": seed_urls,
         "must_include_terms": [],
         "must_exclude_terms": [],
         "preferred_countries": [],
