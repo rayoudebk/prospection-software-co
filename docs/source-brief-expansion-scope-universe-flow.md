@@ -1,17 +1,18 @@
-# Source Brief -> Expansion Brief -> Scope Review -> Universe
+# Sourcing Brief -> Expansion Brief -> Scope Review -> Universe -> Validation -> Cards
 
 ## Purpose
 
 This document defines the recommended product flow for phase-1 market understanding and phase-2 target discovery.
 
-The main change from the current product direction is:
+The current shipped product direction is:
 
 - do not ask the user to author retrieval lanes as the primary abstraction
 - instead, let the system build:
-  - a `Source Brief`
+  - a `Sourcing Brief`
   - then an `Expansion Brief`
   - then a user-reviewed `Scope`
 - use that approved scope to drive internal retrieval plans for universe discovery
+- insert a lightweight `Validation` step between `Universe` and `Cards` so only the shortlist moves into deep-card generation
 
 The goal is to keep the product evidence-first while still allowing the system to expand beyond only what the source company explicitly says on its own website.
 
@@ -21,7 +22,7 @@ The intended chain is:
 
 1. `Primary + secondary evidence crawl / extraction`
 2. `Normalized graph`
-3. `Source Brief` (visible in the UI)
+3. `Sourcing Brief` (visible in the UI)
 4. `Deep research handoff`
 5. `Expansion Brief`
 6. `User scope review before universe discovery`
@@ -39,7 +40,7 @@ In more detail:
 - the graph is about the source company, not the whole market
 - it should preserve provenance, evidence tiers, publisher types, and confidence
 
-3. `Source Brief`
+3. `Sourcing Brief`
 - this is the visible UI artifact for source-company understanding
 - it should stay bounded to:
   - what the source company says about itself
@@ -49,7 +50,7 @@ In more detail:
 4. `Deep research handoff`
 - a separate deep-research agent should read:
   - a graph-derived structured packet
-  - plus the `Source Brief`
+  - plus the `Sourcing Brief`
 - this is the handoff point between phase-1 source understanding and bounded adjacency research
 - the graph-derived packet should stay explicitly segmented into:
   - `source_company_truth`
@@ -63,7 +64,7 @@ In more detail:
 6. `User scope review before universe discovery`
 - the user reviews expanded nodes, keeps/removes/deprioritizes them, and that approved scope replaces user-authored retrieval-lane editing
 
-This document covers the whole chain, but the current implementation focus is steps `1`, `2`, and `3`.
+This document covers the whole chain. The current implementation already ships the sourcing brief, expansion brief, scope review, universe, validation, and cards sequence, while deeper enrichment remains a downstream refinement step.
 
 ## Core Product Idea
 
@@ -85,12 +86,12 @@ The correct flow is to keep each job bounded.
 ## Recommended User Flow
 
 1. `Source Setup`
-2. `Source Brief`
+2. `Sourcing Brief`
 3. `Expansion Brief`
 4. `Scope Review`
 5. `Universe`
-6. `Candidate Enrichment`
-7. `Report`
+6. `Validation`
+7. `Cards`
 
 ## Why This Flow Is Better Than User-Authored Retrieval Lanes
 
@@ -112,7 +113,7 @@ In the recommended flow:
 
 ### 1. Keep the source understanding bounded
 
-The `Source Brief` should be source-grounded.
+The `Sourcing Brief` should be source-grounded.
 
 It should answer:
 
@@ -235,11 +236,11 @@ From that step alone, the product may extract signals like:
 
 The system may also detect named customers or partners from logos, case studies, or integration pages.
 
-## Step 2: Source Brief
+## Step 2: Sourcing Brief
 
 ### Purpose
 
-The `Source Brief` is the product's answer to:
+The `Sourcing Brief` is the product's answer to:
 
 "What does this source company clearly appear to do, based on normalized evidence?"
 
@@ -269,23 +270,23 @@ It should not:
 
 ### Why This Constraint Matters
 
-If the `Source Brief` tries to solve adjacency expansion itself, two bad outcomes happen:
+If the `Sourcing Brief` tries to solve adjacency expansion itself, two bad outcomes happen:
 
 - it becomes too conservative and only repeats first-party marketing language
 - or it becomes too speculative and starts inventing market structure
 
-The `Source Brief` should stay narrow and trustworthy.
+The `Sourcing Brief` should stay narrow and trustworthy.
 
 The downstream handoff from this step should be:
 
 - `graph-derived structured packet`
-- `Source Brief`
+- `Sourcing Brief`
 
 Those are the two inputs the deep-research agent should read before producing the `Expansion Brief`.
 
 ### 4TPM Example
 
-A good `Source Brief` for 4TPM might say:
+A good `Sourcing Brief` for 4TPM might say:
 
 - 4TPM appears to provide front-office and back-office securities workflow software
 - strongest customer evidence points to private banks, brokers, and asset managers
@@ -298,9 +299,9 @@ It may also include open questions such as:
 - how much of its product is portfolio management versus post-trade operations?
 - is customer proof concentrated in France or broader European markets?
 
-### What The Source Brief Should Not Claim Yet
+### What The Sourcing Brief Should Not Claim Yet
 
-A good `Source Brief` should not confidently say:
+A good `Sourcing Brief` should not confidently say:
 
 - `voting rights` is definitely a core adjacent lane
 - `Belgium` is definitely a priority geography
@@ -323,7 +324,7 @@ Its job is to answer:
 The `Expansion Brief` should be generated from:
 
 - the graph-derived structured packet
-- the `Source Brief`
+- the `Sourcing Brief`
 - expansion-oriented external inputs such as comparator websites, directories, and broader market sources
 
 ### Expansion Axes
@@ -730,11 +731,11 @@ The product might then search for companies that:
 
 The result is a first-pass universe, not a final dossier set.
 
-## Step 6: Candidate Enrichment
+## Step 6: Validation
 
 ### Purpose
 
-After the user reviews the universe, the system should deepen the kept companies.
+After the user reviews the universe, the product should help them decide which names deserve simple enrichment before anything is promoted into deep cards.
 
 ### Two Enrichment Levels
 
@@ -772,17 +773,17 @@ Should include:
 - hiring signals
 - filing metrics where reliable
 
-## Step 7: Report
+## Step 7: Cards
 
-The report step should operate on enriched, validated candidates.
+The cards step should operate on enriched, validated candidates.
 
 It should not be the place where the market box is still being defined.
 
-## Concrete Difference Between Source Brief And Expansion Brief
+## Concrete Difference Between Sourcing Brief And Expansion Brief
 
 This distinction is the most important part of the design.
 
-### Source Brief
+### Sourcing Brief
 
 Question:
 
@@ -831,15 +832,19 @@ For 4TPM:
 
 ### What Already Exists
 
-The product already has most of the step-`1/2/3` source-understanding layer:
+The product already ships most of the full chain through cards:
 
 - source setup and crawl
 - primary and secondary evidence ingestion
 - normalized context-pack generation
 - graph normalization for the source company
-- source reasoning to produce a `Source Brief`
+- source reasoning to produce a `Sourcing Brief`
 - company-context graph sync into Neo4j
 - secondary public evidence graph layer
+- expansion brief generation and normalization into `Expansion Brief v3`
+- scope review confirmation
+- universe discovery from reviewed expansion lanes
+- validation before cards
 
 ### What Exists But Should Change Position
 
@@ -866,11 +871,11 @@ The main missing pieces are:
 
 The user should see:
 
-1. `Source Brief`
+1. `Sourcing Brief`
 2. `Expansion Brief`
-3. `Scope`
-4. `Universe`
-5. `Dossiers`
+3. `Universe`
+4. `Validation`
+5. `Cards`
 
 ### Internal Artifacts
 
@@ -932,7 +937,7 @@ Suggested structure:
 
 ## Recommended Screen Design
 
-### Screen 1: Source
+### Screen 1: Sourcing Brief
 
 Inputs:
 
@@ -940,33 +945,27 @@ Inputs:
 - comparator websites
 - supporting evidence URLs
 
-### Screen 2: Source Brief
-
 Shows:
 
-- summary
+- source summary
 - top nodes
 - customer / partner proof
 - evidence gaps
+- crawl/source activity
 
-### Screen 3: Expansion
-
-Shows:
-
-- proposed adjacent capabilities
-- proposed adjacent customer segments
-- proposed named-account anchors
-- proposed geographies
-- confidence and evidence
-
-### Screen 4: Scope
+### Screen 2: Expansion Brief + Scope Review
 
 Shows:
 
-- all approved and proposed nodes together
+- `Expansion Brief v3`
+  - `adjacency_boxes`
+  - `company_seeds`
+  - `technology_shift_claims`
+- source baseline items alongside expansion lanes
 - keep / remove / deprioritize controls
+- explicit scope confirmation gate
 
-### Screen 5: Universe
+### Screen 3: Universe
 
 Shows:
 
@@ -974,12 +973,23 @@ Shows:
 - light rationale
 - citations
 - keep / remove
+- top-candidate diagnostics for the latest run
 
-### Screen 6: Enrichment
+### Screen 4: Validation
 
 Shows:
 
-- deep dossiers for kept candidates
+- recommended queue for simple enrichment
+- manual shortlist promotion discipline
+- enough-enriched gate before cards
+
+### Screen 5: Cards
+
+Shows:
+
+- immutable snapshot cards
+- validation questions
+- source pills and filing metrics when reliable
 
 ## End-To-End 4TPM Walkthrough
 
@@ -990,7 +1000,7 @@ The user enters:
 - source website: `4TPM`
 - comparator websites: a few nearby portfolio / wealth / securities workflow vendors
 
-### Source Brief Outcome
+### Sourcing Brief Outcome
 
 The system concludes:
 
@@ -1050,9 +1060,9 @@ The system builds retrieval plans from the kept nodes and returns a universe of 
 - likely fit to private banking / asset-management workflows
 - citations
 
-### Enrichment Outcome
+### Validation Outcome
 
-The user validates a subset of candidates and the system deepens them into structured dossiers.
+The user uses the universe scan to choose a smaller set of companies for simple enrichment and only promotes the best-documented subset into cards.
 
 ## Final Recommendation
 
@@ -1062,13 +1072,14 @@ The correct flow is:
 
 - crawl and extract primary + secondary evidence
 - normalize into `CompanyContextGraph`
-- generate `Source Brief`
-- hand off graph-derived packet + `Source Brief` to deep research
+- generate `Sourcing Brief`
+- hand off graph-derived packet + `Sourcing Brief` to deep research
 - run bounded deep research to generate `Expansion Brief`
 - present graph nodes to the user for `Scope Review`
 - compile approved nodes into internal discovery plans
 - run `Universe`
-- then do `Candidate Enrichment`
+- run `Validation`
+- then generate `Cards`
 
 This keeps the product:
 

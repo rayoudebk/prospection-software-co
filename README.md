@@ -4,12 +4,12 @@ Evidence-first acquisition target discovery for software markets. The product is
 
 ## V1 Product Flow
 
-`Source Brief -> Expansion Brief -> Scope Review -> Universe -> Cards`
+`Sourcing Brief -> Expansion Brief -> Universe -> Validation -> Cards`
 
-1. `Source Brief`: Start from a source company website, add comparable companies or supporting proof links, crawl the relevant sources, and generate a source-scoped market brief.
-2. `Expansion Brief`: Run bounded deep research from the normalized graph plus source brief to surface adjacent capabilities, customer segments, named accounts, and geographies.
-3. `Scope Review`: Review the expanded nodes, keep/remove/deprioritize them, and confirm the approved discovery scope.
-4. `Universe`: Build and curate a candidate longlist with evidence-backed fit rationale.
+1. `Sourcing Brief`: Start from a source company website, optional comparator sites, and optional supporting proof links. Crawl the relevant sources and generate the canonical source-scoped brief.
+2. `Expansion Brief`: Run bounded deep research from the normalized graph plus the sourcing brief. The expansion step also hosts the scope-review board and confirmation gate.
+3. `Universe`: Build and curate the candidate longlist from reviewed `adjacency_boxes` and `company_seeds`, with auditable source-backed rationale.
+4. `Validation`: Manually choose which companies deserve simple enrichment before promoting only the shortlist into deep cards.
 5. `Cards`: Generate immutable snapshot cards with:
 - compete/complement lens scores
 - source-backed claims with inline source pills
@@ -18,46 +18,60 @@ Evidence-first acquisition target discovery for software markets. The product is
 ## Current UX Behavior
 
 - `buyer` in the data model means the **source company / anchor company** for the market map, not a target.
-- Phase 1 is now brief-first in the UI:
+- The current workspace navigation is:
+  - `context` -> `Sourcing Brief`
+  - `bricks` -> `Expansion Brief`
+  - `universe` -> `Universe`
+  - `validation` -> `Validation`
+  - `report` -> `Cards`
+- The context step is brief-first in the UI:
   - `Source company website`
   - optional comparable companies
   - optional proof links / supporting evidence URLs
-  - `Generate Market Map Brief`, `Recrawl And Update Brief`, and `Regenerate Brief Only`
+  - `Generate Sourcing Brief`, `Recrawl And Update Brief`, and `Regenerate Brief Only`
+- The expansion step is the canonical `Expansion Brief v3` surface:
+  - structured `adjacency_boxes`
+  - `company_seeds`
+  - `technology_shift_claims`
+  - embedded scope-review board with keep/remove/deprioritize decisions
 - Long-running jobs expose:
   - step-based progress
   - a stop control
   - rolling source activity from the crawl/search worker
   - a compact completed-run summary after the phase finishes
-- Context-pack routes still exist, but the product language and workflow are market-map-first.
+- Context-pack routes still exist as the crawl/input layer, but the user-facing workflow is sourcing-brief-first.
 
 ## Phase 1 Artifacts
 
-Phase 1 now produces four generic artifacts that stay reusable across different source companies:
+Phase 1 now produces five canonical artifacts that stay reusable across different source companies:
 
-1. `Source Company Context Pack`
+1. `Context Pack`
    - selected first-party pages
    - evidence items
    - named customers
    - integrations / partners
    - extracted raw phrases
    - crawl coverage stats
-2. `Taxonomy Map`
-   - `customer_archetype`
-   - `workflow`
-   - `capability`
-   - `delivery_or_integration`
-3. `Market Map Brief`
+2. `CompanyContextGraph`
+   - canonical source-company graph in Neo4j + cached workspace payload in Postgres
+   - evidence-tiered nodes and claims
+3. `Sourcing Brief`
    - source summary
    - top customer/workflow/capability nodes
    - named customer proof
-   - integration proof
+   - partner / integration proof
    - active lens recommendations
    - adjacency hypotheses
-   - open questions / evidence gaps
-4. `Lens Seeds`
-   - `same_customer_different_product`
-   - `same_product_different_customer`
-   - `different_product_different_customer_within_market_box`
+   - confidence gaps / open questions
+4. `Expansion Brief v3`
+   - `adjacency_boxes`
+   - `company_seeds`
+   - `technology_shift_claims`
+   - `confidence_gaps`
+   - `open_questions`
+5. `Scope Review`
+   - reviewed statuses on source baseline items and expansion lanes
+   - confirmed scope used to drive universe discovery
 
 ## Company Context Graph
 
@@ -184,40 +198,40 @@ Services:
 - `PATCH /workspaces/{workspace_id}`
 - `DELETE /workspaces/{workspace_id}`
 
-### Context
+### Crawl Inputs
 
 - `GET /workspaces/{workspace_id}/context-pack`
 - `PATCH /workspaces/{workspace_id}/context-pack`
 - `POST /workspaces/{workspace_id}/context-pack:refresh`
 - `POST /workspaces/{workspace_id}/context-pack:export`
 
-### Source Brief + Scope Review
+### Sourcing Brief + Expansion
 
 - `GET /workspaces/{workspace_id}/company-context`
 - `PATCH /workspaces/{workspace_id}/company-context`
 - `POST /workspaces/{workspace_id}/company-context:refresh`
-- `POST /workspaces/{workspace_id}/company-context:apply-adjustment`
+- `GET /workspaces/{workspace_id}/expansion-brief`
+- `POST /workspaces/{workspace_id}/expansion-brief:generate`
+
+### Scope Review
+
 - `GET /workspaces/{workspace_id}/scope-review`
 - `PATCH /workspaces/{workspace_id}/scope-review`
 - `POST /workspaces/{workspace_id}/scope-review:confirm`
 
 ### Universe
 
-- `GET /workspaces/{workspace_id}/bricks`
-- `PATCH /workspaces/{workspace_id}/bricks`
-- `POST /workspaces/{workspace_id}/bricks:confirm`
 - `POST /workspaces/{workspace_id}/discovery:run`
 - `GET /workspaces/{workspace_id}/discovery:diagnostics`
-- `GET /workspaces/{workspace_id}/vendors`
-- `POST /workspaces/{workspace_id}/vendors`
-- `PATCH /workspaces/{workspace_id}/vendors/{vendor_id}`
+- `GET /workspaces/{workspace_id}/universe/top-candidates`
+- `GET /workspaces/{workspace_id}/companies`
+- `POST /workspaces/{workspace_id}/companies`
+- `PATCH /workspaces/{workspace_id}/companies/{company_id}`
 
-### Enrichment + Legacy Lenses
+### Validation + Enrichment
 
-- `POST /workspaces/{workspace_id}/vendors:enrich`
-- `GET /workspaces/{workspace_id}/vendors/{vendor_id}/dossier`
-- `GET /workspaces/{workspace_id}/lenses/similarity`
-- `GET /workspaces/{workspace_id}/lenses/complementarity`
+- `POST /workspaces/{workspace_id}/companies:enrich`
+- `GET /workspaces/{workspace_id}/companies/{company_id}/dossier`
 
 ### Static Report Snapshots
 
@@ -225,7 +239,6 @@ Services:
 - `GET /workspaces/{workspace_id}/reports`
 - `GET /workspaces/{workspace_id}/reports/{report_id}`
 - `GET /workspaces/{workspace_id}/reports/{report_id}/cards`
-- `GET /workspaces/{workspace_id}/reports/{report_id}/lenses?mode=compete|complement`
 - `GET /workspaces/{workspace_id}/reports/{report_id}/export`
 - `GET /workspaces/{workspace_id}/reports/{report_id}/export?format=rich_json`
 
@@ -280,5 +293,8 @@ The CLI scripts use:
 
 ## Phase 1 Design Docs
 
+- [Sourcing Brief -> Expansion Brief -> Scope Review -> Universe Flow](/Users/rayaneachich/Desktop/prospection-software-co/docs/source-brief-expansion-scope-universe-flow.md)
+- [Expansion Brief V3](/Users/rayaneachich/Desktop/prospection-software-co/docs/expansion-brief-v3.md)
+- [Expansion Brief Evaluation Rubric](/Users/rayaneachich/Desktop/prospection-software-co/docs/expansion-brief-evaluation-rubric.md)
 - [Phase 1 Market Map Brief](/Users/rayaneachich/Desktop/prospection-software-co/docs/phase1-market-map-brief.md)
 - [Phase 1 Market Map Reasoning](/Users/rayaneachich/Desktop/prospection-software-co/docs/phase1-market-map-reasoning.md)
