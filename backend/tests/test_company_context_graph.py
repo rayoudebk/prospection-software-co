@@ -233,6 +233,122 @@ def test_company_context_payload_preserves_expansion_inputs(monkeypatch):
     assert payload["expansion_inputs"][0]["name"] == "Wealth Dynamix"
 
 
+def test_company_context_graph_writes_expansion_boxes_and_company_seeds(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context_graph.run_external_search_queries",
+        lambda *args, **kwargs: {"results": [], "provider_mix": {}, "errors": []},
+    )
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    profile = _build_profile()
+    payload = build_company_context_artifacts(profile)
+    payload["expansion_brief"] = {
+        "version": "expansion_brief_v3",
+        "adjacency_boxes": [
+            {
+                "id": "box_client_reporting",
+                "label": "Client reporting",
+                "canonical_concept_key": "client_reporting",
+                "adjacency_kind": "adjacent_capability",
+                "status": "corroborated_expansion",
+                "confidence": 0.78,
+                "why_it_matters": "Frequently coupled with the same workflow neighborhood.",
+                "criticality": {
+                    "market_importance": "high",
+                    "operational_centrality": "core",
+                    "workflow_criticality": "high",
+                    "daily_operator_usage": "medium",
+                    "switching_cost_intensity": "high",
+                    "adjacency_confidence": 0.78,
+                    "switching_cost_confidence": 0.72,
+                    "trend_confidence": 0.55,
+                },
+                "workflow_anatomy": {
+                    "primary_operators": ["relationship manager"],
+                    "primary_triggers": ["month end"],
+                    "core_actions": ["prepare reporting pack"],
+                    "systems_touched": ["reporting"],
+                    "frequency": "monthly",
+                    "failure_cost": "client dissatisfaction",
+                    "management_value": "better visibility",
+                },
+                "supporting_node_ids": [],
+                "related_source_node_ids": [],
+                "likely_customer_segments": ["private bank"],
+                "likely_workflows": ["client reporting"],
+                "evidence": [
+                    {
+                        "url": "https://comp-one.example.com/reporting",
+                        "source_entity_name": "Comp One",
+                        "supports": ["workflow_criticality"],
+                    }
+                ],
+                "company_seed_ids": ["seed_comp_one"],
+                "retrieval_query_seeds": ["private bank client reporting software"],
+            }
+        ],
+        "company_seeds": [
+            {
+                "id": "seed_comp_one",
+                "name": "Comp One",
+                "website": "https://comp-one.example.com",
+                "seed_type": "specialist",
+                "seed_role": "adjacent_specialist",
+                "status": "hypothesis",
+                "confidence": 0.61,
+                "why_relevant": "Adjacent reporting specialist.",
+                "fit_to_adjacency_box_ids": ["box_client_reporting"],
+                "evidence": [{"url": "https://comp-one.example.com/reporting", "supports": ["company_seed_fit"]}],
+            }
+        ],
+        "technology_shift_claims": [
+            {
+                "id": "shift_reporting_ai",
+                "label": "AI-assisted client reporting",
+                "status": "hypothesis",
+                "confidence": 0.6,
+                "why_it_matters": "Automation changes reporting expectations.",
+                "affected_adjacency_box_ids": ["box_client_reporting"],
+                "company_seed_ids": ["seed_comp_one"],
+                "evidence": [{"url": "https://comp-one.example.com/reporting", "supports": ["market_shift"]}],
+            }
+        ],
+    }
+
+    graph = build_company_context_graph(profile, payload=payload)
+
+    assert any(
+        node["label"] == "Claim"
+        and node.get("evidence_type") == "expansion_adjacency_box"
+        and node.get("name") == "Client reporting"
+        for node in graph["nodes"]
+    )
+    assert any(
+        node["label"] == "Company"
+        and node.get("evidence_type") == "expansion_company_seed"
+        and node.get("name") == "Comp One"
+        for node in graph["nodes"]
+    )
+    assert any(
+        edge["type"] == "MENTIONS" and edge.get("evidence_type") == "expansion_adjacency_box"
+        for edge in graph["edges"]
+    )
+    assert any(
+        node["label"] == "Claim"
+        and node.get("evidence_type") == "expansion_technology_shift"
+        and node.get("name") == "AI-assisted client reporting"
+        for node in graph["nodes"]
+    )
+
+
 def test_secondary_queries_anchor_on_exact_company_identity(monkeypatch):
     monkeypatch.setattr(
         "app.services.company_context._reason_sourcing_brief",

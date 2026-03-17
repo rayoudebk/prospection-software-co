@@ -15,13 +15,16 @@ except Exception:  # pragma: no cover - optional runtime dependency during local
 
 from app.config import get_settings
 from app.models.workspace import CompanyProfile
+from app.services.retrieval.url_normalization import normalize_url
 from app.services.retrieval.crawl_connectors import fetch_page_fast
 from app.services.retrieval.search_orchestrator import run_external_search_queries
 from app.services.reporting import normalize_domain
 from app.services.company_context import (
+    _normalize_string_list,
     build_company_context_artifacts,
     build_context_pack_v2,
     build_expansion_inputs,
+    normalize_expansion_brief,
 )
 
 GRAPH_NODE_LABELS = {
@@ -1854,6 +1857,306 @@ def build_deep_research_handoff(
     }
 
 
+def _augment_graph_with_expansion_brief(
+    graph: Dict[str, Any],
+    expansion_brief: Dict[str, Any],
+) -> Dict[str, Any]:
+    brief = normalize_expansion_brief(expansion_brief or {})
+    adjacency_boxes = [
+        item for item in (brief.get("adjacency_boxes") or []) if isinstance(item, dict)
+    ]
+    company_seeds = [
+        item for item in (brief.get("company_seeds") or []) if isinstance(item, dict)
+    ]
+    technology_shift_claims = [
+        item for item in (brief.get("technology_shift_claims") or []) if isinstance(item, dict)
+    ]
+    if not adjacency_boxes and not company_seeds and not technology_shift_claims:
+        return graph
+
+    graph_ref = str(graph.get("graph_ref") or "")
+    company_id = str(graph.get("company_node_id") or "")
+    if not graph_ref or not company_id:
+        return graph
+
+    nodes: Dict[str, Dict[str, Any]] = {
+        str(node.get("id") or ""): node
+        for node in (graph.get("nodes") or [])
+        if isinstance(node, dict) and str(node.get("id") or "").strip()
+    }
+    edges: Dict[str, Dict[str, Any]] = {
+        str(edge.get("id") or ""): edge
+        for edge in (graph.get("edges") or [])
+        if isinstance(edge, dict) and str(edge.get("id") or "").strip()
+    }
+    source_document_id_by_url = _source_document_id_by_url(graph.get("source_documents") or [])
+
+    def _ensure_source_document(url: str, *, fallback_title: Optional[str], publisher: Optional[str]) -> Optional[str]:
+        normalized_url = normalize_url(url)
+        if not normalized_url:
+            return None
+        source_document_id = source_document_id_by_url.get(normalized_url)
+        if source_document_id:
+            return source_document_id
+        source_document = _source_document_node(
+            graph_ref=graph_ref,
+            url=normalized_url,
+            title=fallback_title,
+            source_type=INFERRED_EVIDENCE_TIER,
+            evidence_tier=INFERRED_EVIDENCE_TIER,
+            evidence_type="expansion_research",
+            publisher=publisher,
+        )
+        nodes[source_document["id"]] = source_document
+        graph.setdefault("source_documents", []).append(source_document)
+        source_document_id_by_url[normalized_url] = source_document["id"]
+        return source_document["id"]
+
+    for seed in company_seeds:
+        seed_name = _clean_phrase(seed.get("name"))
+        if not seed_name:
+            continue
+        seed_id = str(seed.get("id") or _stable_id("company_seed", graph_ref, seed_name))
+        existing = nodes.get(seed_id)
+        if existing is None:
+            nodes[seed_id] = _node(
+                seed_id,
+                "Company",
+                name=seed_name,
+                evidence_tier=INFERRED_EVIDENCE_TIER,
+                source_type=INFERRED_EVIDENCE_TIER,
+                evidence_type="expansion_company_seed",
+                confidence=seed.get("confidence") or 0.58,
+                properties={
+                    "website": seed.get("website"),
+                    "status": seed.get("status"),
+                    "seed_type": seed.get("seed_type"),
+                    "seed_role": seed.get("seed_role"),
+                    "why_relevant": seed.get("why_relevant"),
+                    "graph_ref": graph_ref,
+                },
+            )
+        edge_id = _stable_id("mentions", graph_ref, company_id, seed_id)
+        edges[edge_id] = _edge(
+            edge_id,
+            "MENTIONS",
+            company_id,
+            seed_id,
+            evidence_tier=INFERRED_EVIDENCE_TIER,
+            source_type=INFERRED_EVIDENCE_TIER,
+            evidence_type="expansion_company_seed",
+            confidence=seed.get("confidence") or 0.58,
+            properties={"graph_ref": graph_ref},
+        )
+        for evidence in seed.get("evidence") or []:
+            if not isinstance(evidence, dict):
+                continue
+            source_document_id = _ensure_source_document(
+                str(evidence.get("url") or ""),
+                fallback_title=evidence.get("title"),
+                publisher=evidence.get("publisher") or evidence.get("source_entity_name"),
+            )
+            _add_supported_by_edge(
+                edges,
+                graph_ref=graph_ref,
+                from_id=seed_id,
+                source_document_id=source_document_id,
+                evidence_tier=INFERRED_EVIDENCE_TIER,
+                source_type=INFERRED_EVIDENCE_TIER,
+                evidence_type="expansion_company_seed",
+                confidence=seed.get("confidence") or 0.58,
+            )
+
+    for box in adjacency_boxes:
+        label = _clean_phrase(box.get("label"))
+        if not label:
+            continue
+        box_id = str(box.get("id") or _stable_id("adjacency_box", graph_ref, label))
+        criticality = box.get("criticality") if isinstance(box.get("criticality"), dict) else {}
+        claim_node = _node(
+            box_id,
+            "Claim",
+            name=label,
+            evidence_tier=INFERRED_EVIDENCE_TIER,
+            source_type=INFERRED_EVIDENCE_TIER,
+            evidence_type="expansion_adjacency_box",
+            confidence=box.get("confidence") or 0.6,
+            properties={
+                "claim_type": "expansion_adjacency_box",
+                "canonical_concept_key": box.get("canonical_concept_key"),
+                "adjacency_kind": box.get("adjacency_kind"),
+                "status": box.get("status"),
+                "why_it_matters": box.get("why_it_matters"),
+                "priority_tier": box.get("priority_tier"),
+                "supporting_node_ids": box.get("supporting_node_ids") or [],
+                "related_source_node_ids": box.get("related_source_node_ids") or [],
+                "likely_customer_segments": box.get("likely_customer_segments") or [],
+                "likely_workflows": box.get("likely_workflows") or [],
+                "workflow_anatomy": box.get("workflow_anatomy") or {},
+                "retrieval_query_seeds": box.get("retrieval_query_seeds") or [],
+                "original_language_aliases": box.get("original_language_aliases") or [],
+                "language_specific_query_seeds": box.get("language_specific_query_seeds") or [],
+                "company_seed_ids": box.get("company_seed_ids") or [],
+                "emerging_signals": box.get("emerging_signals") or [],
+                "market_importance": criticality.get("market_importance"),
+                "operational_centrality": criticality.get("operational_centrality"),
+                "workflow_criticality": criticality.get("workflow_criticality"),
+                "daily_operator_usage": criticality.get("daily_operator_usage"),
+                "switching_cost_intensity": criticality.get("switching_cost_intensity"),
+                "strategic_value_hypothesis": criticality.get("strategic_value_hypothesis"),
+                "replicability": criticality.get("replicability"),
+                "market_density": criticality.get("market_density"),
+                "adjacency_confidence": criticality.get("adjacency_confidence"),
+                "switching_cost_confidence": criticality.get("switching_cost_confidence"),
+                "trend_confidence": criticality.get("trend_confidence"),
+                "graph_ref": graph_ref,
+            },
+        )
+        nodes[box_id] = claim_node
+        edge_id = _stable_id("mentions", graph_ref, company_id, box_id)
+        edges[edge_id] = _edge(
+            edge_id,
+            "MENTIONS",
+            company_id,
+            box_id,
+            evidence_tier=INFERRED_EVIDENCE_TIER,
+            source_type=INFERRED_EVIDENCE_TIER,
+            evidence_type="expansion_adjacency_box",
+            confidence=box.get("confidence") or 0.6,
+            properties={"graph_ref": graph_ref},
+        )
+        for related_node_id in _normalize_string_list(
+            list(box.get("supporting_node_ids") or []) + list(box.get("related_source_node_ids") or []),
+            max_items=12,
+            max_len=120,
+        ):
+            if related_node_id not in nodes:
+                continue
+            related_edge_id = _stable_id("mentions", graph_ref, box_id, related_node_id)
+            edges[related_edge_id] = _edge(
+                related_edge_id,
+                "MENTIONS",
+                box_id,
+                related_node_id,
+                evidence_tier=INFERRED_EVIDENCE_TIER,
+                source_type=INFERRED_EVIDENCE_TIER,
+                evidence_type="expansion_adjacency_box",
+                confidence=box.get("confidence") or 0.6,
+                properties={"graph_ref": graph_ref},
+            )
+        for seed_id in _normalize_string_list(box.get("company_seed_ids"), max_items=8, max_len=120):
+            if seed_id not in nodes:
+                continue
+            seed_edge_id = _stable_id("mentions", graph_ref, box_id, seed_id)
+            edges[seed_edge_id] = _edge(
+                seed_edge_id,
+                "MENTIONS",
+                box_id,
+                seed_id,
+                evidence_tier=INFERRED_EVIDENCE_TIER,
+                source_type=INFERRED_EVIDENCE_TIER,
+                evidence_type="expansion_adjacency_box",
+                confidence=box.get("confidence") or 0.6,
+                properties={"graph_ref": graph_ref},
+            )
+        for evidence in box.get("evidence") or []:
+            if not isinstance(evidence, dict):
+                continue
+            source_document_id = _ensure_source_document(
+                str(evidence.get("url") or ""),
+                fallback_title=evidence.get("title"),
+                publisher=evidence.get("publisher") or evidence.get("source_entity_name"),
+            )
+            _add_supported_by_edge(
+                edges,
+                graph_ref=graph_ref,
+                from_id=box_id,
+                source_document_id=source_document_id,
+                evidence_tier=INFERRED_EVIDENCE_TIER,
+                source_type=INFERRED_EVIDENCE_TIER,
+                evidence_type="expansion_adjacency_box",
+                confidence=box.get("confidence") or 0.6,
+            )
+
+    for claim in technology_shift_claims:
+        label = _clean_phrase(claim.get("label"))
+        if not label:
+            continue
+        claim_id = str(claim.get("id") or _stable_id("technology_shift", graph_ref, label))
+        nodes[claim_id] = _node(
+            claim_id,
+            "Claim",
+            name=label,
+            evidence_tier=INFERRED_EVIDENCE_TIER,
+            source_type=INFERRED_EVIDENCE_TIER,
+            evidence_type="expansion_technology_shift",
+            confidence=claim.get("confidence") or 0.58,
+            properties={
+                "claim_type": "expansion_technology_shift",
+                "status": claim.get("status"),
+                "why_it_matters": claim.get("why_it_matters"),
+                "affected_adjacency_box_ids": claim.get("affected_adjacency_box_ids") or [],
+                "company_seed_ids": claim.get("company_seed_ids") or [],
+                "graph_ref": graph_ref,
+            },
+        )
+        edge_id = _stable_id("mentions", graph_ref, company_id, claim_id)
+        edges[edge_id] = _edge(
+            edge_id,
+            "MENTIONS",
+            company_id,
+            claim_id,
+            evidence_tier=INFERRED_EVIDENCE_TIER,
+            source_type=INFERRED_EVIDENCE_TIER,
+            evidence_type="expansion_technology_shift",
+            confidence=claim.get("confidence") or 0.58,
+            properties={"graph_ref": graph_ref},
+        )
+        for box_id in claim.get("affected_adjacency_box_ids") or []:
+            if box_id not in nodes:
+                continue
+            affects_edge_id = _stable_id("mentions", graph_ref, claim_id, box_id)
+            edges[affects_edge_id] = _edge(
+                affects_edge_id,
+                "MENTIONS",
+                claim_id,
+                box_id,
+                evidence_tier=INFERRED_EVIDENCE_TIER,
+                source_type=INFERRED_EVIDENCE_TIER,
+                evidence_type="expansion_technology_shift",
+                confidence=claim.get("confidence") or 0.58,
+                properties={"graph_ref": graph_ref},
+            )
+        for evidence in claim.get("evidence") or []:
+            if not isinstance(evidence, dict):
+                continue
+            source_document_id = _ensure_source_document(
+                str(evidence.get("url") or ""),
+                fallback_title=evidence.get("title"),
+                publisher=evidence.get("publisher") or evidence.get("source_entity_name"),
+            )
+            _add_supported_by_edge(
+                edges,
+                graph_ref=graph_ref,
+                from_id=claim_id,
+                source_document_id=source_document_id,
+                evidence_tier=INFERRED_EVIDENCE_TIER,
+                source_type=INFERRED_EVIDENCE_TIER,
+                evidence_type="expansion_technology_shift",
+                confidence=claim.get("confidence") or 0.58,
+            )
+
+    graph["nodes"] = list(nodes.values())
+    graph["edges"] = list(edges.values())
+    graph["graph_stats"] = {
+        **(graph.get("graph_stats") or {}),
+        "node_count": len(graph["nodes"]),
+        "edge_count": len(graph["edges"]),
+        "source_document_count": len(graph.get("source_documents") or []),
+    }
+    return _canonicalize_graph(graph)
+
+
 def build_company_context_graph(
     profile: CompanyProfile,
     *,
@@ -1867,6 +2170,11 @@ def build_company_context_graph(
         merged_graph,
         base_brief=(primary_input or {}).get("sourcing_brief") or primary_graph.get("sourcing_brief") or {},
     )
+    if isinstance((primary_input or {}).get("expansion_brief"), dict) and (primary_input or {}).get("expansion_brief"):
+        merged_graph = _augment_graph_with_expansion_brief(
+            merged_graph,
+            (primary_input or {}).get("expansion_brief") or {},
+        )
     return _canonicalize_graph(merged_graph)
 
 
@@ -2025,8 +2333,12 @@ def build_company_context_payload(
             open_questions_override=open_questions_override,
             confirmed_at=company_context_pack.confirmed_at,
         )
+        if isinstance(getattr(company_context_pack, "expansion_brief_json", None), dict) and company_context_pack.expansion_brief_json:
+            base_payload["expansion_brief"] = deepcopy(company_context_pack.expansion_brief_json)
     else:
         base_payload = deepcopy(company_context_pack or {})
+        if isinstance(base_payload.get("expansion_brief"), dict):
+            base_payload["expansion_brief"] = deepcopy(base_payload["expansion_brief"])
     base_payload["expansion_inputs"] = expansion_inputs
     graph = build_company_context_graph(profile, payload=base_payload)
     brief = generate_sourcing_brief_from_graph(

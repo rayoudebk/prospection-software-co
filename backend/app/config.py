@@ -41,11 +41,12 @@ class Settings(BaseSettings):
     llm_stage_summary_models: str = "anthropic:claude-3-7-sonnet-latest,gemini:gemini-2.0-flash,openai:gpt-4.1-mini"
     llm_stage_crawler_triage_models: str = "gemini:gemini-2.0-flash,openai:gpt-4.1-mini,anthropic:claude-3-5-haiku-latest"
     llm_stage_market_map_models: str = "anthropic:claude-3-7-sonnet-latest,openai:gpt-4.1-mini,gemini:gemini-2.0-flash"
-    llm_stage_expansion_models: str = "gemini:gemini-2.0-flash,anthropic:claude-3-7-sonnet-latest,openai:gpt-4.1-mini"
+    llm_stage_expansion_models: str = "gemini:deep-research-pro-preview-12-2025,openai:o4-mini-deep-research,gemini:gemini-2.0-flash,anthropic:claude-3-7-sonnet-latest,openai:gpt-4.1-mini"
 
     # Stage budgets and retry policy
     stage_seed_ingest_timeout_seconds: int = 240
     stage_llm_discovery_timeout_seconds: int = 360
+    stage_expansion_research_timeout_seconds: int = 600
     stage_registry_timeout_seconds: int = 360
     stage_enrichment_timeout_seconds: int = 540
     stage_scoring_timeout_seconds: int = 420

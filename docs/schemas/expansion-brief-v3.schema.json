@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prospection-software-co.local/schemas/expansion-brief-v3.schema.json",
+  "title": "Expansion Brief V3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "reasoning_status",
+    "adjacency_boxes",
+    "company_seeds",
+    "technology_shift_claims",
+    "confidence_gaps",
+    "open_questions"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "expansion_brief_v3"
+    },
+    "reasoning_status": {
+      "type": "string",
+      "enum": ["success", "degraded", "not_run", "not_applicable"]
+    },
+    "reasoning_warning": {
+      "type": ["string", "null"]
+    },
+    "reasoning_provider": {
+      "type": ["string", "null"]
+    },
+    "reasoning_model": {
+      "type": ["string", "null"]
+    },
+    "graph_ref": {
+      "type": ["string", "null"]
+    },
+    "confirmed_at": {
+      "type": ["string", "null"]
+    },
+    "source_company": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "website"],
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "website": { "type": ["string", "null"] }
+      }
+    },
+    "adjacency_boxes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/adjacencyBox" }
+    },
+    "company_seeds": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/companySeed" }
+    },
+    "technology_shift_claims": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/technologyShiftClaim" }
+    },
+    "confidence_gaps": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "evidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "supports"],
+      "properties": {
+        "url": { "type": "string" },
+        "title": { "type": ["string", "null"] },
+        "publisher": { "type": ["string", "null"] },
+        "publisher_type": { "type": ["string", "null"] },
+        "language": { "type": ["string", "null"] },
+        "evidence_tier": { "type": ["string", "null"] },
+        "source_entity_name": { "type": ["string", "null"] },
+        "claim_text": { "type": ["string", "null"] },
+        "supports": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "buyer_overlap",
+              "workflow_criticality",
+              "switching_cost",
+              "market_shift",
+              "company_seed_fit",
+              "named_account"
+            ]
+          }
+        }
+      }
+    },
+    "sourceFit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shared_buyers",
+        "shared_workflows",
+        "shared_data_objects",
+        "shared_integrations",
+        "rationale"
+      ],
+      "properties": {
+        "shared_buyers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "shared_workflows": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "shared_data_objects": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "shared_integrations": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "rationale": {
+          "type": "string"
+        }
+      }
+    },
+    "workflowAnatomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_operators",
+        "primary_triggers",
+        "core_actions",
+        "systems_touched",
+        "frequency",
+        "failure_cost",
+        "management_value"
+      ],
+      "properties": {
+        "primary_operators": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "primary_triggers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "core_actions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "systems_touched": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "frequency": {
+          "type": "string",
+          "enum": ["daily", "weekly", "monthly", "event_driven", "mixed"]
+        },
+        "failure_cost": { "type": "string" },
+        "management_value": { "type": "string" }
+      }
+    },
+    "criticality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "market_importance",
+        "operational_centrality",
+        "workflow_criticality",
+        "daily_operator_usage",
+        "switching_cost_intensity",
+        "strategic_value_hypothesis",
+        "replicability",
+        "market_density",
+        "adjacency_confidence",
+        "switching_cost_confidence",
+        "trend_confidence"
+      ],
+      "properties": {
+        "market_importance": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "operational_centrality": {
+          "type": "string",
+          "enum": ["core", "meaningful", "peripheral"]
+        },
+        "workflow_criticality": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "daily_operator_usage": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "switching_cost_intensity": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "strategic_value_hypothesis": {
+          "type": "string"
+        },
+        "replicability": {
+          "type": "string",
+          "enum": ["hard_to_replicate", "moderate", "easy_to_replicate"]
+        },
+        "market_density": {
+          "type": "string",
+          "enum": ["crowded", "mixed", "open"]
+        },
+        "adjacency_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "switching_cost_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "trend_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "adjacencyBox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "canonical_concept_key",
+        "adjacency_kind",
+        "status",
+        "confidence",
+        "why_it_matters",
+        "source_fit",
+        "criticality",
+        "workflow_anatomy",
+        "evidence",
+        "company_seed_ids",
+        "retrieval_query_seeds",
+        "priority_tier"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "canonical_concept_key": { "type": "string" },
+        "adjacency_kind": {
+          "type": "string",
+          "enum": [
+            "adjacent_capability",
+            "adjacent_customer_segment",
+            "adjacent_workflow",
+            "technology_shift"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "hypothesis",
+            "corroborated_expansion",
+            "source_grounded",
+            "user_kept",
+            "user_removed",
+            "user_deprioritized"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "why_it_matters": { "type": "string" },
+        "priority_tier": {
+          "type": "string",
+          "enum": ["core_adjacent", "meaningful_adjacent", "edge_case"]
+        },
+        "original_language_aliases": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "source_fit": { "$ref": "#/$defs/sourceFit" },
+        "criticality": { "$ref": "#/$defs/criticality" },
+        "workflow_anatomy": { "$ref": "#/$defs/workflowAnatomy" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceItem" }
+        },
+        "company_seed_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "retrieval_query_seeds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "language_specific_query_seeds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["language", "queries"],
+            "properties": {
+              "language": { "type": "string" },
+              "queries": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "companySeed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "website",
+        "seed_type",
+        "status",
+        "confidence",
+        "why_relevant",
+        "fit_to_adjacency_box_ids",
+        "evidence"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "website": { "type": ["string", "null"] },
+        "seed_type": {
+          "type": "string",
+          "enum": ["vendor", "platform", "specialist", "emerging"]
+        },
+        "seed_role": {
+          "type": ["string", "null"],
+          "enum": [
+            "adjacent_specialist",
+            "cross_category_incumbent",
+            "geography_specific_analog",
+            "trend_leader",
+            "direct_neighbor",
+            null
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "hypothesis",
+            "corroborated_expansion",
+            "retrieved",
+            "crawled",
+            "rejected"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "why_relevant": { "type": "string" },
+        "fit_to_adjacency_box_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceItem" }
+        }
+      }
+    },
+    "technologyShiftClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "status",
+        "confidence",
+        "why_it_matters",
+        "affected_adjacency_box_ids",
+        "evidence"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": [
+            "hypothesis",
+            "corroborated_expansion",
+            "source_grounded",
+            "user_kept",
+            "user_removed",
+            "user_deprioritized"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "why_it_matters": { "type": "string" },
+        "affected_adjacency_box_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "company_seed_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceItem" }
+        }
+      }
+    }
+  }
+}

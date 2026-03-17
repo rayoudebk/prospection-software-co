@@ -536,6 +536,549 @@ def test_build_company_context_artifacts_uses_model_backed_expansion_brief(monke
     assert expansion["adjacent_capabilities"][0]["priority_tier"] == "edge_case"
 
 
+def test_build_expansion_artifacts_accepts_text_research_report(monkeypatch):
+    profile = _build_profile()
+
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.company_context.get_settings",
+        lambda: SimpleNamespace(
+            gemini_api_key="x",
+            openai_api_key="x",
+            anthropic_api_key="",
+        ),
+    )
+
+    def _fake_run_stage(_self, request):
+        if request.stage == LLMStage.expansion_brief_reasoning:
+            assert request.expect_json is False
+            assert "Workflow anatomy" in request.prompt
+            assert "Technology and Market Shifts" in request.prompt
+            assert "what the evidence supports" in request.prompt
+            return LLMResponse(
+                text=(
+                    "Executive summary\n\n"
+                    "Adjacency Boxes\n"
+                    "1. Client reporting\n"
+                    "- adjacency kind: adjacent_capability\n"
+                    "- why it matters: Same buyer and workflow neighborhood.\n"
+                    "- workflow anatomy: operators=operations analyst; triggers=month end; actions=prepare client report\n"
+                    "- source fit: Shared fund operations buyers and reporting data.\n"
+                    "- evidence: https://example.com/reporting (Comp One)\n\n"
+                    "Company Seeds\n"
+                    "1. Comp One\n"
+                    "- website: https://comp-one.example.com\n"
+                    "- fits: Client reporting\n"
+                    "\nTechnology and Market Shifts\n"
+                    "1. AI-assisted reporting automation\n"
+                    "- why it matters: increases demand for reporting workflow tools\n"
+                ),
+                provider="gemini",
+                model="deep-research-pro-preview-12-2025",
+                attempts=[
+                    ModelAttemptTrace(
+                        stage="expansion_brief_reasoning",
+                        provider="gemini",
+                        model="deep-research-pro-preview-12-2025",
+                        latency_ms=123,
+                        status="success",
+                        retry_count=0,
+                    )
+                ],
+            )
+        if request.stage == LLMStage.structured_normalization:
+            assert "Expansion research report:" in request.prompt
+            assert "Client reporting" in request.prompt
+            return LLMResponse(
+                text=json.dumps(
+                    {
+                        "version": "v2",
+                        "reasoning_status": "success",
+                        "reasoning_warning": None,
+                        "adjacency_boxes": [
+                            {
+                                "id": "adjacency_reporting",
+                                "label": "Client reporting",
+                                "adjacency_kind": "adjacent_capability",
+                                "status": "corroborated_expansion",
+                                "confidence": 0.68,
+                                "why_it_matters": "Same buyer and workflow neighborhood.",
+                                "source_fit": {
+                                    "shared_buyers": ["Fund operations team"],
+                                    "shared_workflows": ["Reporting"],
+                                    "shared_data_objects": ["Portfolio data"],
+                                    "shared_integrations": [],
+                                    "rationale": "Adjacent workflow for the same operations buyer.",
+                                },
+                                "criticality": {
+                                    "market_importance": "medium",
+                                    "operational_centrality": "meaningful",
+                                    "workflow_criticality": "medium",
+                                    "daily_operator_usage": "medium",
+                                    "switching_cost_intensity": "medium",
+                                    "strategic_value_hypothesis": "Useful lane for adjacent reporting vendors.",
+                                    "replicability": "moderate",
+                                    "market_density": "mixed",
+                                },
+                                "evidence": [
+                                    {
+                                        "url": "https://example.com/reporting",
+                                        "source_entity_name": "Comp One",
+                                    }
+                                ],
+                                "company_seed_ids": ["company_seed_comp_one"],
+                                "retrieval_query_seeds": ["client reporting software fund operations"],
+                                "priority_tier": "meaningful_adjacent",
+                            }
+                        ],
+                        "company_seeds": [
+                            {
+                                "id": "company_seed_comp_one",
+                                "name": "Comp One",
+                                "website": "https://comp-one.example.com",
+                                "seed_type": "specialist",
+                                "status": "hypothesis",
+                                "confidence": 0.63,
+                                "why_relevant": "Adjacent reporting vendor.",
+                                "fit_to_adjacency_box_ids": ["adjacency_reporting"],
+                                "evidence": [
+                                    {
+                                        "url": "https://example.com/reporting",
+                                        "source_entity_name": "Comp One",
+                                    }
+                                ],
+                            }
+                        ],
+                        "named_account_anchors": [],
+                        "geography_expansions": [],
+                    }
+                ),
+                provider="openai",
+                model="gpt-4.1-mini",
+                attempts=[
+                    ModelAttemptTrace(
+                        stage="structured_normalization",
+                        provider="openai",
+                        model="gpt-4.1-mini",
+                        latency_ms=77,
+                        status="success",
+                        retry_count=0,
+                    )
+                ],
+            )
+        raise AssertionError(f"Unexpected stage: {request.stage}")
+
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator.run_stage", _fake_run_stage)
+
+    payload = build_company_context_artifacts(profile)
+    expansion = _build_expansion_payload(profile, payload)["expansion_brief"]
+
+    assert expansion["reasoning_status"] == "success"
+    assert expansion["fallback_mode"] is False
+    assert expansion["reasoning_provider"] == "gemini"
+    assert expansion["reasoning_model"] == "deep-research-pro-preview-12-2025"
+    assert expansion["normalization_status"] == "success"
+    assert expansion["normalization_provider"] == "openai"
+    assert expansion["normalization_model"] == "gpt-4.1-mini"
+    assert expansion["research_report_markdown"] is not None
+    assert expansion["research_attempts"][0]["provider"] == "gemini"
+    assert expansion["normalization_attempts"][0]["provider"] == "openai"
+    assert expansion["adjacency_boxes"][0]["label"] == "Client reporting"
+    assert expansion["company_seeds"][0]["name"] == "Comp One"
+    assert any(item["label"] == "Client reporting" for item in expansion["adjacent_capabilities"])
+
+
+def test_build_expansion_artifacts_preserves_research_report_when_normalization_fails(monkeypatch):
+    profile = _build_profile()
+
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.company_context.get_settings",
+        lambda: SimpleNamespace(
+            gemini_api_key="x",
+            openai_api_key="x",
+            anthropic_api_key="",
+        ),
+    )
+
+    research_report = (
+        "## Adjacency Boxes\n"
+        "1. Post-trade settlement and clearing automation\n"
+        "- why it matters: T+1 compresses settlement timelines.\n"
+        "- workflow anatomy: operators=back office; triggers=trade execution\n"
+    )
+
+    def _fake_run_stage(_self, request):
+        if request.stage == LLMStage.expansion_brief_reasoning:
+            return LLMResponse(
+                text=research_report,
+                provider="gemini",
+                model="deep-research-pro-preview-12-2025",
+                attempts=[
+                    ModelAttemptTrace(
+                        stage="expansion_brief_reasoning",
+                        provider="gemini",
+                        model="deep-research-pro-preview-12-2025",
+                        latency_ms=4200,
+                        status="success",
+                        retry_count=0,
+                    )
+                ],
+            )
+        if request.stage == LLMStage.structured_normalization:
+            raise LLMOrchestrationError(
+                "all routes failed",
+                attempts=[
+                    ModelAttemptTrace(
+                        stage="structured_normalization",
+                        provider="openai",
+                        model="gpt-4.1-mini",
+                        latency_ms=1200,
+                        status="retryable_error",
+                        retry_count=0,
+                        error_message="429 RESOURCE_EXHAUSTED",
+                    )
+                ],
+            )
+        raise AssertionError(f"Unexpected stage: {request.stage}")
+
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator.run_stage", _fake_run_stage)
+
+    payload = build_company_context_artifacts(profile)
+    expansion = _build_expansion_payload(profile, payload)["expansion_brief"]
+
+    assert expansion["reasoning_status"] == "degraded"
+    assert expansion["fallback_mode"] is True
+    assert expansion["reasoning_provider"] == "gemini"
+    assert expansion["reasoning_model"] == "deep-research-pro-preview-12-2025"
+    assert expansion["research_report_markdown"] == research_report.strip()
+    assert expansion["research_attempts"][0]["provider"] == "gemini"
+    assert expansion["normalization_status"] == "degraded"
+    assert expansion["normalization_provider"] == "openai"
+    assert expansion["normalization_model"] == "gpt-4.1-mini"
+    assert expansion["normalization_attempts"][0]["error_message"] == "429 RESOURCE_EXHAUSTED"
+    assert "normalization failed after model retries" in str(expansion["reasoning_warning"]).lower()
+    assert expansion["adjacent_capabilities"] == []
+
+
+def test_build_expansion_artifacts_returns_hublo_style_v2_expansion_brief(monkeypatch):
+    profile = CompanyProfile(
+        workspace_id=17,
+        buyer_company_url="https://www.hublo.com/en",
+        comparator_seed_urls=[],
+        supporting_evidence_urls=[],
+        comparator_seed_summaries={},
+        geo_scope={"region": "EU+UK", "include_countries": ["France", "Belgium"], "exclude_countries": []},
+        context_pack_json={
+            "version": "v2",
+            "generated_at": "2026-03-12T00:00:00Z",
+            "sites": [
+                {
+                    "url": "https://www.hublo.com/en",
+                    "company_name": "Hublo",
+                    "website": "https://www.hublo.com/en",
+                    "summary": "Hublo helps hospitals and care providers manage staffing, shift replacement, and internal mobility.",
+                    "pages": [
+                        {
+                            "url": "https://www.hublo.com/en/solutions",
+                            "title": "Healthcare staffing platform",
+                            "page_type": "solutions",
+                            "blocks": [
+                                {"type": "heading", "content": "For hospitals and care providers", "level": 1},
+                                {"type": "heading", "content": "Shift replacement", "level": 2},
+                                {"type": "heading", "content": "Internal mobility", "level": 2},
+                                {"type": "heading", "content": "Pool management", "level": 2},
+                            ],
+                            "signals": [],
+                            "customer_evidence": [],
+                            "raw_content": (
+                                "Hospitals use Hublo to manage staffing operations, replacement planning, "
+                                "and workforce pools across departments."
+                            ),
+                        }
+                    ],
+                    "signals": [
+                        {
+                            "type": "customer_archetype",
+                            "value": "Hospitals",
+                            "source_url": "https://www.hublo.com/en/solutions",
+                        },
+                        {
+                            "type": "workflow",
+                            "value": "Shift replacement",
+                            "source_url": "https://www.hublo.com/en/solutions",
+                        },
+                        {
+                            "type": "workflow",
+                            "value": "Internal mobility",
+                            "source_url": "https://www.hublo.com/en/solutions",
+                        },
+                        {
+                            "type": "capability",
+                            "value": "Pool management",
+                            "source_url": "https://www.hublo.com/en/solutions",
+                        },
+                    ],
+                    "customer_evidence": [
+                        {
+                            "name": "AP-HP",
+                            "source_url": "https://www.hublo.com/en/customers",
+                            "context": "Healthcare staffing customer proof",
+                            "evidence_type": "case_study",
+                        }
+                    ],
+                }
+            ],
+            "named_customers": [{"name": "AP-HP", "evidence_id": "cust_hp"}],
+            "integrations": [],
+            "partners": [],
+            "evidence_items": [
+                {"id": "hublo_1", "kind": "page_signal:customer_archetype", "text": "Hospitals"},
+                {"id": "hublo_2", "kind": "page_signal:workflow", "text": "Shift replacement"},
+                {"id": "hublo_3", "kind": "page_signal:workflow", "text": "Internal mobility"},
+                {"id": "hublo_4", "kind": "page_signal:capability", "text": "Pool management"},
+            ],
+            "extracted_raw_phrases": [
+                "Hospitals",
+                "Care providers",
+                "Healthcare staffing operations",
+                "Shift replacement",
+                "Internal mobility",
+                "Pool management",
+                "Replacement planning",
+            ],
+            "crawl_coverage": {"total_sites": 1, "total_pages": 1, "career_pages_selected": 0},
+        },
+        product_pages_found=1,
+    )
+
+    monkeypatch.setattr(
+        "app.services.company_context._reason_sourcing_brief",
+        lambda **kwargs: {
+            **kwargs["fallback_brief"],
+            "reasoning_status": "success",
+            "reasoning_warning": None,
+            "reasoning_provider": "test",
+            "reasoning_model": "stub",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.company_context.get_settings",
+        lambda: SimpleNamespace(
+            gemini_api_key="x",
+            openai_api_key="x",
+            anthropic_api_key="",
+        ),
+    )
+
+    def _fake_run_stage(_self, request):
+        if request.stage == LLMStage.expansion_brief_reasoning:
+            return LLMResponse(
+                text=json.dumps(
+                    {
+                        "adjacency_boxes": [
+                            {
+                                "label": "Workforce planning",
+                                "adjacency_kind": "adjacent_capability",
+                                "why_it_matters": "Hospitals buying shift replacement software often also buy workforce planning tools.",
+                                "source_fit": {
+                                    "shared_buyers": ["Hospitals"],
+                                    "shared_workflows": ["Shift replacement", "Internal mobility"],
+                                    "shared_data_objects": ["Staff availability", "Shift demand"],
+                                    "shared_integrations": [],
+                                    "rationale": "The adjacency sits in the same staffing control loop as Hublo's core workflow.",
+                                },
+                                "criticality": {
+                                    "market_importance": "high",
+                                    "operational_centrality": "meaningful",
+                                    "workflow_criticality": "high",
+                                    "daily_operator_usage": "high",
+                                    "switching_cost_intensity": "high",
+                                    "strategic_value_hypothesis": "Useful lane for discovering staffing software vendors serving the same hospital operators.",
+                                    "replicability": "hard_to_replicate",
+                                    "market_density": "crowded",
+                                },
+                                "likely_customer_segments": ["Hospitals"],
+                                "likely_workflows": ["Workforce planning"],
+                                    "evidence": [
+                                        {
+                                            "url": "https://example.com/hospital-workforce-planning",
+                                            "source_entity_name": "PlannerCo",
+                                            "supports": ["workflow_criticality", "buyer_overlap"],
+                                        }
+                                    ],
+                                "emerging_signals": [
+                                    {
+                                        "label": "AI-assisted shift forecasting",
+                                        "theme_type": "workflow_modernization",
+                                        "confidence": 0.6,
+                                        "why_it_matters": "Planning vendors increasingly layer forecasting into staffing operations.",
+                                    }
+                                ],
+                                "retrieval_query_seeds": ["hospital workforce planning software"],
+                                "confidence": 0.72,
+                            }
+                        ],
+                        "company_seeds": [
+                            {
+                                "name": "PlannerCo",
+                                "website": "https://plannerco.example.com",
+                                "seed_type": "specialist",
+                                "why_relevant": "Appears repeatedly in hospital workforce planning research.",
+                                "fit_to_adjacency_box_labels": ["Workforce planning"],
+                                    "evidence": [
+                                        {
+                                            "url": "https://example.com/hospital-workforce-planning",
+                                            "source_entity_name": "PlannerCo",
+                                            "supports": ["workflow_criticality", "buyer_overlap"],
+                                        }
+                                    ],
+                                "confidence": 0.68,
+                            }
+                        ],
+                        "named_account_anchors": [
+                            {
+                                "label": "AP-HP",
+                                "expansion_type": "named_account_anchor",
+                                "status": "source_grounded",
+                                "confidence": 0.77,
+                                "why_it_matters": "Named hospital system useful for tracing adjacent vendors.",
+                                "evidence_urls": ["https://www.hublo.com/en/customers"],
+                                "source_entity_names": ["Hublo"],
+                            }
+                        ],
+                        "geography_expansions": [],
+                    }
+                ),
+                provider="gemini",
+                model="gemini-2.0-flash",
+            )
+        if request.stage == LLMStage.structured_normalization:
+            return LLMResponse(
+                text=json.dumps(
+                    {
+                        "version": "v2",
+                        "reasoning_status": "success",
+                        "reasoning_warning": None,
+                        "adjacency_boxes": [
+                            {
+                                "id": "adj_box_workforce_planning",
+                                "label": "Workforce planning",
+                                "adjacency_kind": "adjacent_capability",
+                                "status": "corroborated_expansion",
+                                "confidence": 0.72,
+                                "why_it_matters": "Hospitals buying shift replacement software often also buy workforce planning tools.",
+                                "source_fit": {
+                                    "shared_buyers": ["Hospitals"],
+                                    "shared_workflows": ["Shift replacement", "Internal mobility"],
+                                    "shared_data_objects": ["Staff availability", "Shift demand"],
+                                    "shared_integrations": [],
+                                    "rationale": "The adjacency sits in the same staffing control loop as Hublo's core workflow.",
+                                },
+                                "criticality": {
+                                    "market_importance": "high",
+                                    "operational_centrality": "meaningful",
+                                    "workflow_criticality": "high",
+                                    "daily_operator_usage": "high",
+                                    "switching_cost_intensity": "high",
+                                    "strategic_value_hypothesis": "Useful lane for discovering staffing software vendors serving the same hospital operators.",
+                                    "replicability": "hard_to_replicate",
+                                    "market_density": "crowded",
+                                },
+                                "likely_customer_segments": ["Hospitals"],
+                                "likely_workflows": ["Workforce planning"],
+                                    "evidence": [
+                                        {
+                                            "url": "https://example.com/hospital-workforce-planning",
+                                            "source_entity_name": "PlannerCo",
+                                            "supports": ["workflow_criticality", "buyer_overlap"],
+                                        }
+                                    ],
+                                "emerging_signals": [
+                                    {
+                                        "label": "AI-assisted shift forecasting",
+                                        "theme_type": "workflow_modernization",
+                                        "confidence": 0.6,
+                                        "why_it_matters": "Planning vendors increasingly layer forecasting into staffing operations.",
+                                    }
+                                ],
+                                "company_seed_ids": ["seed_plannerco"],
+                                "retrieval_query_seeds": ["hospital workforce planning software"],
+                                "priority_tier": "core_adjacent",
+                            }
+                        ],
+                        "company_seeds": [
+                            {
+                                "id": "seed_plannerco",
+                                "name": "PlannerCo",
+                                "website": "https://plannerco.example.com",
+                                "seed_type": "specialist",
+                                "status": "hypothesis",
+                                "confidence": 0.68,
+                                "why_relevant": "Appears repeatedly in hospital workforce planning research.",
+                                "fit_to_adjacency_box_ids": ["adj_box_workforce_planning"],
+                                    "evidence": [
+                                        {
+                                            "url": "https://example.com/hospital-workforce-planning",
+                                            "source_entity_name": "PlannerCo",
+                                            "supports": ["company_seed_fit"],
+                                        }
+                                    ],
+                            }
+                        ],
+                        "named_account_anchors": [
+                            {
+                                "id": "anchor_ap_hp",
+                                "label": "AP-HP",
+                                "expansion_type": "named_account_anchor",
+                                "status": "source_grounded",
+                                "confidence": 0.77,
+                                "why_it_matters": "Named hospital system useful for tracing adjacent vendors.",
+                                "evidence_urls": ["https://www.hublo.com/en/customers"],
+                                "source_entity_names": ["Hublo"],
+                            }
+                        ],
+                        "geography_expansions": [],
+                    }
+                ),
+                provider="openai",
+                model="gpt-4.1-mini",
+            )
+        raise AssertionError(f"Unexpected stage: {request.stage}")
+
+    monkeypatch.setattr("app.services.company_context.LLMOrchestrator.run_stage", _fake_run_stage)
+
+    payload = build_company_context_artifacts(profile)
+    expansion = _build_expansion_payload(profile, payload)["expansion_brief"]
+
+    assert expansion["version"] == "expansion_brief_v3"
+    assert expansion["adjacency_boxes"][0]["label"] == "Workforce planning"
+    assert expansion["adjacency_boxes"][0]["priority_tier"] == "core_adjacent"
+    assert expansion["adjacency_boxes"][0]["emerging_signals"][0]["label"] == "AI-assisted shift forecasting"
+    assert expansion["company_seeds"][0]["name"] == "PlannerCo"
+    assert expansion["company_seeds"][0]["fit_to_adjacency_box_ids"] == ["adj_box_workforce_planning"]
+    assert any(item["label"] == "Workforce planning" for item in expansion["adjacent_capabilities"])
+    assert expansion["named_account_anchors"][0]["label"] == "AP-HP"
+
+
 def test_build_company_context_artifacts_prefers_comparator_capabilities_over_source_self_paraphrases(monkeypatch):
     profile = _build_profile()
     profile.context_pack_json["sites"].append(
@@ -861,6 +1404,167 @@ def test_normalize_expansion_brief_filters_consulting_style_capabilities_and_kee
     assert "Des professionnels des secteurs conseil juridique" not in capability_labels
     assert "Client reporting" in capability_labels
     assert "Établissements de santé" in segment_labels
+
+
+def test_normalize_expansion_brief_derives_v2_boxes_and_company_seeds_from_legacy_groups():
+    normalized = normalize_expansion_brief(
+        {
+            "adjacent_capabilities": [
+                {
+                    "label": "Client reporting",
+                    "status": "corroborated_expansion",
+                    "confidence": 0.77,
+                    "why_it_matters": "Frequently coupled with portfolio workflows.",
+                    "evidence_urls": ["https://comp-one.example.com/reporting"],
+                    "source_entity_names": ["Comp One"],
+                    "market_importance": "high",
+                    "operational_centrality": "core",
+                    "workflow_criticality": "high",
+                    "daily_operator_usage": "medium",
+                    "switching_cost_intensity": "high",
+                }
+            ],
+            "adjacent_customer_segments": [
+                {
+                    "label": "Fund administrator",
+                    "status": "hypothesis",
+                    "confidence": 0.61,
+                    "why_it_matters": "Neighboring buyer segment.",
+                    "evidence_urls": ["https://comp-one.example.com/clients"],
+                    "source_entity_names": ["Comp One"],
+                }
+            ],
+        }
+    )
+
+    assert normalized["version"] == "expansion_brief_v3"
+    assert normalized["adjacency_boxes"]
+    assert normalized["company_seeds"]
+    assert any(box["label"] == "Client reporting" for box in normalized["adjacency_boxes"])
+    assert any(seed["name"] == "Comp One" for seed in normalized["company_seeds"])
+    assert any(item["label"] == "Client reporting" for item in normalized["adjacent_capabilities"])
+    assert "technology_shift_claims" in normalized
+    assert "confidence_gaps" in normalized
+    assert "open_questions" in normalized
+
+
+def test_normalize_expansion_brief_preserves_boxes_and_derives_legacy_groups():
+    normalized = normalize_expansion_brief(
+        {
+            "version": "expansion_brief_v3",
+            "adjacency_boxes": [
+                {
+                    "id": "box_workforce_planning",
+                    "label": "Workforce planning",
+                    "adjacency_kind": "adjacent_capability",
+                    "status": "hypothesis",
+                    "confidence": 0.66,
+                    "why_it_matters": "Sits upstream from replacement operations.",
+                    "criticality": {
+                        "market_importance": "medium",
+                        "operational_centrality": "meaningful",
+                        "workflow_criticality": "high",
+                        "daily_operator_usage": "medium",
+                        "switching_cost_intensity": "medium",
+                        "adjacency_confidence": 0.7,
+                        "switching_cost_confidence": 0.55,
+                        "trend_confidence": 0.52,
+                    },
+                    "workflow_anatomy": {
+                        "primary_operators": ["hospital manager"],
+                        "primary_triggers": ["schedule creation"],
+                        "core_actions": ["plan staffing"],
+                        "systems_touched": ["HRIS"],
+                        "frequency": "weekly",
+                        "failure_cost": "understaffing",
+                        "management_value": "better planning",
+                    },
+                    "supporting_node_ids": ["workflow_staffing_operations"],
+                    "likely_customer_segments": ["hospital"],
+                    "likely_workflows": ["shift planning"],
+                    "evidence": [{"url": "https://example.com/workforce-planning", "source_entity_name": "PlannerCo", "supports": ["workflow_criticality"]}],
+                    "company_seed_ids": ["seed_plannerco"],
+                    "retrieval_query_seeds": ["hospital workforce planning software"],
+                }
+            ],
+            "company_seeds": [
+                {
+                    "id": "seed_plannerco",
+                    "name": "PlannerCo",
+                    "website": "https://planner.example.com",
+                    "seed_type": "specialist",
+                    "seed_role": "adjacent_specialist",
+                    "status": "hypothesis",
+                    "confidence": 0.6,
+                    "why_relevant": "Relevant to workforce planning.",
+                    "fit_to_adjacency_box_ids": ["box_workforce_planning"],
+                    "evidence": [{"url": "https://planner.example.com", "supports": ["company_seed_fit"]}],
+                }
+            ],
+            "technology_shift_claims": [
+                {
+                    "id": "shift_staffing_ai",
+                    "label": "AI-assisted staffing forecasts",
+                    "status": "hypothesis",
+                    "confidence": 0.61,
+                    "why_it_matters": "Forecasting is becoming more important for workforce planning.",
+                    "affected_adjacency_box_ids": ["box_workforce_planning"],
+                    "company_seed_ids": ["seed_plannerco"],
+                    "evidence": [{"url": "https://example.com/ai-forecasting", "supports": ["market_shift"]}],
+                }
+            ],
+            "open_questions": ["How embedded is staffing forecasting today?"],
+        }
+    )
+
+    assert normalized["version"] == "expansion_brief_v3"
+    assert normalized["adjacency_boxes"][0]["label"] == "Workforce planning"
+    assert normalized["adjacency_boxes"][0]["canonical_concept_key"] == "workforce_planning"
+    assert normalized["adjacency_boxes"][0]["workflow_anatomy"]["frequency"] == "weekly"
+    assert normalized["company_seeds"][0]["name"] == "PlannerCo"
+    assert normalized["company_seeds"][0]["seed_role"] == "adjacent_specialist"
+    assert normalized["technology_shift_claims"][0]["label"] == "AI-assisted staffing forecasts"
+    assert normalized["open_questions"] == ["How embedded is staffing forecasting today?"]
+    assert any(item["label"] == "Workforce planning" for item in normalized["adjacent_capabilities"])
+
+
+def test_normalize_expansion_brief_downgrades_unsupported_core_adjacent():
+    normalized = normalize_expansion_brief(
+        {
+            "adjacency_boxes": [
+                {
+                    "id": "box_weak_adj",
+                    "label": "Collateral monitoring",
+                    "adjacency_kind": "adjacent_workflow",
+                    "status": "hypothesis",
+                    "confidence": 0.52,
+                    "why_it_matters": "Possibly useful.",
+                    "criticality": {
+                        "market_importance": "medium",
+                        "operational_centrality": "core",
+                        "workflow_criticality": "high",
+                        "daily_operator_usage": "low",
+                        "switching_cost_intensity": "medium",
+                    },
+                    "workflow_anatomy": {
+                        "primary_operators": [],
+                        "primary_triggers": [],
+                        "core_actions": [],
+                        "systems_touched": [],
+                        "frequency": "event_driven",
+                        "failure_cost": "",
+                        "management_value": "",
+                    },
+                    "priority_tier": "core_adjacent",
+                    "evidence": [],
+                }
+            ]
+        }
+    )
+
+    assert normalized["adjacency_boxes"][0]["priority_tier"] == "meaningful_adjacent"
+    assert normalized["adjacency_boxes"][0]["confidence"] == 0.5
+    assert any("Thin evidence for adjacency box" in gap for gap in normalized["confidence_gaps"])
 
 
 def test_merge_reasoned_expansion_brief_unions_duplicate_capability_evidence_urls():

@@ -1,0 +1,317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prospection-software-co.local/schemas/expansion-brief-v2.schema.json",
+  "title": "Expansion Brief V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "reasoning_status",
+    "adjacency_boxes",
+    "company_seeds",
+    "confidence_gaps",
+    "open_questions"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "expansion_brief_v2"
+    },
+    "reasoning_status": {
+      "type": "string",
+      "enum": ["success", "degraded", "not_run", "not_applicable"]
+    },
+    "reasoning_warning": {
+      "type": ["string", "null"]
+    },
+    "reasoning_provider": {
+      "type": ["string", "null"]
+    },
+    "reasoning_model": {
+      "type": ["string", "null"]
+    },
+    "graph_ref": {
+      "type": ["string", "null"]
+    },
+    "confirmed_at": {
+      "type": ["string", "null"]
+    },
+    "source_company": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "website"],
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "website": { "type": ["string", "null"] }
+      }
+    },
+    "adjacency_boxes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/adjacencyBox" }
+    },
+    "company_seeds": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/companySeed" }
+    },
+    "confidence_gaps": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "evidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string" },
+        "title": { "type": ["string", "null"] },
+        "publisher": { "type": ["string", "null"] },
+        "publisher_type": { "type": ["string", "null"] },
+        "evidence_tier": { "type": ["string", "null"] },
+        "source_entity_name": { "type": ["string", "null"] },
+        "claim_text": { "type": ["string", "null"] }
+      }
+    },
+    "sourceFit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shared_buyers",
+        "shared_workflows",
+        "shared_data_objects",
+        "shared_integrations",
+        "rationale"
+      ],
+      "properties": {
+        "shared_buyers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "shared_workflows": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "shared_data_objects": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "shared_integrations": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "rationale": {
+          "type": "string"
+        }
+      }
+    },
+    "criticality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "market_importance",
+        "operational_centrality",
+        "workflow_criticality",
+        "daily_operator_usage",
+        "switching_cost_intensity",
+        "strategic_value_hypothesis",
+        "replicability",
+        "market_density"
+      ],
+      "properties": {
+        "market_importance": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "operational_centrality": {
+          "type": "string",
+          "enum": ["core", "meaningful", "peripheral"]
+        },
+        "workflow_criticality": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "daily_operator_usage": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "switching_cost_intensity": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "strategic_value_hypothesis": {
+          "type": "string"
+        },
+        "replicability": {
+          "type": "string",
+          "enum": ["hard_to_replicate", "moderate", "easy_to_replicate"]
+        },
+        "market_density": {
+          "type": "string",
+          "enum": ["crowded", "mixed", "open"]
+        }
+      }
+    },
+    "adjacencyBox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "adjacency_kind",
+        "status",
+        "confidence",
+        "why_it_matters",
+        "source_fit",
+        "criticality",
+        "supporting_node_ids",
+        "related_source_node_ids",
+        "likely_customer_segments",
+        "likely_workflows",
+        "evidence",
+        "emerging_signals",
+        "company_seed_ids",
+        "retrieval_query_seeds"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "adjacency_kind": {
+          "type": "string",
+          "enum": [
+            "adjacent_capability",
+            "adjacent_customer_segment",
+            "adjacent_workflow",
+            "technology_shift"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "hypothesis",
+            "corroborated_expansion",
+            "source_grounded",
+            "user_kept",
+            "user_removed",
+            "user_deprioritized"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "why_it_matters": { "type": "string" },
+        "source_fit": { "$ref": "#/$defs/sourceFit" },
+        "criticality": { "$ref": "#/$defs/criticality" },
+        "supporting_node_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "related_source_node_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "likely_customer_segments": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "likely_workflows": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceItem" }
+        },
+        "emerging_signals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/emergingSignal" }
+        },
+        "company_seed_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "retrieval_query_seeds": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "companySeed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "website",
+        "seed_type",
+        "status",
+        "confidence",
+        "why_relevant",
+        "fit_to_adjacency_box_ids",
+        "evidence"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "website": { "type": ["string", "null"] },
+        "seed_type": {
+          "type": "string",
+          "enum": ["vendor", "platform", "specialist", "emerging"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["hypothesis", "corroborated_expansion", "retrieved", "crawled", "rejected"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "why_relevant": { "type": "string" },
+        "fit_to_adjacency_box_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceItem" }
+        }
+      }
+    },
+    "emergingSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "theme_type",
+        "confidence",
+        "why_it_matters"
+      ],
+      "properties": {
+        "label": { "type": "string" },
+        "theme_type": {
+          "type": "string",
+          "enum": [
+            "automation_shift",
+            "ai_assistive",
+            "workflow_modernization",
+            "integration_pattern",
+            "regulatory_change"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "why_it_matters": { "type": "string" }
+      }
+    }
+  }
+}

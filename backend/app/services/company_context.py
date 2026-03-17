@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import asdict
 from datetime import datetime
 import hashlib
 import json
@@ -32,6 +33,49 @@ EXPANSION_ITEM_TYPES = {
     "named_account_anchor",
     "geography_expansion",
 }
+EXPANSION_BOX_KINDS = {
+    "adjacent_capability",
+    "adjacent_customer_segment",
+    "adjacent_workflow",
+    "technology_shift",
+}
+EXPANSION_SEED_TYPES = {
+    "vendor",
+    "platform",
+    "specialist",
+    "emerging",
+}
+EXPANSION_SEED_ROLES = {
+    "adjacent_specialist",
+    "cross_category_incumbent",
+    "geography_specific_analog",
+    "trend_leader",
+    "direct_neighbor",
+}
+EXPANSION_SEED_STATUSES = {
+    "hypothesis",
+    "corroborated_expansion",
+    "retrieved",
+    "crawled",
+    "rejected",
+}
+EMERGING_SIGNAL_TYPES = {
+    "automation_shift",
+    "ai_assistive",
+    "workflow_modernization",
+    "integration_pattern",
+    "regulatory_change",
+}
+EXPANSION_EVIDENCE_SUPPORTS = {
+    "buyer_overlap",
+    "workflow_criticality",
+    "switching_cost",
+    "market_shift",
+    "company_seed_fit",
+    "named_account",
+}
+WORKFLOW_ANATOMY_FREQUENCIES = {"daily", "weekly", "monthly", "event_driven", "mixed"}
+EXPANSION_BRIEF_VERSION = "expansion_brief_v3"
 
 DEFAULT_OPEN_QUESTIONS = [
     "Which customer segment is most strategic for target discovery?",
@@ -58,51 +102,125 @@ MARKET_MAP_REASONING_OUTPUT_SCHEMA = {
     "confidence_gaps": ["string"],
     "open_questions": ["string"],
 }
-EXPANSION_RESEARCH_PROMPT_VERSION = "v1"
-EXPANSION_RESEARCH_OUTPUT_SCHEMA = {
-    "adjacent_capabilities": [
+EXPANSION_RESEARCH_PROMPT_VERSION = "v2"
+EXPANSION_BRIEF_OUTPUT_SCHEMA = {
+    "version": EXPANSION_BRIEF_VERSION,
+    "reasoning_status": "success|degraded|not_run|not_applicable",
+    "reasoning_warning": "string|null",
+    "fallback_mode": False,
+    "research_report_markdown": "string|null",
+    "research_attempts": [
         {
-            "label": "Voting rights / proxy voting",
-            "why_it_matters": "string",
-            "evidence_urls": ["https://example.com"],
-            "source_entity_names": ["Comparator A", "BNP Paribas"],
-            "market_importance": "high|medium|low",
-            "operational_centrality": "core|meaningful|peripheral",
-            "workflow_criticality": "high|medium|low",
-            "daily_operator_usage": "high|medium|low",
-            "switching_cost_intensity": "high|medium|low",
-            "confidence": 0.62,
+            "stage": "string",
+            "provider": "gemini|openai|anthropic",
+            "model": "string",
+            "latency_ms": 1234,
+            "status": "success|retryable_error|terminal_error",
+            "retry_count": 0,
+            "error_class": "string|null",
+            "error_message": "string|null",
+            "started_at": "ISO-8601|null",
+            "ended_at": "ISO-8601|null",
         }
     ],
-    "adjacent_customer_segments": [],
-    "named_account_anchors": [],
-    "geography_expansions": [],
-}
-EXPANSION_BRIEF_OUTPUT_SCHEMA = {
-    "reasoning_status": "success|degraded|not_run",
-    "reasoning_warning": "string|null",
-    "adjacent_capabilities": [
+    "normalization_status": "success|degraded|not_run|not_applicable",
+    "normalization_warning": "string|null",
+    "normalization_provider": "string|null",
+    "normalization_model": "string|null",
+    "normalization_attempts": [
         {
-            "id": "expansion_xxx",
+            "stage": "string",
+            "provider": "gemini|openai|anthropic",
+            "model": "string",
+            "latency_ms": 1234,
+            "status": "success|retryable_error|terminal_error",
+            "retry_count": 0,
+            "error_class": "string|null",
+            "error_message": "string|null",
+            "started_at": "ISO-8601|null",
+            "ended_at": "ISO-8601|null",
+        }
+    ],
+    "adjacency_boxes": [
+        {
+            "id": "adjacency_box_xxx",
             "label": "Voting rights / proxy voting",
-            "expansion_type": "adjacent_capability",
+            "canonical_concept_key": "proxy_voting",
+            "adjacency_kind": "adjacent_capability",
             "status": "source_grounded|corroborated_expansion|hypothesis|user_kept|user_removed|user_deprioritized",
             "confidence": 0.62,
             "why_it_matters": "string",
-            "evidence_urls": ["https://example.com"],
+            "source_fit": {
+                "shared_buyers": ["private bank"],
+                "shared_workflows": ["portfolio operations"],
+                "shared_data_objects": ["holdings", "positions"],
+                "shared_integrations": ["custody", "reporting"],
+                "rationale": "string",
+            },
+            "criticality": {
+                "market_importance": "high|medium|low",
+                "operational_centrality": "core|meaningful|peripheral",
+                "workflow_criticality": "high|medium|low",
+                "daily_operator_usage": "high|medium|low",
+                "switching_cost_intensity": "high|medium|low",
+                "strategic_value_hypothesis": "string",
+                "replicability": "hard_to_replicate|moderate|easy_to_replicate",
+                "market_density": "crowded|mixed|open",
+                "adjacency_confidence": 0.72,
+                "switching_cost_confidence": 0.68,
+                "trend_confidence": 0.55,
+            },
+            "workflow_anatomy": {
+                "primary_operators": ["portfolio manager"],
+                "primary_triggers": ["quarterly review"],
+                "core_actions": ["collect instructions", "file votes"],
+                "systems_touched": ["custody", "reporting"],
+                "frequency": "event_driven|daily|weekly|monthly|mixed",
+                "failure_cost": "string",
+                "management_value": "string",
+            },
             "supporting_node_ids": ["taxonomy_xxx"],
-            "source_entity_names": ["Comparator A", "BNP Paribas"],
-            "market_importance": "high|medium|low",
-            "operational_centrality": "core|meaningful|peripheral",
-            "workflow_criticality": "high|medium|low",
-            "daily_operator_usage": "high|medium|low",
-            "switching_cost_intensity": "high|medium|low",
+            "related_source_node_ids": ["taxonomy_source_xxx"],
+            "likely_customer_segments": ["private bank"],
+            "likely_workflows": ["proxy voting"],
+            "evidence": [{"url": "https://example.com", "source_entity_name": "Comparator A", "supports": ["workflow_criticality"]}],
+            "original_language_aliases": ["gestion des votes"],
+            "company_seed_ids": ["company_seed_xxx"],
+            "retrieval_query_seeds": ["proxy voting software private bank"],
+            "language_specific_query_seeds": [{"language": "fr", "queries": ["logiciel vote actionnaire banque privée"]}],
             "priority_tier": "core_adjacent|meaningful_adjacent|edge_case",
         }
     ],
-    "adjacent_customer_segments": [],
+    "company_seeds": [
+        {
+            "id": "company_seed_xxx",
+            "name": "Comparator A",
+            "website": "https://example.com",
+            "seed_type": "specialist",
+            "seed_role": "adjacent_specialist",
+            "status": "hypothesis",
+            "confidence": 0.61,
+            "why_relevant": "string",
+            "fit_to_adjacency_box_ids": ["adjacency_box_xxx"],
+            "evidence": [{"url": "https://example.com", "supports": ["company_seed_fit"]}],
+        }
+    ],
+    "technology_shift_claims": [
+        {
+            "id": "technology_shift_xxx",
+            "label": "AI-assisted operations",
+            "status": "hypothesis",
+            "confidence": 0.61,
+            "why_it_matters": "string",
+            "affected_adjacency_box_ids": ["adjacency_box_xxx"],
+            "company_seed_ids": ["company_seed_xxx"],
+            "evidence": [{"url": "https://example.com", "supports": ["market_shift"]}],
+        }
+    ],
     "named_account_anchors": [],
     "geography_expansions": [],
+    "confidence_gaps": [],
+    "open_questions": [],
 }
 
 CUSTOMER_KEYWORDS = (
@@ -2809,21 +2927,41 @@ def _expansion_research_prompt(payload: dict[str, Any]) -> str:
         "Prefer categories that repeatedly appear across source evidence, expansion inputs, named accounts, integrations, or nearby public evidence.\n"
         "Demote niche, edge-case, or peripheral use cases that are too small or too optional to steer primary discovery.\n"
         "If an adjacency is real but likely too narrow to drive target discovery on its own, keep it and mark it low importance rather than dropping it.\n\n"
-        "You must propose only these buckets:\n"
-        "- adjacent_capabilities\n"
-        "- adjacent_customer_segments\n"
-        "- named_account_anchors\n"
-        "- geography_expansions\n\n"
-        "For each item provide:\n"
+        "Write a concise but information-dense research report, not JSON.\n"
+        "Use markdown headings and bullets where helpful.\n"
+        "Keep the section order stable so downstream normalization can reliably extract the report.\n"
+        "Keep the report tightly focused on these buckets:\n"
+        "- adjacency boxes\n"
+        "- company seeds\n"
+        "- technology and market shifts only when they materially change discovery relevance\n"
+        "- named account anchors\n"
+        "- geography expansions\n\n"
+        "For each adjacency box, use the same sub-headings in this order:\n"
+        "- Label and adjacency kind: adjacent_capability, adjacent_customer_segment, adjacent_workflow, or technology_shift\n"
+        "- Why it matters\n"
+        "- Source fit: shared buyers, shared workflows, shared data objects, shared integrations, and a rationale\n"
+        "- Workflow anatomy: primary operators, primary triggers, core actions, systems touched, frequency, failure cost, management value\n"
+        "- Criticality: market importance, operational centrality, workflow criticality, daily operator usage, switching-cost intensity, strategic value hypothesis, replicability, and market density\n"
+        "- Likely customer segments and workflows\n"
+        "- Evidence: for each evidence item include URL, source entity name when known, short claim text, source language when obvious, and what the evidence supports (buyer overlap, workflow criticality, switching cost, market shift, company seed fit, or named account)\n"
+        "- Retrieval query seeds\n"
+        "- Confidence\n\n"
+        "For company seeds, cover:\n"
+        "- name\n"
+        "- website when known\n"
+        "- seed type\n"
+        "- seed role: adjacent specialist, cross-category incumbent, geography-specific analog, trend leader, or direct neighbor when the report supports it\n"
+        "- why relevant\n"
+        "- which adjacency boxes they fit\n"
+        "- evidence URLs with short claim text when possible\n"
+        "- confidence\n\n"
+        "For technology and market shifts, include only shifts that materially change which adjacency lanes deserve discovery attention.\n"
+        "For each shift, cover:\n"
         "- label\n"
-        "- why_it_matters\n"
-        "- evidence_urls\n"
-        "- source_entity_names\n"
-        "- market_importance: high, medium, or low\n"
-        "- operational_centrality: core, meaningful, or peripheral\n"
-        "- workflow_criticality: high, medium, or low\n"
-        "- daily_operator_usage: high, medium, or low\n"
-        "- switching_cost_intensity: high, medium, or low\n"
+        "- what is changing\n"
+        "- why it matters for discovery\n"
+        "- which adjacency boxes it affects\n"
+        "- evidence URLs with short claim text\n"
         "- confidence\n\n"
         "Interpretation rules:\n"
         "- market_importance = a secondary signal about whether the adjacency appears broad enough to matter beyond a niche edge case\n"
@@ -2831,11 +2969,18 @@ def _expansion_research_prompt(payload: dict[str, Any]) -> str:
         "- workflow_criticality = whether the capability sits on a business-critical workflow path\n"
         "- daily_operator_usage = whether operators appear to rely on it frequently in routine execution\n"
         "- switching_cost_intensity = whether replacing it would likely be operationally painful due to workflow embedding, data gravity, controls, or integration depth\n"
+        "- strategic_value_hypothesis should explain why this lane could matter for company discovery, not why an acquisition must happen\n"
+        "- replicability should estimate whether the adjacency looks hard to copy from public evidence, not whether the source company can execute it internally\n"
         "- avoid treating a narrow compliance check, isolated add-on, or rarely emphasized feature as equal to a system-of-record workflow\n"
         "- named_account_anchors should be concrete institutions useful for tracing peer vendors or adjacent stack components\n"
         "- geography_expansions should be bounded adjacent markets, not all plausible countries\n\n"
-        "Return only valid JSON with this exact shape:\n"
-        f"{json.dumps(EXPANSION_RESEARCH_OUTPUT_SCHEMA, ensure_ascii=False, indent=2)}\n\n"
+        "Output format:\n"
+        "- Start with a short executive summary.\n"
+        "- Then include sections titled exactly: Adjacency Boxes, Company Seeds, Technology and Market Shifts, Named Account Anchors, Geography Expansions, Open Questions.\n"
+        "- In Adjacency Boxes and Company Seeds, use one subsection per item.\n"
+        "- In Technology and Market Shifts, use one subsection per shift.\n"
+        "- Use conservative language when evidence is thin and prefer short explicit unknowns over implied certainty.\n"
+        "- Do not wrap the answer in JSON or code fences.\n\n"
         "Input:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
@@ -2844,26 +2989,33 @@ def _expansion_research_prompt(payload: dict[str, Any]) -> str:
 def _expansion_normalization_prompt(
     *,
     company_name: str,
-    research_payload: dict[str, Any],
+    research_report: str,
     fallback_brief: dict[str, Any],
 ) -> str:
     return (
         "You are normalizing an Expansion Research artifact into a graph-safe Expansion Brief.\n\n"
         f"The source company is {company_name}.\n"
-        "Do not invent items not present in the research payload unless they already exist in the fallback brief.\n"
+        "The expansion research input is a free-form report, not JSON.\n"
+        "Extract only what is actually supported by the report unless the fallback brief already contains a source-grounded item worth preserving.\n"
         "Preserve selective breadth. Fewer strong items are better than many weak ones.\n"
-        "Use the fallback brief only when the research payload is missing a useful item already grounded in source evidence.\n"
-        "Each item must receive expansion_type, status, confidence, market_importance, operational_centrality, workflow_criticality, daily_operator_usage, switching_cost_intensity, and priority_tier.\n\n"
+        "Use the fallback brief only when the report is missing a useful item already grounded in source evidence.\n"
+        "The canonical artifact is Expansion Brief v3 with adjacency_boxes, company_seeds, and technology_shift_claims.\n"
+        "Preserve named_account_anchors and geography_expansions as grouped supporting outputs.\n"
+        "Each adjacency box must receive canonical_concept_key, status, confidence, source_fit, criticality, workflow_anatomy, evidence, retrieval_query_seeds, and priority_tier.\n"
+        "Evidence should be claim-level where possible and every evidence item must include supports tags.\n"
+        "Use the schema enums exactly and leave fields conservative when the report is thin.\n\n"
         "Priority rules:\n"
         "- Use priority_tier=core_adjacent only when workflow_criticality is high and either operational_centrality is core or switching_cost_intensity is high.\n"
         "- Use priority_tier=meaningful_adjacent when the adjacency is relevant but not clearly a primary discovery lane.\n"
         "- Use priority_tier=edge_case for narrow, peripheral, or weakly repeated adjacencies.\n"
         "- Small, optional, or rarely repeated use cases should generally be edge_case or meaningful_adjacent, not core_adjacent, even if they look adjacent.\n"
+        "- Keep company_seeds lightweight and discovery-oriented. Do not return a long company list.\n"
+        "- Keep technology_shift_claims sparse and include them only when they materially change which lanes deserve discovery attention.\n"
         "- Named accounts grounded in source evidence can stay source_grounded.\n"
         "- Geography expansions sourced only from workspace scope may remain source_grounded but should not automatically imply a high-priority lane.\n\n"
         "Return only valid JSON with this exact shape:\n"
         f"{json.dumps(EXPANSION_BRIEF_OUTPUT_SCHEMA, ensure_ascii=False, indent=2)}\n\n"
-        f"Research payload:\n{json.dumps(research_payload, ensure_ascii=False, indent=2)}\n\n"
+        f"Expansion research report:\n{research_report}\n\n"
         f"Fallback brief:\n{json.dumps(normalize_expansion_brief(fallback_brief), ensure_ascii=False, indent=2)}"
     )
 
@@ -3222,34 +3374,699 @@ def normalize_expansion_items(
     return normalized
 
 
+def _normalize_expansion_evidence_items(items: Any, *, max_items: int = 8) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for raw in items or []:
+        if isinstance(raw, str):
+            payload = {"url": raw}
+        elif isinstance(raw, dict):
+            payload = raw
+        else:
+            continue
+        url = normalize_url(payload.get("url"))
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        normalized.append(
+            {
+                "url": url,
+                "title": _safe_phrase(payload.get("title"), max_len=240) or None,
+                "publisher": _safe_phrase(payload.get("publisher"), max_len=160) or None,
+                "publisher_type": _safe_phrase(payload.get("publisher_type"), max_len=80) or None,
+                "language": _safe_phrase(payload.get("language"), max_len=24) or None,
+                "evidence_tier": _safe_phrase(payload.get("evidence_tier"), max_len=80) or None,
+                "source_entity_name": _safe_phrase(
+                    payload.get("source_entity_name") or payload.get("source_entity_names"),
+                    max_len=160,
+                )
+                or None,
+                "claim_text": _safe_phrase(payload.get("claim_text"), max_len=240) or None,
+                "supports": [
+                    item
+                    for item in _normalize_string_list(payload.get("supports"), max_items=6, max_len=64)
+                    if item in EXPANSION_EVIDENCE_SUPPORTS
+                ],
+            }
+        )
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def _normalize_expansion_source_fit(raw: Any) -> dict[str, Any]:
+    payload = raw if isinstance(raw, dict) else {}
+    return {
+        "shared_buyers": _normalize_string_list(payload.get("shared_buyers"), max_items=6, max_len=120),
+        "shared_workflows": _normalize_string_list(payload.get("shared_workflows"), max_items=6, max_len=120),
+        "shared_data_objects": _normalize_string_list(payload.get("shared_data_objects"), max_items=6, max_len=120),
+        "shared_integrations": _normalize_string_list(payload.get("shared_integrations"), max_items=6, max_len=120),
+        "rationale": _safe_phrase(payload.get("rationale"), max_len=400),
+    }
+
+
+def _normalize_expansion_criticality(raw: Any) -> dict[str, Any]:
+    payload = raw if isinstance(raw, dict) else {}
+
+    def _choice(value: Any, allowed: set[str], default: str) -> str:
+        normalized = str(value or default).strip().lower()
+        return normalized if normalized in allowed else default
+
+    return {
+        "market_importance": _choice(payload.get("market_importance"), {"high", "medium", "low"}, "medium"),
+        "operational_centrality": _choice(payload.get("operational_centrality"), {"core", "meaningful", "peripheral"}, "meaningful"),
+        "workflow_criticality": _choice(payload.get("workflow_criticality"), {"high", "medium", "low"}, "medium"),
+        "daily_operator_usage": _choice(payload.get("daily_operator_usage"), {"high", "medium", "low"}, "medium"),
+        "switching_cost_intensity": _choice(payload.get("switching_cost_intensity"), {"high", "medium", "low"}, "medium"),
+        "strategic_value_hypothesis": _safe_phrase(payload.get("strategic_value_hypothesis"), max_len=400),
+        "replicability": _choice(payload.get("replicability"), {"hard_to_replicate", "moderate", "easy_to_replicate"}, "moderate"),
+        "market_density": _choice(payload.get("market_density"), {"crowded", "mixed", "open"}, "mixed"),
+        "adjacency_confidence": _clamp_confidence(payload.get("adjacency_confidence"), default=0.6),
+        "switching_cost_confidence": _clamp_confidence(payload.get("switching_cost_confidence"), default=0.58),
+        "trend_confidence": _clamp_confidence(payload.get("trend_confidence"), default=0.55),
+    }
+
+
+def _normalize_expansion_priority_tier(value: Any, *, criticality: Optional[dict[str, Any]] = None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"core_adjacent", "meaningful_adjacent", "edge_case"}:
+        return normalized
+    return _priority_tier_from_criticality(criticality or {})
+
+
+def _priority_tier_from_criticality(criticality: dict[str, Any]) -> str:
+    workflow_criticality = str(criticality.get("workflow_criticality") or "medium")
+    operational_centrality = str(criticality.get("operational_centrality") or "meaningful")
+    switching_cost = str(criticality.get("switching_cost_intensity") or "medium")
+    if workflow_criticality == "high" and (operational_centrality == "core" or switching_cost == "high"):
+        return "core_adjacent"
+    if workflow_criticality == "low" and operational_centrality == "peripheral":
+        return "edge_case"
+    return "meaningful_adjacent"
+
+
+def _normalize_emerging_signals(items: Any, *, max_items: int = 4) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        label = _compact_phrase(raw.get("label") or raw.get("name"), max_words=8, max_len=120)
+        if not label:
+            continue
+        key = _normalize_phrase_key(label)
+        if key in seen:
+            continue
+        seen.add(key)
+        theme_type = str(raw.get("theme_type") or "workflow_modernization").strip().lower()
+        if theme_type not in EMERGING_SIGNAL_TYPES:
+            theme_type = "workflow_modernization"
+        normalized.append(
+            {
+                "label": label,
+                "theme_type": theme_type,
+                "confidence": _clamp_confidence(raw.get("confidence"), default=0.58),
+                "why_it_matters": _safe_phrase(raw.get("why_it_matters"), max_len=320),
+            }
+        )
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def _normalize_workflow_anatomy(raw: Any) -> dict[str, Any]:
+    payload = raw if isinstance(raw, dict) else {}
+    frequency = str(payload.get("frequency") or "mixed").strip().lower()
+    if frequency not in WORKFLOW_ANATOMY_FREQUENCIES:
+        frequency = "mixed"
+    return {
+        "primary_operators": _normalize_string_list(payload.get("primary_operators"), max_items=6, max_len=120),
+        "primary_triggers": _normalize_string_list(payload.get("primary_triggers"), max_items=6, max_len=140),
+        "core_actions": _normalize_string_list(payload.get("core_actions"), max_items=8, max_len=140),
+        "systems_touched": _normalize_string_list(payload.get("systems_touched"), max_items=8, max_len=140),
+        "frequency": frequency,
+        "failure_cost": _safe_phrase(payload.get("failure_cost"), max_len=240),
+        "management_value": _safe_phrase(payload.get("management_value"), max_len=240),
+    }
+
+
+def _canonical_concept_key(value: Any) -> str:
+    key = _normalize_phrase_key(value)
+    key = re.sub(r"[^a-z0-9]+", "_", key).strip("_")
+    return key[:80] or "adjacency"
+
+
+def _serialize_attempt_traces(attempts: Any, *, max_items: int = 12) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for raw in attempts or []:
+        payload = asdict(raw) if hasattr(raw, "__dataclass_fields__") else raw
+        if not isinstance(payload, dict):
+            continue
+        serialized.append(
+            {
+                "stage": _safe_phrase(payload.get("stage"), max_len=80),
+                "provider": _safe_phrase(payload.get("provider"), max_len=40),
+                "model": _safe_phrase(payload.get("model"), max_len=160),
+                "latency_ms": int(payload.get("latency_ms") or 0),
+                "status": _safe_phrase(payload.get("status"), max_len=40),
+                "retry_count": int(payload.get("retry_count") or 0),
+                "error_class": _safe_phrase(payload.get("error_class"), max_len=120) or None,
+                "error_message": _safe_phrase(payload.get("error_message"), max_len=500) or None,
+                "started_at": _safe_phrase(payload.get("started_at"), max_len=64) or None,
+                "ended_at": _safe_phrase(payload.get("ended_at"), max_len=64) or None,
+            }
+        )
+        if len(serialized) >= max_items:
+            break
+    return serialized
+
+
+def _normalize_long_markdown(value: Any, *, max_len: int = 24000) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text[:max_len]
+
+
+def normalize_company_seeds(items: Any, *, max_items: int = 16) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        name = _compact_phrase(raw.get("name") or raw.get("label"), max_words=8, max_len=120)
+        if not name:
+            continue
+        key = _normalize_phrase_key(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        seed_type = str(raw.get("seed_type") or "specialist").strip().lower()
+        if seed_type not in EXPANSION_SEED_TYPES:
+            seed_type = "specialist"
+        seed_role = str(raw.get("seed_role") or "").strip().lower() or None
+        if seed_role not in EXPANSION_SEED_ROLES:
+            seed_role = None
+        status = str(raw.get("status") or "hypothesis").strip().lower()
+        if status not in EXPANSION_SEED_STATUSES:
+            status = "hypothesis"
+        normalized.append(
+            {
+                "id": str(raw.get("id") or _stable_id("company_seed", name)),
+                "name": name,
+                "website": normalize_url(raw.get("website")) if raw.get("website") else None,
+                "seed_type": seed_type,
+                "seed_role": seed_role,
+                "status": status,
+                "confidence": _clamp_confidence(raw.get("confidence"), default=0.58),
+                "why_relevant": _safe_phrase(raw.get("why_relevant"), max_len=400),
+                "fit_to_adjacency_box_ids": _normalize_string_list(
+                    raw.get("fit_to_adjacency_box_ids") or raw.get("fit_to_adjacency_box_labels"),
+                    max_items=8,
+                    max_len=120,
+                ),
+                "evidence": _normalize_expansion_evidence_items(raw.get("evidence"), max_items=6),
+            }
+        )
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def normalize_adjacency_boxes(items: Any, *, max_items: int = 12) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        label = _compact_phrase(raw.get("label") or raw.get("name"), max_words=10, max_len=140)
+        if not label:
+            continue
+        kind = str(raw.get("adjacency_kind") or raw.get("expansion_type") or "adjacent_capability").strip().lower()
+        if kind not in EXPANSION_BOX_KINDS:
+            kind = "adjacent_capability"
+        if kind == "adjacent_capability" and not _is_high_quality_adjacent_capability_candidate(label):
+            continue
+        if kind == "adjacent_customer_segment" and not _is_plausible_adjacent_customer_segment(label):
+            continue
+        key = f"{kind}:{_normalize_phrase_key(label)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        status = str(raw.get("status") or "hypothesis").strip().lower()
+        if status not in EXPANSION_ITEM_STATUSES:
+            status = "hypothesis"
+        criticality = _normalize_expansion_criticality(raw.get("criticality") or raw)
+        evidence = _normalize_expansion_evidence_items(
+            raw.get("evidence")
+            or [{"url": url, "source_entity_name": name} for url, name in zip(
+                _normalize_string_list(raw.get("evidence_urls"), max_items=6, max_len=500),
+                (_normalize_string_list(raw.get("source_entity_names"), max_items=6, max_len=120) + [""] * 6),
+            )],
+            max_items=8,
+        )
+        normalized.append(
+            {
+                "id": str(raw.get("id") or _stable_id("adjacency_box", kind, label)),
+                "label": label,
+                "canonical_concept_key": _safe_phrase(raw.get("canonical_concept_key"), max_len=80) or _canonical_concept_key(label),
+                "adjacency_kind": kind,
+                "status": status,
+                "confidence": _clamp_confidence(raw.get("confidence"), default=0.6),
+                "why_it_matters": _safe_phrase(raw.get("why_it_matters"), max_len=400),
+                "source_fit": _normalize_expansion_source_fit(raw.get("source_fit")),
+                "criticality": criticality,
+                "workflow_anatomy": _normalize_workflow_anatomy(raw.get("workflow_anatomy")),
+                "supporting_node_ids": _normalize_string_list(raw.get("supporting_node_ids"), max_items=8, max_len=120),
+                "related_source_node_ids": _normalize_string_list(raw.get("related_source_node_ids"), max_items=8, max_len=120),
+                "likely_customer_segments": _normalize_string_list(raw.get("likely_customer_segments"), max_items=6, max_len=120),
+                "likely_workflows": _normalize_string_list(raw.get("likely_workflows"), max_items=6, max_len=120),
+                "evidence": evidence,
+                "emerging_signals": _normalize_emerging_signals(raw.get("emerging_signals"), max_items=4),
+                "company_seed_ids": _normalize_string_list(raw.get("company_seed_ids"), max_items=8, max_len=120),
+                "retrieval_query_seeds": _normalize_string_list(raw.get("retrieval_query_seeds"), max_items=6, max_len=180),
+                "original_language_aliases": _normalize_string_list(raw.get("original_language_aliases"), max_items=8, max_len=120),
+                "language_specific_query_seeds": [
+                    {
+                        "language": _safe_phrase(item.get("language"), max_len=24) or "unknown",
+                        "queries": _normalize_string_list(item.get("queries"), max_items=6, max_len=180),
+                    }
+                    for item in (raw.get("language_specific_query_seeds") or [])
+                    if isinstance(item, dict) and (_safe_phrase(item.get("language"), max_len=24) or item.get("queries"))
+                ][:4],
+                "priority_tier": _normalize_expansion_priority_tier(
+                    raw.get("priority_tier"),
+                    criticality=criticality,
+                ),
+            }
+        )
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def normalize_technology_shift_claims(items: Any, *, max_items: int = 6) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        label = _compact_phrase(raw.get("label") or raw.get("name"), max_words=10, max_len=160)
+        if not label:
+            continue
+        key = _normalize_phrase_key(label)
+        if key in seen:
+            continue
+        seen.add(key)
+        status = str(raw.get("status") or "hypothesis").strip().lower()
+        if status not in EXPANSION_ITEM_STATUSES:
+            status = "hypothesis"
+        normalized.append(
+            {
+                "id": str(raw.get("id") or _stable_id("technology_shift", label)),
+                "label": label,
+                "status": status,
+                "confidence": _clamp_confidence(raw.get("confidence"), default=0.58),
+                "why_it_matters": _safe_phrase(raw.get("why_it_matters"), max_len=400),
+                "affected_adjacency_box_ids": _normalize_string_list(raw.get("affected_adjacency_box_ids"), max_items=8, max_len=120),
+                "company_seed_ids": _normalize_string_list(raw.get("company_seed_ids"), max_items=8, max_len=120),
+                "evidence": _normalize_expansion_evidence_items(raw.get("evidence"), max_items=8),
+            }
+        )
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def _validated_priority_tier(box: dict[str, Any]) -> str:
+    criticality = _normalize_expansion_criticality(box.get("criticality"))
+    tier = _normalize_expansion_priority_tier(box.get("priority_tier"), criticality=criticality)
+    evidence = box.get("evidence") or []
+    evidence_supports = {
+        tag
+        for item in evidence
+        if isinstance(item, dict)
+        for tag in (item.get("supports") or [])
+        if isinstance(tag, str)
+    }
+    if tier == "core_adjacent":
+        has_core_shape = (
+            criticality.get("workflow_criticality") == "high"
+            and (
+                criticality.get("operational_centrality") == "core"
+                or criticality.get("switching_cost_intensity") == "high"
+            )
+        )
+        has_support = bool(evidence) and (
+            "workflow_criticality" in evidence_supports
+            or "buyer_overlap" in evidence_supports
+            or "switching_cost" in evidence_supports
+        )
+        strong_confidence = max(
+            float(box.get("confidence") or 0),
+            float(criticality.get("adjacency_confidence") or 0),
+        ) >= 0.68
+        if not (has_core_shape and has_support and strong_confidence):
+            return "meaningful_adjacent"
+    return tier
+
+
+def _validate_normalized_expansion_brief(
+    *,
+    adjacency_boxes: list[dict[str, Any]],
+    company_seeds: list[dict[str, Any]],
+    technology_shift_claims: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    confidence_gaps: list[str] = []
+    validated_boxes: list[dict[str, Any]] = []
+    box_ids: set[str] = set()
+    for box in adjacency_boxes:
+        if not isinstance(box, dict):
+            continue
+        item = dict(box)
+        item["priority_tier"] = _validated_priority_tier(item)
+        evidence = item.get("evidence") or []
+        if not evidence:
+            item["confidence"] = min(float(item.get("confidence") or 0.6), 0.5)
+            if item["priority_tier"] == "core_adjacent":
+                item["priority_tier"] = "meaningful_adjacent"
+            confidence_gaps.append(f"Thin evidence for adjacency box: {item.get('label')}")
+        workflow_anatomy = item.get("workflow_anatomy") or {}
+        if not (workflow_anatomy.get("primary_operators") and workflow_anatomy.get("core_actions")):
+            confidence_gaps.append(f"Workflow anatomy incomplete for adjacency box: {item.get('label')}")
+        box_ids.add(str(item.get("id") or ""))
+        validated_boxes.append(item)
+
+    validated_seeds: list[dict[str, Any]] = []
+    seed_ids: set[str] = set()
+    for seed in company_seeds:
+        if not isinstance(seed, dict):
+            continue
+        item = dict(seed)
+        item["fit_to_adjacency_box_ids"] = [
+            box_id for box_id in (item.get("fit_to_adjacency_box_ids") or []) if box_id in box_ids
+        ]
+        if not item["fit_to_adjacency_box_ids"]:
+            confidence_gaps.append(f"Seed without surviving adjacency fit: {item.get('name')}")
+        seed_ids.add(str(item.get("id") or ""))
+        validated_seeds.append(item)
+
+    seed_id_by_fit: dict[str, list[str]] = {}
+    for seed in validated_seeds:
+        for box_id in seed.get("fit_to_adjacency_box_ids") or []:
+            seed_id_by_fit.setdefault(box_id, []).append(str(seed.get("id") or ""))
+
+    for box in validated_boxes:
+        company_seed_ids = [
+            seed_id for seed_id in (box.get("company_seed_ids") or []) if seed_id in seed_ids
+        ]
+        if not company_seed_ids:
+            company_seed_ids = seed_id_by_fit.get(str(box.get("id") or ""), [])[:8]
+        box["company_seed_ids"] = company_seed_ids
+
+    validated_shifts: list[dict[str, Any]] = []
+    for claim in technology_shift_claims:
+        if not isinstance(claim, dict):
+            continue
+        item = dict(claim)
+        item["affected_adjacency_box_ids"] = [
+            box_id for box_id in (item.get("affected_adjacency_box_ids") or []) if box_id in box_ids
+        ]
+        item["company_seed_ids"] = [
+            seed_id for seed_id in (item.get("company_seed_ids") or []) if seed_id in seed_ids
+        ]
+        if not item["affected_adjacency_box_ids"] or not (item.get("evidence") or []):
+            continue
+        validated_shifts.append(item)
+
+    deduped_gaps: list[str] = []
+    seen_gap_keys: set[str] = set()
+    for gap in confidence_gaps:
+        key = _normalize_phrase_key(gap)
+        if key and key not in seen_gap_keys:
+            seen_gap_keys.add(key)
+            deduped_gaps.append(gap)
+
+    return validated_boxes, validated_seeds, validated_shifts, deduped_gaps[:10]
+
+
+def _legacy_item_from_adjacency_box(box: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if not isinstance(box, dict):
+        return None
+    kind = str(box.get("adjacency_kind") or "").strip().lower()
+    if kind not in {"adjacent_capability", "adjacent_customer_segment", "adjacent_workflow"}:
+        return None
+    criticality = _normalize_expansion_criticality(box.get("criticality"))
+    evidence = _normalize_expansion_evidence_items(box.get("evidence"), max_items=6)
+    source_entity_names = _normalize_string_list(
+        [item.get("source_entity_name") for item in evidence if isinstance(item, dict)],
+        max_items=6,
+        max_len=120,
+    )
+    evidence_urls = _normalize_string_list(
+        [item.get("url") for item in evidence if isinstance(item, dict) and item.get("url")],
+        max_items=6,
+        max_len=500,
+    )
+    expansion_type = "adjacent_customer_segment" if kind == "adjacent_customer_segment" else "adjacent_capability"
+    return {
+        "id": str(box.get("id") or _stable_id("expansion", expansion_type, box.get("label"))),
+        "label": str(box.get("label") or "").strip(),
+        "expansion_type": expansion_type,
+        "status": str(box.get("status") or "hypothesis").strip().lower(),
+        "confidence": _clamp_confidence(box.get("confidence"), default=0.6),
+        "why_it_matters": _safe_phrase(box.get("why_it_matters"), max_len=400),
+        "evidence_urls": [normalize_url(url) for url in evidence_urls if normalize_url(url)],
+        "supporting_node_ids": _normalize_string_list(box.get("supporting_node_ids"), max_items=8, max_len=120),
+        "source_entity_names": source_entity_names,
+        "market_importance": criticality["market_importance"],
+        "operational_centrality": criticality["operational_centrality"],
+        "workflow_criticality": criticality["workflow_criticality"],
+        "daily_operator_usage": criticality["daily_operator_usage"],
+        "switching_cost_intensity": criticality["switching_cost_intensity"],
+        "priority_tier": _normalize_expansion_priority_tier(
+            box.get("priority_tier"),
+            criticality=criticality,
+        ),
+    }
+
+
+def _derive_company_seeds_from_legacy_groups(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    seed_map: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            box_id = str(item.get("id") or "").strip()
+            for name in _normalize_string_list(item.get("source_entity_names"), max_items=6, max_len=120):
+                key = _normalize_phrase_key(name)
+                if not key:
+                    continue
+                seed = seed_map.setdefault(
+                    key,
+                    {
+                        "id": _stable_id("company_seed", name),
+                        "name": name,
+                        "website": None,
+                        "seed_type": "specialist",
+                        "status": "hypothesis",
+                        "confidence": _clamp_confidence(item.get("confidence"), default=0.58),
+                        "why_relevant": _safe_phrase(
+                            item.get("why_it_matters") or f"Surfaced in adjacent expansion research around {item.get('label')}.",
+                            max_len=400,
+                        ),
+                        "fit_to_adjacency_box_ids": [],
+                        "evidence": [],
+                    },
+                )
+                if box_id and box_id not in seed["fit_to_adjacency_box_ids"]:
+                    seed["fit_to_adjacency_box_ids"].append(box_id)
+                for url in _normalize_string_list(item.get("evidence_urls"), max_items=6, max_len=500):
+                    normalized_url = normalize_url(url)
+                    if not normalized_url:
+                        continue
+                    if normalized_url not in {e.get("url") for e in seed["evidence"] if isinstance(e, dict)}:
+                        seed["evidence"].append({"url": normalized_url, "source_entity_name": name})
+    return list(seed_map.values())[:16]
+
+
 def normalize_expansion_brief(expansion_brief: Any) -> dict[str, Any]:
     payload = expansion_brief if isinstance(expansion_brief, dict) else {}
+    legacy_adjacent_capabilities = normalize_expansion_items(
+        payload.get("adjacent_capabilities"),
+        item_type="adjacent_capability",
+        max_items=10,
+    )
+    legacy_adjacent_customer_segments = normalize_expansion_items(
+        payload.get("adjacent_customer_segments"),
+        item_type="adjacent_customer_segment",
+        max_items=8,
+    )
+    named_account_anchors = normalize_expansion_items(
+        payload.get("named_account_anchors"),
+        item_type="named_account_anchor",
+        max_items=8,
+    )
+    geography_expansions = normalize_expansion_items(
+        payload.get("geography_expansions"),
+        item_type="geography_expansion",
+        max_items=8,
+    )
+    adjacency_boxes = normalize_adjacency_boxes(payload.get("adjacency_boxes"), max_items=12)
+    if not adjacency_boxes:
+        adjacency_boxes = normalize_adjacency_boxes(
+            [
+                {
+                    "id": item.get("id"),
+                    "label": item.get("label"),
+                    "adjacency_kind": (
+                        "adjacent_customer_segment"
+                        if str(item.get("expansion_type") or "") == "adjacent_customer_segment"
+                        else "adjacent_capability"
+                    ),
+                    "status": item.get("status"),
+                    "confidence": item.get("confidence"),
+                    "why_it_matters": item.get("why_it_matters"),
+                    "criticality": {
+                        "market_importance": item.get("market_importance"),
+                        "operational_centrality": item.get("operational_centrality"),
+                        "workflow_criticality": item.get("workflow_criticality"),
+                        "daily_operator_usage": item.get("daily_operator_usage"),
+                        "switching_cost_intensity": item.get("switching_cost_intensity"),
+                    },
+                    "priority_tier": item.get("priority_tier"),
+                    "supporting_node_ids": item.get("supporting_node_ids"),
+                    "related_source_node_ids": item.get("supporting_node_ids"),
+                    "likely_customer_segments": (
+                        [item.get("label")]
+                        if str(item.get("expansion_type") or "") == "adjacent_customer_segment"
+                        else []
+                    ),
+                    "likely_workflows": [],
+                    "evidence": [
+                        {
+                            "url": url,
+                            "source_entity_name": name,
+                        }
+                        for url, name in zip(
+                            _normalize_string_list(item.get("evidence_urls"), max_items=6, max_len=500),
+                            (_normalize_string_list(item.get("source_entity_names"), max_items=6, max_len=120) + [""] * 6),
+                        )
+                    ],
+                }
+                for item in (legacy_adjacent_capabilities + legacy_adjacent_customer_segments)
+                if isinstance(item, dict)
+            ],
+            max_items=12,
+        )
+    normalized_boxes: list[dict[str, Any]] = []
+    derived_technology_shift_claims: list[dict[str, Any]] = []
+    for box in adjacency_boxes:
+        if str(box.get("adjacency_kind") or "") == "technology_shift":
+            derived_technology_shift_claims.append(
+                {
+                    "id": str(box.get("id") or _stable_id("technology_shift", box.get("label"))),
+                    "label": str(box.get("label") or "").strip(),
+                    "status": str(box.get("status") or "hypothesis").strip().lower(),
+                    "confidence": _clamp_confidence(box.get("confidence"), default=0.58),
+                    "why_it_matters": _safe_phrase(box.get("why_it_matters"), max_len=400),
+                    "affected_adjacency_box_ids": _normalize_string_list(box.get("related_source_node_ids"), max_items=8, max_len=120),
+                    "company_seed_ids": _normalize_string_list(box.get("company_seed_ids"), max_items=8, max_len=120),
+                    "evidence": _normalize_expansion_evidence_items(box.get("evidence"), max_items=8),
+                }
+            )
+            continue
+        normalized_boxes.append(box)
+    adjacency_boxes = normalized_boxes
+    company_seeds = normalize_company_seeds(payload.get("company_seeds"), max_items=16)
+    if not company_seeds:
+        company_seeds = normalize_company_seeds(
+            _derive_company_seeds_from_legacy_groups(
+                [legacy_adjacent_capabilities, legacy_adjacent_customer_segments]
+            ),
+            max_items=16,
+        )
+    technology_shift_claims = normalize_technology_shift_claims(
+        payload.get("technology_shift_claims") or derived_technology_shift_claims,
+        max_items=6,
+    )
+    seed_id_by_name = {
+        _normalize_phrase_key(seed.get("name")): str(seed.get("id") or "")
+        for seed in company_seeds
+        if isinstance(seed, dict) and str(seed.get("id") or "").strip()
+    }
+    normalized_boxes = []
+    for box in adjacency_boxes:
+        box_copy = dict(box)
+        if not (box_copy.get("company_seed_ids") or []):
+            matched_seed_ids = []
+            for evidence in box_copy.get("evidence") or []:
+                if not isinstance(evidence, dict):
+                    continue
+                source_name = _normalize_phrase_key(evidence.get("source_entity_name"))
+                seed_id = seed_id_by_name.get(source_name)
+                if seed_id and seed_id not in matched_seed_ids:
+                    matched_seed_ids.append(seed_id)
+            box_copy["company_seed_ids"] = matched_seed_ids[:8]
+        normalized_boxes.append(box_copy)
+    normalized_boxes, company_seeds, technology_shift_claims, validator_gaps = _validate_normalized_expansion_brief(
+        adjacency_boxes=normalized_boxes,
+        company_seeds=company_seeds,
+        technology_shift_claims=technology_shift_claims,
+    )
+    if normalized_boxes:
+        derived_capabilities: list[dict[str, Any]] = []
+        derived_customer_segments: list[dict[str, Any]] = []
+        for box in normalized_boxes:
+            item = _legacy_item_from_adjacency_box(box)
+            if not item:
+                continue
+            if str(item.get("expansion_type") or "") == "adjacent_customer_segment":
+                derived_customer_segments.append(item)
+            else:
+                derived_capabilities.append(item)
+        if derived_capabilities:
+            legacy_adjacent_capabilities = normalize_expansion_items(
+                derived_capabilities,
+                item_type="adjacent_capability",
+                max_items=10,
+            )
+        if derived_customer_segments:
+            legacy_adjacent_customer_segments = normalize_expansion_items(
+                derived_customer_segments,
+                item_type="adjacent_customer_segment",
+                max_items=8,
+            )
+    confidence_gaps = _normalize_string_list(
+        list(payload.get("confidence_gaps") or []) + validator_gaps,
+        max_items=10,
+        max_len=240,
+    )
+    open_questions = _normalize_string_list(payload.get("open_questions"), max_items=8, max_len=240)
     return {
+        "version": EXPANSION_BRIEF_VERSION,
         "reasoning_status": str(payload.get("reasoning_status") or "not_run"),
         "reasoning_warning": str(payload.get("reasoning_warning") or "").strip() or None,
+        "fallback_mode": bool(payload.get("fallback_mode")),
+        "research_report_markdown": _normalize_long_markdown(payload.get("research_report_markdown")),
+        "research_attempts": _serialize_attempt_traces(payload.get("research_attempts")),
+        "normalization_status": str(payload.get("normalization_status") or "not_run"),
+        "normalization_warning": str(payload.get("normalization_warning") or "").strip() or None,
+        "normalization_provider": str(payload.get("normalization_provider") or "").strip() or None,
+        "normalization_model": str(payload.get("normalization_model") or "").strip() or None,
+        "normalization_attempts": _serialize_attempt_traces(payload.get("normalization_attempts")),
         "reasoning_provider": str(payload.get("reasoning_provider") or "").strip() or None,
         "reasoning_model": str(payload.get("reasoning_model") or "").strip() or None,
         "confirmed_at": payload.get("confirmed_at"),
-        "adjacent_capabilities": normalize_expansion_items(
-            payload.get("adjacent_capabilities"),
-            item_type="adjacent_capability",
-            max_items=10,
-        ),
-        "adjacent_customer_segments": normalize_expansion_items(
-            payload.get("adjacent_customer_segments"),
-            item_type="adjacent_customer_segment",
-            max_items=8,
-        ),
-        "named_account_anchors": normalize_expansion_items(
-            payload.get("named_account_anchors"),
-            item_type="named_account_anchor",
-            max_items=8,
-        ),
-        "geography_expansions": normalize_expansion_items(
-            payload.get("geography_expansions"),
-            item_type="geography_expansion",
-            max_items=8,
-        ),
+        "adjacency_boxes": normalized_boxes,
+        "company_seeds": company_seeds,
+        "technology_shift_claims": technology_shift_claims,
+        "adjacent_capabilities": legacy_adjacent_capabilities,
+        "adjacent_customer_segments": legacy_adjacent_customer_segments,
+        "named_account_anchors": named_account_anchors,
+        "geography_expansions": geography_expansions,
+        "confidence_gaps": confidence_gaps,
+        "open_questions": open_questions,
     }
 
 
@@ -3482,6 +4299,8 @@ def _build_deterministic_expansion_brief(
                 "Expansion brief currently uses deterministic scaffolding from the source brief, expansion inputs, and workspace geo scope. "
                 "Bounded model-based deep research can enrich this artifact next."
             ),
+            "fallback_mode": True,
+            "normalization_status": "not_run",
             "adjacent_capabilities": adjacent_capabilities,
             "adjacent_customer_segments": adjacent_customer_segments,
             "named_account_anchors": named_account_anchors,
@@ -3497,8 +4316,13 @@ def _merge_reasoned_expansion_brief(
     taxonomy_nodes: list[dict[str, Any]],
     source_company: dict[str, Any],
     comparator_domains: set[str],
+    research_report: Optional[str] = None,
+    research_attempts: Optional[list[dict[str, Any]]] = None,
     reasoning_provider: Optional[str] = None,
     reasoning_model: Optional[str] = None,
+    normalization_provider: Optional[str] = None,
+    normalization_model: Optional[str] = None,
+    normalization_attempts: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     parsed = _extract_json_object(response_text)
     if not parsed:
@@ -3509,6 +4333,14 @@ def _merge_reasoned_expansion_brief(
                 "Expansion brief normalization returned invalid structured output. "
                 "Showing deterministic fallback from the source brief, expansion inputs, and geo scope."
             ),
+            "fallback_mode": True,
+            "research_report_markdown": research_report,
+            "research_attempts": research_attempts or [],
+            "normalization_status": "degraded",
+            "normalization_warning": "Expansion brief normalization returned invalid structured output.",
+            "normalization_provider": normalization_provider,
+            "normalization_model": normalization_model,
+            "normalization_attempts": normalization_attempts or [],
             "reasoning_provider": reasoning_provider,
             "reasoning_model": reasoning_model,
         }
@@ -3558,6 +4390,14 @@ def _merge_reasoned_expansion_brief(
         **normalized,
         "reasoning_status": str(parsed.get("reasoning_status") or "success"),
         "reasoning_warning": str(parsed.get("reasoning_warning") or "").strip() or None,
+        "fallback_mode": bool(parsed.get("fallback_mode")),
+        "research_report_markdown": research_report,
+        "research_attempts": research_attempts or [],
+        "normalization_status": str(parsed.get("normalization_status") or "success"),
+        "normalization_warning": str(parsed.get("normalization_warning") or "").strip() or None,
+        "normalization_provider": normalization_provider,
+        "normalization_model": normalization_model,
+        "normalization_attempts": normalization_attempts or [],
         "reasoning_provider": reasoning_provider,
         "reasoning_model": reasoning_model,
     }
@@ -3576,12 +4416,18 @@ def _reason_expansion_brief(
             **normalize_expansion_brief(fallback_brief),
             "reasoning_status": "not_applicable",
             "reasoning_warning": "Expansion reasoning did not run because the source brief is too thin to bound adjacency research.",
+            "fallback_mode": True,
+            "normalization_status": "not_applicable",
             "reasoning_provider": None,
             "reasoning_model": None,
         }
     settings = get_settings()
     if not any([settings.gemini_api_key, settings.openai_api_key, settings.anthropic_api_key]):
-        return normalize_expansion_brief(fallback_brief)
+        return {
+            **normalize_expansion_brief(fallback_brief),
+            "fallback_mode": True,
+            "normalization_status": "not_run",
+        }
 
     research_payload = _compact_expansion_research_payload(
         company_name=str(((sourcing_brief.get("source_company") or {}).get("name")) or _domain_brand_name(profile.buyer_company_url or "") or "Source Company"),
@@ -3593,14 +4439,15 @@ def _reason_expansion_brief(
         fallback_brief=fallback_brief,
     )
 
+    settings = get_settings()
     try:
         research_response = LLMOrchestrator().run_stage(
             LLMRequest(
                 stage=LLMStage.expansion_brief_reasoning,
                 prompt=_expansion_research_prompt(research_payload),
-                timeout_seconds=90,
+                timeout_seconds=max(60, int(getattr(settings, "stage_expansion_research_timeout_seconds", 600))),
                 use_web_search=True,
-                expect_json=True,
+                expect_json=False,
                 metadata={"company_name": research_payload["source_company"]["name"], "phase": "expansion_research"},
             )
         )
@@ -3619,6 +4466,9 @@ def _reason_expansion_brief(
             **normalize_expansion_brief(fallback_brief),
             "reasoning_status": "degraded",
             "reasoning_warning": warning,
+            "fallback_mode": True,
+            "research_attempts": _serialize_attempt_traces(getattr(exc, "attempts", None)),
+            "normalization_status": "not_run",
             "reasoning_provider": None,
             "reasoning_model": None,
         }
@@ -3630,19 +4480,25 @@ def _reason_expansion_brief(
                 "Expansion research failed unexpectedly. Showing deterministic fallback from the source brief, expansion inputs, and geo scope. "
                 f"Last error: {str(exc)[:240]}"
             ),
+            "fallback_mode": True,
+            "normalization_status": "not_run",
             "reasoning_provider": None,
             "reasoning_model": None,
         }
 
-    research_json = _extract_json_object(research_response.text)
-    if not research_json:
+    research_report = str(research_response.text or "").strip()
+    research_attempts = _serialize_attempt_traces(getattr(research_response, "attempts", None))
+    if not research_report:
         return {
             **normalize_expansion_brief(fallback_brief),
             "reasoning_status": "degraded",
             "reasoning_warning": (
-                "Expansion research returned invalid structured output. "
+                "Expansion research returned empty output. "
                 "Showing deterministic fallback from the source brief, expansion inputs, and geo scope."
             ),
+            "fallback_mode": True,
+            "research_attempts": research_attempts,
+            "normalization_status": "not_run",
             "reasoning_provider": getattr(research_response, "provider", None),
             "reasoning_model": getattr(research_response, "model", None),
         }
@@ -3653,7 +4509,7 @@ def _reason_expansion_brief(
                 stage=LLMStage.structured_normalization,
                 prompt=_expansion_normalization_prompt(
                     company_name=research_payload["source_company"]["name"],
-                    research_payload=research_json,
+                    research_report=research_report,
                     fallback_brief=fallback_brief,
                 ),
                 timeout_seconds=60,
@@ -3673,10 +4529,23 @@ def _reason_expansion_brief(
         )
         if attempt_error:
             warning = f"{warning} Last error: {attempt_error[:240]}"
+        last_provider = None
+        last_model = None
+        if getattr(exc, "attempts", None):
+            last_provider = getattr(exc.attempts[-1], "provider", None)
+            last_model = getattr(exc.attempts[-1], "model", None)
         return {
             **normalize_expansion_brief(fallback_brief),
             "reasoning_status": "degraded",
             "reasoning_warning": warning,
+            "fallback_mode": True,
+            "research_report_markdown": research_report,
+            "research_attempts": research_attempts,
+            "normalization_status": "degraded",
+            "normalization_warning": warning,
+            "normalization_provider": last_provider,
+            "normalization_model": last_model,
+            "normalization_attempts": _serialize_attempt_traces(getattr(exc, "attempts", None)),
             "reasoning_provider": getattr(research_response, "provider", None),
             "reasoning_model": getattr(research_response, "model", None),
         }
@@ -3686,6 +4555,14 @@ def _reason_expansion_brief(
             "reasoning_status": "degraded",
             "reasoning_warning": (
                 "Expansion normalization failed unexpectedly. Showing deterministic fallback from the source brief, expansion inputs, and geo scope. "
+                f"Last error: {str(exc)[:240]}"
+            ),
+            "fallback_mode": True,
+            "research_report_markdown": research_report,
+            "research_attempts": research_attempts,
+            "normalization_status": "degraded",
+            "normalization_warning": (
+                "Expansion normalization failed unexpectedly. "
                 f"Last error: {str(exc)[:240]}"
             ),
             "reasoning_provider": getattr(research_response, "provider", None),
@@ -3702,8 +4579,13 @@ def _reason_expansion_brief(
             for item in expansion_inputs
             if isinstance(item, dict) and normalize_domain(item.get("website") or item.get("url"))
         },
+        research_report=research_report,
+        research_attempts=research_attempts,
         reasoning_provider=getattr(research_response, "provider", None),
         reasoning_model=getattr(research_response, "model", None),
+        normalization_provider=getattr(normalization_response, "provider", None),
+        normalization_model=getattr(normalization_response, "model", None),
+        normalization_attempts=_serialize_attempt_traces(getattr(normalization_response, "attempts", None)),
     )
 
 
@@ -5451,6 +6333,11 @@ def apply_scope_review_decisions(
     taxonomy_nodes = normalize_taxonomy_nodes(payload["taxonomy_nodes"])
     expansion_brief = normalize_expansion_brief(payload["expansion_brief"])
     taxonomy_by_id = {str(node.get("id") or ""): node for node in taxonomy_nodes if str(node.get("id") or "").strip()}
+    adjacency_boxes_by_id = {
+        str(box.get("id") or ""): box
+        for box in expansion_brief.get("adjacency_boxes") or []
+        if isinstance(box, dict) and str(box.get("id") or "").strip()
+    }
 
     expansion_groups = (
         "adjacent_capabilities",
@@ -5469,6 +6356,8 @@ def apply_scope_review_decisions(
         if item_id in taxonomy_by_id:
             taxonomy_by_id[item_id]["scope_status"] = _taxonomy_scope_from_scope_status(status)
             continue
+        if item_id in adjacency_boxes_by_id:
+            adjacency_boxes_by_id[item_id]["status"] = status
         for group in expansion_groups:
             updated_group = []
             found = False

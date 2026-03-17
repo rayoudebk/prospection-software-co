@@ -240,16 +240,142 @@ class ExpansionBriefItemResponse(BaseModel):
     priority_tier: str = "meaningful_adjacent"
 
 
+class ExpansionEvidenceResponse(BaseModel):
+    url: str
+    title: Optional[str] = None
+    publisher: Optional[str] = None
+    publisher_type: Optional[str] = None
+    language: Optional[str] = None
+    evidence_tier: Optional[str] = None
+    source_entity_name: Optional[str] = None
+    claim_text: Optional[str] = None
+    supports: List[str] = Field(default_factory=list)
+
+
+class ExpansionEmergingSignalResponse(BaseModel):
+    label: str
+    theme_type: str
+    confidence: float
+    why_it_matters: Optional[str] = None
+
+
+class ExpansionSourceFitResponse(BaseModel):
+    shared_buyers: List[str] = Field(default_factory=list)
+    shared_workflows: List[str] = Field(default_factory=list)
+    shared_data_objects: List[str] = Field(default_factory=list)
+    shared_integrations: List[str] = Field(default_factory=list)
+    rationale: Optional[str] = None
+
+
+class ExpansionCriticalityResponse(BaseModel):
+    market_importance: str = "medium"
+    operational_centrality: str = "meaningful"
+    workflow_criticality: str = "medium"
+    daily_operator_usage: str = "medium"
+    switching_cost_intensity: str = "medium"
+    strategic_value_hypothesis: Optional[str] = None
+    replicability: str = "moderate"
+    market_density: str = "mixed"
+    adjacency_confidence: float = 0.6
+    switching_cost_confidence: float = 0.58
+    trend_confidence: float = 0.55
+
+
+class ModelAttemptTraceResponse(BaseModel):
+    stage: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    latency_ms: int = 0
+    status: Optional[str] = None
+    retry_count: int = 0
+    error_class: Optional[str] = None
+    error_message: Optional[str] = None
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+
+
+class ExpansionWorkflowAnatomyResponse(BaseModel):
+    primary_operators: List[str] = Field(default_factory=list)
+    primary_triggers: List[str] = Field(default_factory=list)
+    core_actions: List[str] = Field(default_factory=list)
+    systems_touched: List[str] = Field(default_factory=list)
+    frequency: str = "mixed"
+    failure_cost: Optional[str] = None
+    management_value: Optional[str] = None
+
+
+class AdjacencyBoxResponse(BaseModel):
+    id: str
+    label: str
+    canonical_concept_key: str
+    adjacency_kind: str
+    status: str
+    confidence: float
+    why_it_matters: Optional[str] = None
+    source_fit: ExpansionSourceFitResponse = Field(default_factory=ExpansionSourceFitResponse)
+    criticality: ExpansionCriticalityResponse = Field(default_factory=ExpansionCriticalityResponse)
+    workflow_anatomy: ExpansionWorkflowAnatomyResponse = Field(default_factory=ExpansionWorkflowAnatomyResponse)
+    supporting_node_ids: List[str] = Field(default_factory=list)
+    related_source_node_ids: List[str] = Field(default_factory=list)
+    likely_customer_segments: List[str] = Field(default_factory=list)
+    likely_workflows: List[str] = Field(default_factory=list)
+    evidence: List[ExpansionEvidenceResponse] = Field(default_factory=list)
+    emerging_signals: List[ExpansionEmergingSignalResponse] = Field(default_factory=list)
+    company_seed_ids: List[str] = Field(default_factory=list)
+    retrieval_query_seeds: List[str] = Field(default_factory=list)
+    original_language_aliases: List[str] = Field(default_factory=list)
+    language_specific_query_seeds: List[Dict[str, Any]] = Field(default_factory=list)
+    priority_tier: str = "meaningful_adjacent"
+
+
+class CompanySeedResponse(BaseModel):
+    id: str
+    name: str
+    website: Optional[str] = None
+    seed_type: str = "specialist"
+    seed_role: Optional[str] = None
+    status: str = "hypothesis"
+    confidence: float = 0.58
+    why_relevant: Optional[str] = None
+    fit_to_adjacency_box_ids: List[str] = Field(default_factory=list)
+    evidence: List[ExpansionEvidenceResponse] = Field(default_factory=list)
+
+
+class TechnologyShiftClaimResponse(BaseModel):
+    id: str
+    label: str
+    status: str = "hypothesis"
+    confidence: float = 0.58
+    why_it_matters: Optional[str] = None
+    affected_adjacency_box_ids: List[str] = Field(default_factory=list)
+    company_seed_ids: List[str] = Field(default_factory=list)
+    evidence: List[ExpansionEvidenceResponse] = Field(default_factory=list)
+
+
 class ExpansionBriefResponse(BaseModel):
+    version: str = "expansion_brief_v3"
     reasoning_status: str = "not_run"
     reasoning_warning: Optional[str] = None
+    fallback_mode: bool = False
+    research_report_markdown: Optional[str] = None
+    research_attempts: List[ModelAttemptTraceResponse] = Field(default_factory=list)
+    normalization_status: str = "not_run"
+    normalization_warning: Optional[str] = None
+    normalization_provider: Optional[str] = None
+    normalization_model: Optional[str] = None
+    normalization_attempts: List[ModelAttemptTraceResponse] = Field(default_factory=list)
     reasoning_provider: Optional[str] = None
     reasoning_model: Optional[str] = None
     confirmed_at: Optional[datetime] = None
+    adjacency_boxes: List[AdjacencyBoxResponse] = Field(default_factory=list)
+    company_seeds: List[CompanySeedResponse] = Field(default_factory=list)
+    technology_shift_claims: List[TechnologyShiftClaimResponse] = Field(default_factory=list)
     adjacent_capabilities: List[ExpansionBriefItemResponse] = Field(default_factory=list)
     adjacent_customer_segments: List[ExpansionBriefItemResponse] = Field(default_factory=list)
     named_account_anchors: List[ExpansionBriefItemResponse] = Field(default_factory=list)
     geography_expansions: List[ExpansionBriefItemResponse] = Field(default_factory=list)
+    confidence_gaps: List[str] = Field(default_factory=list)
+    open_questions: List[str] = Field(default_factory=list)
 
 
 class ScopeReviewItemResponse(BaseModel):
