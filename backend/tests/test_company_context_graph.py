@@ -5,6 +5,10 @@ from app.services.company_context_graph import (
     _canonicalize_graph,
     build_company_context_graph,
     build_company_context_payload,
+    company_context_graph_namespace,
+    company_context_graph_ref,
+    legacy_company_context_graph_ref,
+    Neo4jCompanyContextGraphStore,
     sync_company_context_pack_graph,
 )
 from app.services.company_context import build_company_context_artifacts
@@ -610,6 +614,87 @@ def test_sync_company_context_pack_graph_persists_deep_research_handoff(monkeypa
 
     assert payload["deep_research_handoff"]["source_company_truth"]["source_company"]["name"] == "4TPM"
     assert pack.company_context_graph_cache_json["deep_research_handoff"]["source_company_truth"]["source_company"]["name"] == "4TPM"
+
+
+def test_company_context_graph_ref_is_namespaced(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.company_context_graph.get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "graph_namespace": "",
+                "database_url_sync": "postgresql://postgres:postgres@localhost:5432/prospection",
+                "database_url": "postgresql+asyncpg://postgres:postgres@localhost:5432/prospection",
+            },
+        )(),
+    )
+
+    namespace = company_context_graph_namespace()
+
+    assert namespace == "localhost-prospection"
+    assert company_context_graph_ref(42, "4TPM") == "localhost-prospection-workspace-42-4tpm"
+    assert legacy_company_context_graph_ref(42, "4TPM") == "workspace-42-4tpm"
+
+
+def test_sync_graph_purges_by_namespace_and_workspace(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, query, **params):
+            self.calls.append((query, params))
+            return None
+
+    class FakeDriver:
+        def __init__(self, session):
+            self._session = session
+
+        def session(self, database=None):
+            return self._session
+
+    fake_session = FakeSession()
+    store = Neo4jCompanyContextGraphStore()
+    monkeypatch.setattr(store, "_driver_or_none", lambda: FakeDriver(fake_session))
+    monkeypatch.setattr(
+        store,
+        "settings",
+        type("Settings", (), {"neo4j_database": "neo4j", "database_url_sync": "", "database_url": "", "graph_namespace": "dev-local"})(),
+    )
+    graph = {
+        "graph_ref": "dev-local-workspace-42-4tpm",
+        "graph_namespace": "dev-local",
+        "workspace_id": 42,
+        "nodes": [
+            {"id": "company_1", "label": "Company", "name": "4TPM"},
+            {"id": "workflow_1", "label": "Workflow", "name": "Front office"},
+        ],
+        "edges": [
+            {"id": "edge_1", "type": "SUPPORTS_WORKFLOW", "from_id": "company_1", "to_id": "workflow_1"},
+        ],
+    }
+
+    result = store.sync_graph(graph)
+
+    assert result["status"] == "success"
+    delete_query, delete_params = fake_session.calls[0]
+    assert "graph_namespace" in delete_query
+    assert delete_params["graph_namespace"] == "dev-local"
+    assert delete_params["workspace_id"] == 42
+    create_nodes_query, create_nodes_params = fake_session.calls[1]
+    assert "CREATE (n:CompanyContext:Company)" in create_nodes_query
+    assert create_nodes_params["rows"][0]["graph_namespace"] == "dev-local"
+    assert create_nodes_params["rows"][0]["workspace_id"] == 42
+    edge_query, edge_params = fake_session.calls[3]
+    assert "graph_namespace: $graph_namespace" in edge_query
+    assert edge_params["rows"][0]["graph_namespace"] == "dev-local"
+    assert edge_params["rows"][0]["workspace_id"] == 42
 
 
 def test_primary_graph_excludes_comparator_seed_documents(monkeypatch):

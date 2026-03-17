@@ -497,6 +497,7 @@ class CompanyContextPackResponse(BaseModel):
     id: int
     workspace_id: int
     company_context_graph_ref: Optional[str] = None
+    company_context_graph_namespace: Optional[str] = None
     graph_status: str = "not_synced"
     graph_warning: Optional[str] = None
     graph_synced_at: Optional[datetime] = None
@@ -1213,6 +1214,7 @@ def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyCo
         id=int(payload.get("id") or 0),
         workspace_id=int(payload.get("workspace_id") or 0),
         company_context_graph_ref=payload.get("company_context_graph_ref"),
+        company_context_graph_namespace=payload.get("company_context_graph_namespace"),
         graph_status=str(payload.get("graph_status") or "not_synced"),
         graph_warning=payload.get("graph_warning"),
         graph_synced_at=payload.get("graph_synced_at"),
@@ -1270,6 +1272,7 @@ def _company_context_refresh_response_from_payload(payload: Dict[str, Any]) -> C
         id=int(payload.get("id") or 0),
         workspace_id=int(payload.get("workspace_id") or 0),
         company_context_graph_ref=payload.get("company_context_graph_ref"),
+        company_context_graph_namespace=payload.get("company_context_graph_namespace"),
         graph_status=str(payload.get("graph_status") or "not_synced"),
         graph_warning=payload.get("graph_warning"),
         graph_synced_at=payload.get("graph_synced_at"),
@@ -1364,6 +1367,7 @@ def _company_context_payload_from_pack(
         company_context_pack.company_context_graph_ref
         or graph_cache.get("graph_ref")
     )
+    graph_namespace = graph_cache.get("graph_namespace")
     payload = {
         "id": company_context_pack.id,
         "workspace_id": company_context_pack.workspace_id,
@@ -1377,6 +1381,7 @@ def _company_context_payload_from_pack(
         "confirmed_at": company_context_pack.confirmed_at,
     }
     payload["company_context_graph_ref"] = graph_ref
+    payload["company_context_graph_namespace"] = graph_namespace
     payload["company_context_graph"] = graph_cache or None
     payload["graph_status"] = company_context_pack.graph_sync_status or "not_synced"
     payload["graph_warning"] = company_context_pack.graph_sync_error
@@ -2583,6 +2588,30 @@ async def refresh_company_context(
     payload = _company_context_payload_from_pack(company_context_pack, profile=profile)
     payload["workspace_id"] = workspace_id
     payload["id"] = company_context_pack.id
+    return _company_context_refresh_response_from_payload(payload)
+
+
+@router.post("/{workspace_id}/company-context-graph:rebuild", response_model=CompanyContextPackResponse)
+async def rebuild_company_context_graph_projection(
+    workspace_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_company_profile(db, workspace_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Context pack not found")
+    company_context_pack = await _ensure_company_context_pack(
+        db,
+        workspace_id,
+        profile=profile,
+    )
+    payload = await _sync_company_context_graph(company_context_pack, profile)
+    db.add(company_context_pack)
+    await db.commit()
+    await db.refresh(company_context_pack)
+    payload["workspace_id"] = workspace_id
+    payload["id"] = company_context_pack.id
+    payload["generated_at"] = company_context_pack.generated_at
+    payload["confirmed_at"] = company_context_pack.confirmed_at
     return _company_context_refresh_response_from_payload(payload)
 
 

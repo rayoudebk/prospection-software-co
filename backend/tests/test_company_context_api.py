@@ -464,7 +464,8 @@ def test_company_context_uses_graph_ref_from_cache_when_column_empty(tmp_path: P
         workspace_id=42,
         company_context_graph_ref=None,
         company_context_graph_cache_json={
-            "graph_ref": "workspace-test-acme",
+            "graph_ref": "localhost-prospection-workspace-test-acme",
+            "graph_namespace": "localhost-prospection",
             "source_documents": [],
             "nodes": [],
             "edges": [],
@@ -482,7 +483,8 @@ def test_company_context_uses_graph_ref_from_cache_when_column_empty(tmp_path: P
     )
 
     payload = workspaces._company_context_payload_from_pack(pack, profile=profile)
-    assert payload["company_context_graph_ref"] == "workspace-test-acme"
+    assert payload["company_context_graph_ref"] == "localhost-prospection-workspace-test-acme"
+    assert payload["company_context_graph_namespace"] == "localhost-prospection"
 
 
 def test_workspace_region_update_keeps_profile_geo_scope_in_sync(tmp_path: Path):
@@ -532,7 +534,8 @@ def test_company_context_response_preserves_expansion_inputs():
         "workspace_id": 7,
         "graph_status": "success",
         "graph_stats": {},
-        "deep_research_handoff": {"graph_ref": "workspace-7-4tpm"},
+        "company_context_graph_namespace": "localhost-prospection",
+        "deep_research_handoff": {"graph_ref": "localhost-prospection-workspace-7-4tpm"},
         "source_documents": [],
         "context_pack_v2": {"sites": []},
         "expansion_inputs": [
@@ -568,7 +571,8 @@ def test_company_context_response_preserves_expansion_inputs():
 
     response = _company_context_response_from_payload(payload)
 
-    assert response.deep_research_handoff["graph_ref"] == "workspace-7-4tpm"
+    assert response.company_context_graph_namespace == "localhost-prospection"
+    assert response.deep_research_handoff["graph_ref"] == "localhost-prospection-workspace-7-4tpm"
     assert len(response.expansion_inputs) == 2
     assert response.expansion_inputs[0]["name"] == "CWAN"
     assert response.expansion_inputs[1]["name"] == "Wealth Dynamix"
@@ -586,6 +590,53 @@ def test_context_pack_refresh_runs_inline_when_enqueue_fails(tmp_path: Path):
             response = client.post(f"/workspaces/{workspace_id}/context-pack:refresh")
 
     assert response.status_code == 200
+
+
+def test_company_context_graph_rebuild_resyncs_projection_from_pack(tmp_path: Path):
+    client, session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Graph rebuild workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+    _seed_company_profile(session_maker, workspace_id)
+
+    async def seed_pack() -> None:
+        async with session_maker() as session:
+            result = await session.execute(
+                select(CompanyContextPack).where(CompanyContextPack.workspace_id == workspace_id)
+            )
+            pack = result.scalar_one_or_none()
+            if pack is None:
+                pack = CompanyContextPack(workspace_id=workspace_id)
+            pack.sourcing_brief_json = {"source_company": {"name": "Acme"}}
+            session.add(pack)
+            await session.commit()
+
+    asyncio.run(seed_pack())
+
+    async def _fake_sync(company_context_pack, profile, *, payload_override=None):
+        return {
+            "id": company_context_pack.id,
+            "workspace_id": company_context_pack.workspace_id,
+            "company_context_graph_ref": f"localhost-prospection-workspace-{workspace_id}-acme",
+            "company_context_graph_namespace": "localhost-prospection",
+            "graph_status": "success",
+            "graph_warning": None,
+            "graph_stats": {"node_count": 2},
+            "graph_synced_at": datetime.utcnow(),
+            "generated_at": company_context_pack.generated_at,
+            "confirmed_at": company_context_pack.confirmed_at,
+        }
+
+    with patch("app.api.workspaces._sync_company_context_graph", _fake_sync):
+        response = client.post(f"/workspaces/{workspace_id}/company-context-graph:rebuild")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workspace_id"] == workspace_id
+    assert payload["company_context_graph_ref"] == f"localhost-prospection-workspace-{workspace_id}-acme"
+    assert payload["company_context_graph_namespace"] == "localhost-prospection"
+    assert payload["graph_status"] == "success"
 
 
 def test_context_pack_refresh_returns_clear_503_when_enqueue_and_inline_fail(tmp_path: Path):

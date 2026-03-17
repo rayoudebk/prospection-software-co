@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/prospection"
     database_url_sync: str = "postgresql://postgres:postgres@localhost:5432/prospection"
+    graph_namespace: str = ""
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"

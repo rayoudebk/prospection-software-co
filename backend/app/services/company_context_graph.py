@@ -170,14 +170,42 @@ def _confidence(value: Any, default: float = 0.7) -> float:
     return max(0.0, min(parsed, 1.0))
 
 
-def company_context_graph_ref(workspace_id: int, company_name: str | None = None) -> str:
+def company_context_graph_namespace(settings: Any | None = None) -> str:
+    resolved_settings = settings or get_settings()
+    explicit = _slug_phrase(getattr(resolved_settings, "graph_namespace", ""))
+    if explicit and explicit != "unknown":
+        return explicit
+    database_url = (
+        str(getattr(resolved_settings, "database_url_sync", "") or "")
+        or str(getattr(resolved_settings, "database_url", "") or "")
+    )
+    normalized_database_url = database_url.replace("+asyncpg", "")
+    parsed = urlparse(normalized_database_url)
+    host = parsed.hostname or "local"
+    database_name = (parsed.path or "").strip("/") or "prospection"
+    return _slug_phrase(f"{host}-{database_name}")
+
+
+def legacy_company_context_graph_ref(workspace_id: int, company_name: str | None = None) -> str:
     suffix = _slug_phrase(company_name or f"workspace-{workspace_id}")
     return f"workspace-{int(workspace_id)}-{suffix}"
 
 
-def _empty_graph(graph_ref: str, workspace_id: int) -> Dict[str, Any]:
+def company_context_graph_ref(
+    workspace_id: int,
+    company_name: str | None = None,
+    *,
+    graph_namespace: str | None = None,
+) -> str:
+    namespace = _slug_phrase(graph_namespace or company_context_graph_namespace())
+    suffix = _slug_phrase(company_name or f"workspace-{workspace_id}")
+    return f"{namespace}-workspace-{int(workspace_id)}-{suffix}"
+
+
+def _empty_graph(graph_ref: str, workspace_id: int, *, graph_namespace: str) -> Dict[str, Any]:
     return {
         "graph_ref": graph_ref,
+        "graph_namespace": graph_namespace,
         "workspace_id": workspace_id,
         "generated_at": _utcnow_iso(),
         "nodes": [],
@@ -681,8 +709,13 @@ def build_primary_company_graph_from_context(
         or normalize_domain(profile.buyer_company_url or "")
         or "Source Company"
     )
-    graph_ref = company_context_graph_ref(profile.workspace_id, company_name)
-    graph = _empty_graph(graph_ref, profile.workspace_id)
+    graph_namespace = company_context_graph_namespace()
+    graph_ref = company_context_graph_ref(
+        profile.workspace_id,
+        company_name,
+        graph_namespace=graph_namespace,
+    )
+    graph = _empty_graph(graph_ref, profile.workspace_id, graph_namespace=graph_namespace)
     company_id = _stable_id("company", graph_ref, company_name)
     graph["company_node_id"] = company_id
     graph["sourcing_brief"] = deepcopy(payload.get("sourcing_brief") or {})
@@ -1335,7 +1368,11 @@ def _build_secondary_company_graph(
     primary_graph: Dict[str, Any],
 ) -> Dict[str, Any]:
     settings = get_settings()
-    graph = _empty_graph(primary_graph["graph_ref"], profile.workspace_id)
+    graph = _empty_graph(
+        primary_graph["graph_ref"],
+        profile.workspace_id,
+        graph_namespace=str(primary_graph.get("graph_namespace") or company_context_graph_namespace()),
+    )
     queries = _build_secondary_queries(primary_graph, profile.comparator_seed_urls or [])
     if not queries:
         return graph
@@ -2203,6 +2240,65 @@ class Neo4jCompanyContextGraphStore:
             )
         return self._driver
 
+    def purge_workspace_projection(
+        self,
+        *,
+        graph_namespace: str,
+        workspace_id: int,
+        legacy_graph_ref: str | None = None,
+        include_legacy_graph_ref: bool = False,
+    ) -> Dict[str, Any]:
+        driver = self._driver_or_none()
+        if driver is None:
+            return {
+                "status": "not_configured",
+                "error": "Neo4j is not configured",
+                "graph_namespace": graph_namespace,
+                "workspace_id": workspace_id,
+            }
+        database = self.settings.neo4j_database or None
+        try:
+            with driver.session(database=database) as session:
+                delete_result = session.run(
+                    """
+                    MATCH (n:CompanyContext {graph_namespace: $graph_namespace, workspace_id: $workspace_id})
+                    WITH collect(n) AS nodes
+                    FOREACH (node IN nodes | DETACH DELETE node)
+                    RETURN size(nodes) AS deleted_count
+                    """,
+                    graph_namespace=graph_namespace,
+                    workspace_id=int(workspace_id),
+                ).single()
+                deleted_count = int((delete_result or {}).get("deleted_count") or 0)
+                legacy_deleted_count = 0
+                if include_legacy_graph_ref and legacy_graph_ref:
+                    legacy_result = session.run(
+                        """
+                        MATCH (n:CompanyContext {graph_ref: $graph_ref})
+                        WHERE coalesce(n.graph_namespace, '') = ''
+                        WITH collect(n) AS nodes
+                        FOREACH (node IN nodes | DETACH DELETE node)
+                        RETURN size(nodes) AS deleted_count
+                        """,
+                        graph_ref=legacy_graph_ref,
+                    ).single()
+                    legacy_deleted_count = int((legacy_result or {}).get("deleted_count") or 0)
+            return {
+                "status": "success",
+                "error": None,
+                "graph_namespace": graph_namespace,
+                "workspace_id": int(workspace_id),
+                "deleted_count": deleted_count,
+                "legacy_deleted_count": legacy_deleted_count,
+            }
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "error": str(exc),
+                "graph_namespace": graph_namespace,
+                "workspace_id": int(workspace_id),
+            }
+
     def sync_graph(self, graph: Dict[str, Any]) -> Dict[str, Any]:
         driver = self._driver_or_none()
         if driver is None:
@@ -2212,10 +2308,29 @@ class Neo4jCompanyContextGraphStore:
                 "graph_ref": graph.get("graph_ref"),
             }
         graph_ref = str(graph.get("graph_ref") or "")
+        graph_namespace = _slug_phrase(
+            graph.get("graph_namespace") or company_context_graph_namespace(self.settings)
+        )
+        workspace_id = int(graph.get("workspace_id") or 0)
+        if not graph_ref or not graph_namespace or workspace_id <= 0:
+            return {
+                "status": "failed",
+                "error": "Graph projection missing graph_ref, graph_namespace, or workspace_id",
+                "graph_ref": graph_ref,
+                "graph_namespace": graph_namespace,
+                "workspace_id": workspace_id,
+            }
         database = self.settings.neo4j_database or None
         try:
             with driver.session(database=database) as session:
-                session.run("MATCH (n {graph_ref: $graph_ref}) DETACH DELETE n", graph_ref=graph_ref)
+                session.run(
+                    """
+                    MATCH (n:CompanyContext {graph_namespace: $graph_namespace, workspace_id: $workspace_id})
+                    DETACH DELETE n
+                    """,
+                    graph_namespace=graph_namespace,
+                    workspace_id=workspace_id,
+                )
                 nodes_by_label: Dict[str, List[Dict[str, Any]]] = {}
                 for node in graph.get("nodes", []) or []:
                     label = str(node.get("label") or "").strip()
@@ -2223,6 +2338,8 @@ class Neo4jCompanyContextGraphStore:
                         continue
                     payload = deepcopy(node)
                     payload["graph_ref"] = graph_ref
+                    payload["graph_namespace"] = graph_namespace
+                    payload["workspace_id"] = workspace_id
                     nodes_by_label.setdefault(label, []).append(payload)
                 for label, rows in nodes_by_label.items():
                     session.run(
@@ -2239,17 +2356,39 @@ class Neo4jCompanyContextGraphStore:
                     session.run(
                         f"""
                         UNWIND $rows AS row
-                        MATCH (from:CompanyContext {{id: row.from_id, graph_ref: $graph_ref}})
-                        MATCH (to:CompanyContext {{id: row.to_id, graph_ref: $graph_ref}})
+                        MATCH (from:CompanyContext {{id: row.from_id, graph_ref: $graph_ref, graph_namespace: $graph_namespace, workspace_id: $workspace_id}})
+                        MATCH (to:CompanyContext {{id: row.to_id, graph_ref: $graph_ref, graph_namespace: $graph_namespace, workspace_id: $workspace_id}})
                         CREATE (from)-[rel:{edge_type}]->(to)
                         SET rel = row
                         """,
-                        rows=rows,
+                        rows=[
+                            {
+                                **deepcopy(row),
+                                "graph_ref": graph_ref,
+                                "graph_namespace": graph_namespace,
+                                "workspace_id": workspace_id,
+                            }
+                            for row in rows
+                        ],
                         graph_ref=graph_ref,
+                        graph_namespace=graph_namespace,
+                        workspace_id=workspace_id,
                     )
-            return {"status": "success", "error": None, "graph_ref": graph_ref}
+            return {
+                "status": "success",
+                "error": None,
+                "graph_ref": graph_ref,
+                "graph_namespace": graph_namespace,
+                "workspace_id": workspace_id,
+            }
         except Exception as exc:
-            return {"status": "failed", "error": str(exc), "graph_ref": graph_ref}
+            return {
+                "status": "failed",
+                "error": str(exc),
+                "graph_ref": graph_ref,
+                "graph_namespace": graph_namespace,
+                "workspace_id": workspace_id,
+            }
 
 
 def sync_company_context_pack_graph(
@@ -2264,6 +2403,11 @@ def sync_company_context_pack_graph(
         else build_company_context_payload(company_context_pack, profile)
     )
     graph_payload = payload.get("company_context_graph") or {}
+    graph_namespace = str(
+        payload.get("company_context_graph_namespace")
+        or graph_payload.get("graph_namespace")
+        or company_context_graph_namespace()
+    )
     sync_result = Neo4jCompanyContextGraphStore().sync_graph(graph_payload)
     sync_status = str(sync_result.get("status") or "failed")
     graph_ref = (
@@ -2273,6 +2417,7 @@ def sync_company_context_pack_graph(
     )
 
     graph_cache = deepcopy(graph_payload)
+    graph_cache["graph_namespace"] = graph_namespace
     graph_cache["deep_research_handoff"] = (
         payload.get("deep_research_handoff")
         if isinstance(payload.get("deep_research_handoff"), dict)
@@ -2300,6 +2445,7 @@ def sync_company_context_pack_graph(
     payload["graph_warning"] = sync_result.get("error")
     payload["graph_synced_at"] = company_context_pack.graph_synced_at
     payload["company_context_graph_ref"] = graph_ref
+    payload["company_context_graph_namespace"] = graph_namespace
     payload["source_documents"] = graph_cache.get("source_documents") or []
     return payload
 
@@ -2354,6 +2500,7 @@ def build_company_context_payload(
     return {
         **base_payload,
         "company_context_graph_ref": graph.get("graph_ref"),
+        "company_context_graph_namespace": graph.get("graph_namespace"),
         "company_context_graph": graph,
         "deep_research_handoff": deep_research_handoff,
         "graph_status": "ready",
