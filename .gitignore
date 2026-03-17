@@ -27,3 +27,4 @@ test_run_output*.json
 # Logs and temp files
 *.log
 *.tmp
+tmp/

@@ -17,11 +17,31 @@ import {
 import {
   ReportArtifact,
   ReportArtifactBlock,
+  ReportArtifactSection,
   ReportArtifactSourcePill,
 } from "@/lib/api";
 
 function sourceChipLabel(source: ReportArtifactSourcePill): string {
   return source.label || source.publisher || "Source";
+}
+
+function getSectionLayout(section: ReportArtifactSection): "default" | "compact_grid" | "dense_rows" {
+  if (section.id === "signals" || section.id === "proof") {
+    return "compact_grid";
+  }
+  if (section.id === "secondary") {
+    return "dense_rows";
+  }
+  return "default";
+}
+
+function splitCompactLabel(text: string): { label: string; body: string } | null {
+  const separatorIndex = text.indexOf(": ");
+  if (separatorIndex <= 0) return null;
+  return {
+    label: text.slice(0, separatorIndex).trim(),
+    body: text.slice(separatorIndex + 2).trim(),
+  };
 }
 
 function SourceDrawer({
@@ -134,10 +154,12 @@ function InlineCitations({
 
 function RenderBlock({
   block,
+  layout,
   pillById,
   onOpenSources,
 }: {
   block: ReportArtifactBlock;
+  layout: "default" | "compact_grid" | "dense_rows";
   pillById: Map<string, ReportArtifactSourcePill>;
   onOpenSources: (pillIds: string[]) => void;
 }) {
@@ -159,6 +181,58 @@ function RenderBlock({
   }
 
   if (block.type === "bullet_list") {
+    if (layout === "compact_grid") {
+      return (
+        <ul className="grid gap-3 md:grid-cols-2">
+          {block.items.map((item) => {
+            const compactText = splitCompactLabel(item.text);
+            return (
+              <li
+                key={item.id}
+                className="rounded-2xl border border-steel-200 bg-steel-50/70 px-4 py-3"
+              >
+                {compactText ? (
+                  <div className="mb-2">
+                    <span className="inline-flex rounded-full border border-steel-200 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-steel-500">
+                      {compactText.label}
+                    </span>
+                  </div>
+                ) : null}
+                <div className="text-sm leading-6 text-oxford">
+                  {compactText?.body || item.text}
+                  <InlineCitations
+                    pillIds={item.citation_pill_ids}
+                    pillById={pillById}
+                    onOpenSources={onOpenSources}
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      );
+    }
+
+    if (layout === "dense_rows") {
+      return (
+        <ul className="space-y-2.5">
+          {block.items.map((item) => (
+            <li
+              key={item.id}
+              className="rounded-2xl border border-steel-200 bg-steel-50/70 px-4 py-3 text-sm leading-6 text-steel-700"
+            >
+              {item.text}
+              <InlineCitations
+                pillIds={item.citation_pill_ids}
+                pillById={pillById}
+                onOpenSources={onOpenSources}
+              />
+            </li>
+          ))}
+        </ul>
+      );
+    }
+
     return (
       <ul className="space-y-3">
         {block.items.map((item) => (
@@ -320,7 +394,14 @@ export function ReportArtifactRenderer({
 
         <div className="mt-6 space-y-8">
           {artifact.sections.map((section) => (
-            <section key={section.id} className="space-y-4">
+            <section
+              key={section.id}
+              className={clsx(
+                "space-y-4",
+                getSectionLayout(section) !== "default" &&
+                  "rounded-[24px] border border-steel-100 bg-[#fbfcfd] px-4 py-4",
+              )}
+            >
               {section.heading ? (
                 <h3 className="text-[11px] font-semibold uppercase tracking-[0.22em] text-steel-400">
                   {section.heading}
@@ -331,6 +412,7 @@ export function ReportArtifactRenderer({
                   <RenderBlock
                     key={`${section.id}-${block.type}-${index}`}
                     block={block}
+                    layout={getSectionLayout(section)}
                     pillById={pillById}
                     onOpenSources={handleOpenSources}
                   />
