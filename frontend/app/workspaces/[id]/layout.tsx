@@ -14,13 +14,13 @@ import clsx from "clsx";
 const navItems = [
   {
     href: "context",
-    label: "Sourcing Brief",
+    label: "Source & Brief",
     step: 1,
     gateKey: null,
   },
   {
     href: "bricks",
-    label: "Expansion Brief",
+    label: "Expansion",
     step: 2,
     gateKey: "context_pack",
   },
@@ -29,18 +29,6 @@ const navItems = [
     label: "Universe",
     step: 3,
     gateKey: "scope_review",
-  },
-  {
-    href: "validation",
-    label: "Validation",
-    step: 4,
-    gateKey: "universe",
-  },
-  {
-    href: "report",
-    label: "Cards",
-    step: 5,
-    gateKey: "enrichment",
   },
 ];
 
@@ -63,8 +51,6 @@ export default function WorkspaceLayout({
         gates.context_pack,
         gates.scope_review,
         gates.universe,
-        gates.segmentation,
-        gates.enrichment,
       ]
     : [];
 

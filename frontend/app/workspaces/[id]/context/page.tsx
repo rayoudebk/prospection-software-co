@@ -9,23 +9,17 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronUp,
-  ExternalLink,
-  Globe,
   Loader2,
   Plus,
   RefreshCw,
   X,
 } from "lucide-react";
 
-import { StepHeader } from "@/components/StepHeader";
 import { JobProgressPanel } from "@/components/JobProgressPanel";
 import { JobRunSummary } from "@/components/JobRunSummary";
 import { ReportArtifactRenderer } from "@/components/ReportArtifactRenderer";
-import {
-  ContextPackV2,
-  SourceDocument,
-  workspaceApi,
-} from "@/lib/api";
+import { StepHeader } from "@/components/StepHeader";
+import { TaxonomyNode, workspaceApi } from "@/lib/api";
 import {
   useContextPack,
   useCompanyContextPack,
@@ -36,12 +30,6 @@ import {
   useWorkspaceJobs,
   useWorkspaceJobWithPolling,
 } from "@/lib/hooks";
-
-type SourceDrawerItem = SourceDocument & {
-  hostname: string;
-  displayUrl: string;
-  badge: string | null;
-};
 
 function normalizeUrlInput(raw: string): string | null {
   const trimmed = raw.trim();
@@ -62,14 +50,6 @@ function normalizeUrlInput(raw: string): string | null {
   }
 }
 
-function getSourceHostname(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return url;
-  }
-}
-
 function getSourceDisplayUrl(url: string): string {
   try {
     const parsed = new URL(url);
@@ -81,108 +61,9 @@ function getSourceDisplayUrl(url: string): string {
   }
 }
 
-function getSourceBadge(label: string): string | null {
-  if (label === "Buyer website") return "Buyer";
-  if (label.startsWith("Comparator seed:")) return "Comparator";
-  if (label.startsWith("Evidence source:")) return "Evidence";
-  return null;
-}
-
-function SourcesDrawer({
-  isOpen,
-  onClose,
-  sources,
-}: {
-  isOpen: boolean;
-  onClose: () => void;
-  sources: SourceDrawerItem[];
-}) {
-  if (!isOpen) return null;
-
-  return (
-    <div className="fixed inset-0 z-50">
-      <button
-        type="button"
-        aria-label="Close sources panel"
-        onClick={onClose}
-        className="absolute inset-0 bg-oxford/20 backdrop-blur-[2px]"
-      />
-
-      <aside
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="sources-panel-title"
-        className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col border-l border-white/10 bg-[#111315] text-white shadow-2xl"
-      >
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.24em] text-white/45">
-              Crawl sources
-            </p>
-            <h4 id="sources-panel-title" className="mt-1 text-2xl font-semibold">
-              {sources.length} source{sources.length === 1 ? "" : "s"}
-            </h4>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-white/70 transition-colors hover:border-white/20 hover:bg-white/5 hover:text-white"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-4 py-4">
-          <div className="space-y-3">
-            {sources.map((source) => (
-              <a
-                key={source.id}
-                href={source.url || "#"}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="group block rounded-2xl border border-white/10 bg-white/[0.03] p-4 transition-colors hover:border-white/20 hover:bg-white/[0.06]"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/[0.06] text-white/65">
-                    <Globe className="h-4 w-4" />
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-2 flex flex-wrap items-center gap-2">
-                      {source.badge ? (
-                        <span className="rounded-full border border-white/10 bg-white/[0.06] px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.18em] text-white/70">
-                          {source.badge}
-                        </span>
-                      ) : null}
-                      <span className="text-[11px] uppercase tracking-[0.22em] text-white/45">
-                        {source.hostname}
-                      </span>
-                    </div>
-
-                    <div className="text-base font-semibold leading-snug text-white">
-                      {source.name}
-                    </div>
-                    <div className="mt-1 break-all text-sm text-white/58">
-                      {source.displayUrl}
-                    </div>
-                  </div>
-
-                  <ExternalLink className="mt-1 h-4 w-4 shrink-0 text-white/40 transition-colors group-hover:text-white/75" />
-                </div>
-              </a>
-            ))}
-          </div>
-        </div>
-      </aside>
-    </div>
-  );
-}
-
 function UrlEditor({
   title,
   helper,
-  badgeTone,
-  badgeLabel,
   urls,
   newUrl,
   onNewUrlChange,
@@ -193,8 +74,6 @@ function UrlEditor({
 }: {
   title: string;
   helper: string;
-  badgeTone: string;
-  badgeLabel: string;
   urls: string[];
   newUrl: string;
   onNewUrlChange: (value: string) => void;
@@ -205,13 +84,9 @@ function UrlEditor({
 }) {
   return (
     <div className="space-y-2.5">
-      <label className="flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-          {title}
-        </span>
-        <span className={clsx("text-[11px]", badgeTone)}>{badgeLabel}</span>
+      <label className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+        {title}
       </label>
-
       <p className="text-sm text-steel-500">{helper}</p>
 
       {urls.length ? (
@@ -221,7 +96,6 @@ function UrlEditor({
               key={`${url}-${index}`}
               className="inline-flex max-w-full items-center gap-2 rounded-full border border-steel-200 bg-steel-50 px-3 py-1.5 text-xs text-steel-600"
             >
-              <Globe className="h-3 w-3 shrink-0 text-steel-400" />
               <span className="truncate font-mono">{getSourceDisplayUrl(url)}</span>
               <button
                 type="button"
@@ -265,6 +139,31 @@ function UrlEditor({
   );
 }
 
+function NodeGroup({
+  title,
+  nodes,
+}: {
+  title: string;
+  nodes: TaxonomyNode[];
+}) {
+  if (!nodes.length) return null;
+
+  return (
+    <section className="space-y-3">
+      <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-steel-400">
+        {title}
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {nodes.slice(0, 6).map((node) => (
+          <article key={node.id} className="rounded-3xl border border-steel-200 bg-white px-5 py-4">
+            <p className="text-lg leading-7 text-oxford">{node.phrase}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function SourcingBriefPage() {
   const params = useParams();
   const workspaceId = Number(params.id);
@@ -286,7 +185,6 @@ export default function SourcingBriefPage() {
   const [evidenceUrls, setEvidenceUrls] = useState<string[]>([]);
   const [newEvidenceUrl, setNewEvidenceUrl] = useState("");
   const [evidenceUrlError, setEvidenceUrlError] = useState<string | null>(null);
-  const [isSourcesDrawerOpen, setIsSourcesDrawerOpen] = useState(false);
   const [isInputPanelCollapsed, setIsInputPanelCollapsed] = useState(false);
 
   useEffect(() => {
@@ -295,24 +193,6 @@ export default function SourcingBriefPage() {
     setReferenceUrls(profile.comparator_seed_urls || []);
     setEvidenceUrls(profile.supporting_evidence_urls || []);
   }, [profile]);
-
-  useEffect(() => {
-    if (!isSourcesDrawerOpen) return;
-
-    const { overflow } = document.body.style;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setIsSourcesDrawerOpen(false);
-      }
-    };
-
-    document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.body.style.overflow = overflow;
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [isSourcesDrawerOpen]);
 
   const jobRunner = useWorkspaceJobWithPolling(
     workspaceId,
@@ -339,55 +219,18 @@ export default function SourcingBriefPage() {
   );
 
   useEffect(() => {
-    if (hasSourcingArtifact) {
-      setIsInputPanelCollapsed(true);
-      return;
-    }
-    setIsInputPanelCollapsed(false);
-  }, [
-    hasSourcingArtifact,
-    companyContext?.generated_at,
-    companyContext?.sourcing_report?.generated_at,
-  ]);
-
-  const sourceDrawerItems = useMemo(
-    () =>
-      (companyContext?.source_documents || []).map((pill) => ({
-        ...pill,
-        hostname: getSourceHostname(pill.url || ""),
-        displayUrl: getSourceDisplayUrl(pill.url || ""),
-        badge: getSourceBadge(pill.name),
-      })),
-    [companyContext?.source_documents]
-  );
-
-  const contextPack = (companyContext?.context_pack_v2 ||
-    profile?.context_pack_json ||
-    null) as ContextPackV2 | null;
+    setIsInputPanelCollapsed(hasSourcingArtifact);
+  }, [hasSourcingArtifact]);
 
   const buyerEvidence = companyContext?.buyer_evidence || null;
   const showBuyerEvidenceWarning = buyerEvidence?.status === "insufficient";
   const crawlButtonLabel = profile?.context_pack_generated_at
-    ? "Recrawl and update map"
-    : "Generate map from website";
-  const outputMetaLine = companyContext?.generated_at
-    ? [
-        `Last generated ${new Date(companyContext.generated_at).toLocaleString()}`,
-        contextPack?.crawl_coverage?.total_pages
-          ? `${contextPack.crawl_coverage.total_pages} pages analyzed`
-          : null,
-      ]
-        .filter(Boolean)
-        .join(" · ")
-    : "Generate a market-map brief from a company website to populate this panel";
-  const secondaryEvidenceCount =
-    typeof companyContext?.graph_stats?.secondary_evidence_count === "number"
-      ? companyContext.graph_stats.secondary_evidence_count
-      : null;
+    ? "Recrawl & Update Brief"
+    : "Generate Sourcing Brief";
 
   const inputSummary = useMemo(() => {
     const sourceLabel = buyerUrl.trim()
-      ? getSourceHostname(normalizeUrlInput(buyerUrl) || buyerUrl)
+      ? getSourceDisplayUrl(normalizeUrlInput(buyerUrl) || buyerUrl)
       : "Add source company website";
     return [
       sourceLabel,
@@ -446,44 +289,46 @@ export default function SourcingBriefPage() {
     );
   }
 
+  const sourcingBrief = companyContext?.sourcing_brief;
+
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <div className="flex items-start justify-between gap-4">
         <StepHeader
           step={1}
-          title="Sourcing Brief"
-          subtitle="Ground the source-company understanding in primary and secondary evidence, then review the brief artifact that will bound downstream expansion."
+          title="Source & Brief"
+          subtitle="Enter the company website and optional comparators, generate the sourcing brief, then validate the source-grounded market summary."
         />
         {gates ? (
           <div
             className={clsx(
               "mt-1 flex shrink-0 items-center gap-1.5 text-xs",
-              gates.context_pack ? "text-success" : "text-steel-400"
+              gates.context_pack ? "text-success" : "text-warning"
             )}
           >
             {gates.context_pack ? (
               <>
                 <CheckCircle className="h-3.5 w-3.5" />
-                <span className="font-medium">Ready</span>
+                <span className="font-medium">Validated</span>
               </>
             ) : (
               <>
-                <AlertCircle className="h-3.5 w-3.5 text-warning" />
-                <span className="font-medium text-warning">Incomplete</span>
+                <AlertCircle className="h-3.5 w-3.5" />
+                <span className="font-medium">Needs review</span>
               </>
             )}
           </div>
         ) : null}
       </div>
 
-      <div className="rounded-[28px] border border-steel-200 bg-white px-5 py-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+      <section className="rounded-[28px] border border-steel-200 bg-white px-5 py-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-steel-400">
-              Crawl setup
+              Inputs
             </div>
             <h3 className="mt-2 text-lg font-semibold text-oxford">
-              Source company and supporting links
+              Company website, comparators, and support links
             </h3>
             <p className="mt-1 text-sm text-steel-500">{inputSummary}</p>
           </div>
@@ -504,31 +349,26 @@ export default function SourcingBriefPage() {
 
         {!isInputPanelCollapsed || jobRunner.isRunning ? (
           <div className="mt-5 space-y-5 border-t border-steel-100 pt-5">
-            <div className="grid gap-5 lg:grid-cols-2">
-              <div className="space-y-2.5">
-                <label className="flex items-center justify-between">
-                  <span className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
-                    Source company website
-                  </span>
-                  <span className="text-[11px] text-warning">Required</span>
-                </label>
-                <p className="text-sm text-steel-500">
-                  The primary company URL used for the crawl and sourcing brief.
-                </p>
-                <input
-                  type="url"
-                  value={buyerUrl}
-                  onChange={(event) => setBuyerUrl(event.target.value)}
-                  placeholder="https://company.com"
-                  className="input h-10 text-sm"
-                />
-              </div>
+            <div className="space-y-2.5">
+              <label className="text-[11px] font-medium uppercase tracking-widest text-steel-400">
+                Source company website
+              </label>
+              <p className="text-sm text-steel-500">
+                The main company URL used for crawl, graph construction, and the sourcing brief.
+              </p>
+              <input
+                type="url"
+                value={buyerUrl}
+                onChange={(event) => setBuyerUrl(event.target.value)}
+                placeholder="https://company.com"
+                className="input h-10 text-sm"
+              />
+            </div>
 
+            <div className="grid gap-5 lg:grid-cols-2">
               <UrlEditor
-                title="Competitor seeds"
-                helper="Optional comparable company URLs to help bound nearby companies."
-                badgeTone="text-steel-400"
-                badgeLabel="Optional"
+                title="Competitors"
+                helper="Optional comparable company URLs used to sharpen nearby market context."
                 urls={referenceUrls}
                 newUrl={newReferenceUrl}
                 onNewUrlChange={(value) => {
@@ -542,26 +382,24 @@ export default function SourcingBriefPage() {
                 error={referenceUrlError}
                 placeholder="https://comparable-company.com"
               />
-            </div>
 
-            <UrlEditor
-              title="Supporting evidence"
-              helper="High-value first-party pages, customer stories, docs, PDFs, or integration links that should be included in the crawl."
-              badgeTone="text-success"
-              badgeLabel="High value"
-              urls={evidenceUrls}
-              newUrl={newEvidenceUrl}
-              onNewUrlChange={(value) => {
-                setNewEvidenceUrl(value);
-                setEvidenceUrlError(null);
-              }}
-              onAdd={handleAddEvidence}
-              onRemove={(index) =>
-                setEvidenceUrls(evidenceUrls.filter((_, itemIndex) => itemIndex !== index))
-              }
-              error={evidenceUrlError}
-              placeholder="https://company.com/customer-story"
-            />
+              <UrlEditor
+                title="Support Links"
+                helper="Optional product pages, docs, customer stories, or PDFs worth forcing into the crawl."
+                urls={evidenceUrls}
+                newUrl={newEvidenceUrl}
+                onNewUrlChange={(value) => {
+                  setNewEvidenceUrl(value);
+                  setEvidenceUrlError(null);
+                }}
+                onAdd={handleAddEvidence}
+                onRemove={(index) =>
+                  setEvidenceUrls(evidenceUrls.filter((_, itemIndex) => itemIndex !== index))
+                }
+                error={evidenceUrlError}
+                placeholder="https://company.com/customer-story"
+              />
+            </div>
 
             <div className="flex flex-wrap gap-2 border-t border-steel-100 pt-4">
               <button
@@ -570,17 +408,13 @@ export default function SourcingBriefPage() {
                   await saveProfileInputs();
                   jobRunner.run();
                 }}
-                disabled={
-                  updateProfile.isPending ||
-                  jobRunner.isRunning ||
-                  !buyerUrl.trim()
-                }
+                disabled={updateProfile.isPending || jobRunner.isRunning || !buyerUrl.trim()}
                 className="btn-primary gap-2 px-4 py-2 text-sm disabled:opacity-50"
               >
                 {jobRunner.isRunning ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Running... {Math.round(jobRunner.progress * 100)}%
+                    Running… {Math.round(jobRunner.progress * 100)}%
                   </>
                 ) : (
                   <>
@@ -605,9 +439,7 @@ export default function SourcingBriefPage() {
                   ) : (
                     <RefreshCw className="h-3.5 w-3.5" />
                   )}
-                  {companyContext?.graph_status === "refreshing"
-                    ? "Refreshing sourcing brief..."
-                    : "Re-run reasoning on current crawl"}
+                  Refresh Brief
                 </button>
               ) : null}
             </div>
@@ -632,10 +464,7 @@ export default function SourcingBriefPage() {
                   }
                 }
                 progress={jobRunner.progress}
-                progressMessage={
-                  jobRunner.progressMessage ||
-                  "If this stays queued, the worker is not consuming the crawl queue yet."
-                }
+                progressMessage={jobRunner.progressMessage}
                 isStopping={jobRunner.isStopping}
                 onStop={jobRunner.canStop ? jobRunner.stop : undefined}
               />
@@ -650,176 +479,83 @@ export default function SourcingBriefPage() {
             ) : null}
           </div>
         ) : null}
-      </div>
+      </section>
 
-      <div className="space-y-5 rounded-[28px] border border-steel-200 bg-white px-6 py-6 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+      {showBuyerEvidenceWarning ? (
+        <div className="rounded-3xl border border-warning/30 bg-warning/10 px-5 py-4 text-sm text-warning-dark">
+          {buyerEvidence?.warning ||
+            "Buyer evidence is still thin. Add stronger first-party product, docs, or customer-proof links before validating the brief."}
+        </div>
+      ) : null}
+
+      <section className="space-y-5 rounded-[28px] border border-steel-200 bg-white px-6 py-6 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-steel-400">
-              System sourcing brief
+              Sourcing Brief
             </div>
             <h3 className="mt-2 font-serif text-2xl text-oxford">
-              Brief-first review
+              Small report backed by crawl evidence
             </h3>
-            <p className="mt-1 text-xs text-steel-400">{outputMetaLine}</p>
+            {companyContext?.generated_at ? (
+              <p className="mt-1 text-xs text-steel-400">
+                Generated {new Date(companyContext.generated_at).toLocaleString()}
+              </p>
+            ) : null}
           </div>
-
-          <div className="flex flex-wrap gap-2 text-xs text-steel-600">
-            <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1">
-              Graph status: {companyContext?.graph_status || "not_synced"}
+          {companyContext?.confirmed_at ? (
+            <span className="rounded-full border border-success/25 bg-success/10 px-3 py-1 text-xs font-medium text-success">
+              Confirmed
             </span>
-            {companyContext?.graph_synced_at ? (
-              <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1">
-                Synced {new Date(companyContext.graph_synced_at).toLocaleString()}
-              </span>
-            ) : null}
-            {secondaryEvidenceCount !== null ? (
-              <span className="rounded-full border border-steel-200 bg-steel-50 px-2.5 py-1">
-                Secondary evidence: {secondaryEvidenceCount}
-              </span>
-            ) : null}
-          </div>
+          ) : null}
         </div>
 
-        {showBuyerEvidenceWarning ? (
-          <div className="rounded-2xl border border-warning/30 bg-warning/10 p-4">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-warning">
-                  Buyer evidence is still weak
-                </div>
-                <p className="mt-1 text-sm text-steel-700">
-                  {buyerEvidence?.warning ||
-                    "Add first-party product pages, customer stories, docs, PDFs, and integration pages before relying on the map."}
-                </p>
-                <div className="mt-3 flex flex-wrap gap-2 text-xs text-steel-600">
-                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
-                    Pages crawled: {buyerEvidence?.metrics.pages_crawled ?? 0}
-                  </span>
-                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
-                    Content pages: {buyerEvidence?.metrics.content_pages ?? 0}
-                  </span>
-                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
-                    Signals: {buyerEvidence?.metrics.signal_count ?? 0}
-                  </span>
-                  <span className="rounded-full border border-warning/25 bg-white px-2.5 py-1">
-                    Customer proof: {buyerEvidence?.metrics.customer_evidence_count ?? 0}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
         {companyContext?.sourcing_report ? (
-          <ReportArtifactRenderer
-            artifact={companyContext.sourcing_report}
-            onRegenerate={() => refreshCompanyContext.mutate()}
-          />
+          <ReportArtifactRenderer artifact={companyContext.sourcing_report} />
         ) : (
           <div className="rounded-2xl border border-dashed border-steel-200 bg-steel-50 px-4 py-5 text-sm text-steel-500">
-            Generate a sourcing brief to render the report artifact.
+            Generate a sourcing brief to render the report.
           </div>
         )}
 
-        <div className="rounded-[24px] border border-steel-200 bg-[#fbfcfd] px-5 py-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
+        {sourcingBrief ? (
+          <div className="space-y-6 border-t border-steel-100 pt-5">
             <div>
               <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-steel-400">
-                Crawl coverage
+                Major Graph Nodes
               </div>
               <p className="mt-2 text-sm text-steel-500">
-                Coverage reflects the full crawl job and evidence pass, separate from the cited sources used in the brief above.
+                These are the main source-grounded nodes extracted from the company graph. Keep this section simple and use it as a quick pressure test of the brief.
               </p>
             </div>
 
-            {sourceDrawerItems.length ? (
-              <button
-                type="button"
-                onClick={() => setIsSourcesDrawerOpen(true)}
-                className="inline-flex items-center gap-2 rounded-full border border-steel-200 bg-white px-3 py-1.5 text-sm font-medium text-steel-700 transition-colors hover:border-oxford hover:text-oxford"
-              >
-                {sourceDrawerItems.length} crawl source
-                {sourceDrawerItems.length === 1 ? "" : "s"}
-                <ExternalLink className="h-3.5 w-3.5" />
-              </button>
-            ) : null}
+            <NodeGroup title="Customer Signals" nodes={sourcingBrief.customer_nodes || []} />
+            <NodeGroup title="Workflow Signals" nodes={sourcingBrief.workflow_nodes || []} />
+            <NodeGroup title="Capability Signals" nodes={sourcingBrief.capability_nodes || []} />
+            <NodeGroup
+              title="Integration Signals"
+              nodes={sourcingBrief.delivery_or_integration_nodes || []}
+            />
           </div>
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-2xl border border-steel-200 bg-white p-4">
-              <div className="text-xs text-steel-500">Sites</div>
-              <div className="mt-1 text-2xl font-semibold text-oxford">
-                {contextPack?.crawl_coverage?.total_sites ?? 0}
-              </div>
-            </div>
-            <div className="rounded-2xl border border-steel-200 bg-white p-4">
-              <div className="text-xs text-steel-500">Pages</div>
-              <div className="mt-1 text-2xl font-semibold text-oxford">
-                {contextPack?.crawl_coverage?.total_pages ?? 0}
-              </div>
-            </div>
-            <div className="rounded-2xl border border-steel-200 bg-white p-4">
-              <div className="text-xs text-steel-500">Signal pages</div>
-              <div className="mt-1 text-2xl font-semibold text-oxford">
-                {contextPack?.crawl_coverage?.pages_with_signals ?? 0}
-              </div>
-            </div>
-            <div className="rounded-2xl border border-steel-200 bg-white p-4">
-              <div className="text-xs text-steel-500">Career pages kept</div>
-              <div className="mt-1 text-2xl font-semibold text-oxford">
-                {contextPack?.crawl_coverage?.career_pages_selected ?? 0}
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-5">
-            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-steel-400">
-              Strongest evidence buckets
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {(companyContext?.sourcing_brief?.strongest_evidence_buckets || []).length ? (
-                (companyContext?.sourcing_brief?.strongest_evidence_buckets || []).map((bucket) => (
-                  <span
-                    key={bucket.label}
-                    className="rounded-full border border-steel-200 bg-white px-3 py-1 text-xs text-steel-600"
-                  >
-                    {bucket.label}: {bucket.count}
-                  </span>
-                ))
-              ) : (
-                <span className="rounded-full border border-steel-200 bg-white px-3 py-1 text-xs text-steel-500">
-                  No evidence buckets summarized yet.
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
+        ) : null}
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-steel-100 pt-4">
           <div className="text-sm text-steel-500">
             {companyContext?.confirmed_at
               ? `Brief confirmed ${new Date(companyContext.confirmed_at).toLocaleString()}`
-              : "Confirm this brief once the sourcing report looks right for expansion."}
+              : "Validate the sourcing brief once the report and major graph nodes look right."}
           </div>
           <button
             type="button"
             onClick={confirmBrief}
-            disabled={updateCompanyContext.isPending}
+            disabled={updateCompanyContext.isPending || !hasSourcingArtifact}
             className="btn-primary gap-2 disabled:opacity-50"
           >
             <Check className="h-4 w-4" />
-            Confirm brief
+            Validate Brief
           </button>
         </div>
-      </div>
-
-      <SourcesDrawer
-        isOpen={isSourcesDrawerOpen}
-        onClose={() => setIsSourcesDrawerOpen(false)}
-        sources={sourceDrawerItems}
-      />
+      </section>
     </div>
   );
 }

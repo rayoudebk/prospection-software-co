@@ -3,14 +3,8 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import {
-  Check,
   Copy,
   ExternalLink,
-  MessageSquareMore,
-  RefreshCw,
-  Share2,
-  ThumbsDown,
-  ThumbsUp,
   X,
 } from "lucide-react";
 
@@ -309,12 +303,9 @@ function RenderBlock({
 
 export function ReportArtifactRenderer({
   artifact,
-  onRegenerate,
 }: {
   artifact: ReportArtifact;
-  onRegenerate?: () => void;
 }) {
-  const [selectedFeedback, setSelectedFeedback] = useState<"good" | "bad" | null>(null);
   const [drawerTitle, setDrawerTitle] = useState("Cited Sources");
   const [drawerSources, setDrawerSources] = useState<ReportArtifactSourcePill[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -349,17 +340,6 @@ export function ReportArtifactRenderer({
       )
       .join("\n");
     await navigator.clipboard.writeText(`${artifact.title}\n\n${body}`.trim());
-  };
-
-  const handleShare = async () => {
-    if (navigator.share) {
-      await navigator.share({
-        title: artifact.title,
-        text: artifact.summary || artifact.title,
-      });
-      return;
-    }
-    await navigator.clipboard.writeText(window.location.href);
   };
 
   return (
@@ -443,7 +423,7 @@ export function ReportArtifactRenderer({
           </div>
         </div>
 
-        <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-steel-100 pt-5">
+        <div className="mt-8 flex items-center gap-2 border-t border-steel-100 pt-5">
           <button
             type="button"
             onClick={handleCopy}
@@ -452,60 +432,6 @@ export function ReportArtifactRenderer({
             <Copy className="h-4 w-4" />
             Copy
           </button>
-          <button
-            type="button"
-            onClick={() => setSelectedFeedback("good")}
-            className={clsx(
-              "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors",
-              selectedFeedback === "good"
-                ? "border-success/30 bg-success/10 text-success"
-                : "border-steel-200 text-steel-700 hover:border-oxford/30 hover:text-oxford",
-            )}
-          >
-            <ThumbsUp className="h-4 w-4" />
-            Good
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedFeedback("bad")}
-            className={clsx(
-              "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors",
-              selectedFeedback === "bad"
-                ? "border-warning/30 bg-warning/10 text-warning-dark"
-                : "border-steel-200 text-steel-700 hover:border-oxford/30 hover:text-oxford",
-            )}
-          >
-            <ThumbsDown className="h-4 w-4" />
-            Bad
-          </button>
-          <button
-            type="button"
-            onClick={handleShare}
-            className="inline-flex items-center gap-2 rounded-full border border-steel-200 px-3 py-1.5 text-sm text-steel-700 transition-colors hover:border-oxford/30 hover:text-oxford"
-          >
-            <Share2 className="h-4 w-4" />
-            Share
-          </button>
-          <button
-            type="button"
-            onClick={onRegenerate}
-            disabled={!onRegenerate}
-            className="inline-flex items-center gap-2 rounded-full border border-steel-200 px-3 py-1.5 text-sm text-steel-700 transition-colors hover:border-oxford/30 hover:text-oxford disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <RefreshCw className="h-4 w-4" />
-            Regenerate
-          </button>
-          {selectedFeedback ? (
-            <span className="ml-auto inline-flex items-center gap-1 text-sm text-steel-500">
-              <Check className="h-4 w-4" />
-              Feedback captured locally
-            </span>
-          ) : (
-            <span className="ml-auto inline-flex items-center gap-1 text-sm text-steel-500">
-              <MessageSquareMore className="h-4 w-4" />
-              Report actions
-            </span>
-          )}
         </div>
       </div>
 
