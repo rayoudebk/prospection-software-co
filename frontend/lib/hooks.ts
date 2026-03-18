@@ -213,6 +213,14 @@ export function useTopCandidates(workspaceId: number, limit = 25, allowDegraded 
   });
 }
 
+export function useDiscoveryDiagnostics(workspaceId: number, includeQualityAudit = true) {
+  return useQuery({
+    queryKey: ["discovery-diagnostics", workspaceId, includeQualityAudit],
+    queryFn: () => workspaceApi.getDiscoveryDiagnostics(workspaceId, includeQualityAudit),
+    enabled: !!workspaceId,
+  });
+}
+
 export function useCreateCompany(workspaceId: number) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -223,6 +231,7 @@ export function useCreateCompany(workspaceId: number) {
     }) => workspaceApi.createCompany(workspaceId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
     },
   });
 }
@@ -246,6 +255,7 @@ export function useUpdateCompany(workspaceId: number) {
     }) => workspaceApi.updateCompany(workspaceId, companyId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
     },
   });
 }
@@ -499,6 +509,8 @@ export function useWorkspaceJobWithPolling(
         queryClient.invalidateQueries({ queryKey: ["company-context", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
+        queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
+        queryClient.invalidateQueries({ queryKey: ["discovery-diagnostics", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
         onComplete?.();
       }

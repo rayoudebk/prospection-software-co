@@ -6,6 +6,10 @@ from app.config import get_settings
 from app.models.base import init_db
 from app.api import workspaces
 from app.startup_migrations import run_startup_migrations
+from app.services.discovery_readiness import (
+    assert_critical_runtime_ready,
+    compute_runtime_discovery_readiness,
+)
 
 
 @asynccontextmanager
@@ -13,6 +17,7 @@ async def lifespan(app: FastAPI):
     # Startup: initialize database tables
     await init_db()
     run_startup_migrations()
+    app.state.discovery_runtime_readiness = assert_critical_runtime_ready()
     yield
     # Shutdown: cleanup if needed
 
@@ -39,7 +44,9 @@ app.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"])
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    readiness = compute_runtime_discovery_readiness(check_worker=True)
+    status = "healthy" if readiness.get("db_schema_ok") and readiness.get("redis_available") else "degraded"
+    return {"status": status, "discovery_readiness": readiness}
 
 
 @app.get("/")

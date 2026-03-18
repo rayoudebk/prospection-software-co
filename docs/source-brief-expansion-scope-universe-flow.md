@@ -694,6 +694,29 @@ The system:
 - deduplicates candidates
 - performs light first-party enrichment
 
+### Execution Modes
+
+Discovery now has one explicit execution mode, not a silent fallback:
+
+- `live`: use retrieval providers, model planning, registry expansion, and first-party enrichment
+- `fixture`: deterministically materialize a first-pass universe from canonical `adjacency_boxes` and `company_seeds`
+
+`fixture` is for local/dev validation when external keys are intentionally absent. It should be visible in API/UI readiness as `execution_mode=fixture`, not masquerade as a normal live run.
+
+Useful CLI operations:
+
+- reset a workspace universe snapshot:
+  - `PYTHONPATH=backend python3 backend/scripts/reset_workspace_discovery.py --workspace-id <id>`
+- start one local discovery worker on the namespaced queues:
+  - `DISCOVERY_EXECUTION_MODE=fixture PYTHONPATH=backend python3 backend/scripts/run_discovery_worker.py`
+  - on macOS this launcher forces `--pool=solo`, `--concurrency=1`, and a unique worker nodename to avoid prefork crashes and duplicate-node ambiguity
+- run deterministic fixture discovery:
+  - `DISCOVERY_EXECUTION_MODE=fixture PYTHONPATH=backend python3 backend/scripts/run_workspace_discovery.py --workspace-id <id> --sync-fixture`
+- run the queued discovery path against that worker:
+  - `DISCOVERY_EXECUTION_MODE=fixture PYTHONPATH=backend python3 backend/scripts/run_workspace_discovery.py --workspace-id <id>`
+- inspect the active queue namespace before starting a worker:
+  - `PYTHONPATH=backend python3 backend/scripts/print_discovery_queue_names.py`
+
 ### Light Candidate Enrichment
 
 Before the user validates candidates, the system should already collect enough to show:

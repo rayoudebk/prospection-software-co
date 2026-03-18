@@ -80,6 +80,8 @@ def run_external_search_queries(
                 continue
             query_id = str(query_meta.get("query_id") or "").strip() or f"{provider_key}:{len(raw_results)}"
             query_type = str(query_meta.get("query_type") or "precision").strip()
+            brick_name = str(query_meta.get("brick_name") or "").strip() or None
+            scope_bucket = str(query_meta.get("scope_bucket") or "").strip().lower() or None
             seed_url = str(query_meta.get("seed_url") or "").strip() or None
             if query_type == "seed_similar" and provider_key != "exa":
                 continue
@@ -133,6 +135,8 @@ def run_external_search_queries(
                         "query_id": query_id,
                         "query_type": query_type,
                         "query_text": adjusted_query,
+                        "brick_name": brick_name,
+                        "scope_bucket": scope_bucket,
                         "rank": rank,
                         "url": url,
                         "title": item.get("title"),

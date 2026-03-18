@@ -19,6 +19,38 @@ def _domain_label(url: str) -> str:
     return host.split(".")[0].replace("-", " ").title()
 
 
+def _normalized_host(url: str) -> str:
+    parsed = urlparse(str(url or "").strip())
+    host = str(parsed.netloc or "").strip().lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _filter_results_by_excluded_domains(
+    rows: List[Dict[str, Any]],
+    exclude_domains: Optional[list[str]],
+) -> List[Dict[str, Any]]:
+    blocked = {
+        str(domain or "").strip().lower().removeprefix("www.")
+        for domain in (exclude_domains or [])
+        if str(domain or "").strip()
+    }
+    if not blocked:
+        return rows
+
+    filtered: List[Dict[str, Any]] = []
+    for row in rows:
+        url = str(row.get("url") or "").strip()
+        if not url:
+            continue
+        host = _normalized_host(url)
+        if host and host in blocked:
+            continue
+        filtered.append(row)
+    return filtered
+
+
 def _to_candidate_rows(items: List[Dict[str, Any]], source_name: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for item in items:
@@ -318,23 +350,30 @@ def provider_results_for_query(
     seed_url: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     name = str(provider or "").strip().lower()
+    rows: List[Dict[str, Any]] = []
     if name == "exa":
         if seed_url:
-            return _search_exa_similar(seed_url, cap)
-        return _search_exa(
-            query,
-            cap,
-            include_domains=include_domains,
-            exclude_domains=exclude_domains,
-            include_text=include_text,
-            exclude_text=exclude_text,
-        )
+            rows = _search_exa_similar(seed_url, cap)
+        else:
+            rows = _search_exa(
+                query,
+                cap,
+                include_domains=include_domains,
+                exclude_domains=exclude_domains,
+                include_text=include_text,
+                exclude_text=exclude_text,
+            )
+        return _filter_results_by_excluded_domains(rows, exclude_domains)
     if name == "brave":
-        return _search_brave(query, cap)
+        rows = _search_brave(query, cap)
+        return _filter_results_by_excluded_domains(rows, exclude_domains)
     if name == "tavily":
-        return _search_tavily(query, cap)
+        rows = _search_tavily(query, cap)
+        return _filter_results_by_excluded_domains(rows, exclude_domains)
     if name == "serper":
-        return _search_serper(query, cap)
+        rows = _search_serper(query, cap)
+        return _filter_results_by_excluded_domains(rows, exclude_domains)
     if name == "serpapi":
-        return _search_serpapi(query, cap)
+        rows = _search_serpapi(query, cap)
+        return _filter_results_by_excluded_domains(rows, exclude_domains)
     return []

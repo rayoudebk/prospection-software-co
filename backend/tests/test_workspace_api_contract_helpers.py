@@ -4,6 +4,7 @@ from app.api.workspaces import (
     _clean_url_list,
     _quality_payload_from_job_result,
     _screening_diagnostics_from_meta,
+    _universe_context_from_screening,
 )
 
 
@@ -90,6 +91,50 @@ def test_screening_diagnostics_from_meta_exposes_new_registry_and_hint_fields():
     assert diagnostics["registry_origin_screening_counts"]["records_accepted"] == 8
     assert diagnostics["first_party_hint_urls_used_count"] == 3
     assert diagnostics["first_party_hint_pages_crawled_total"] == 6
+
+
+def test_universe_context_from_screening_surfaces_graph_and_provenance_fields():
+    context = _universe_context_from_screening(
+        {
+            "capability_signals": ["Portfolio management", "Order management"],
+            "likely_verticals": ["private_banks"],
+            "scope_buckets": ["core", "adjacent"],
+            "origin_types": ["external_search_seed", "registry_identity"],
+            "registry_identity": {
+                "id": "901050024",
+                "country": "FR",
+                "source": "fr_recherche_entreprises",
+                "match_confidence": 0.92,
+                "query": "4TPM",
+                "status": "A",
+            },
+        },
+        {
+            "expansion_provenance": [
+                {
+                    "query_id": "core_1",
+                    "query_type": "capability_discovery",
+                    "query_text": "private bank portfolio management software france",
+                    "provider": "exa",
+                    "brick_name": "Portfolio management",
+                    "scope_bucket": "core",
+                    "rank": 1,
+                }
+            ]
+        },
+    )
+
+    assert context["capability_signals"] == ["Portfolio management", "Order management"]
+    assert context["likely_verticals"] == ["private_banks"]
+    assert context["scope_buckets"] == ["core", "adjacent"]
+    assert context["origin_types"] == ["external_search_seed", "registry_identity"]
+    assert context["registry_identity"]["id"] == "901050024"
+    assert context["registry_identity"]["country"] == "FR"
+    assert context["registry_identity"]["source"] == "fr_recherche_entreprises"
+    assert context["registry_identity"]["match_confidence"] == 0.92
+    assert context["expansion_provenance"][0]["provider"] == "exa"
+    assert context["expansion_provenance"][0]["brick_name"] == "Portfolio management"
+    assert context["expansion_provenance"][0]["scope_bucket"] == "core"
 
 
 def test_quality_payload_from_job_result_defaults_and_explicit_fields():

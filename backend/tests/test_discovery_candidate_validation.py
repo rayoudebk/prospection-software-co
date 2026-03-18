@@ -1,4 +1,5 @@
 import app.workers.workspace_tasks as workspace_tasks
+from types import SimpleNamespace
 
 
 def test_closed_world_candidate_validation_accepts_retrieved_url():
@@ -145,3 +146,84 @@ def test_scope_hints_query_plan_prioritizes_canonical_adjacency_boxes_and_seed_u
     assert all("Cafeteria menu tooling" not in text for text in recall_texts)
     assert "https://plannerco.example.com" in plan["seed_urls"]
     assert "https://hublo.example.com" in plan["seed_urls"]
+
+
+def test_known_discovery_blocked_domains_excludes_buyer_and_first_party_seed_domains():
+    profile = SimpleNamespace(
+        buyer_company_url="https://4tpm.fr/?lang=en",
+        comparator_seed_urls=[
+            "https://known-competitor.example.com",
+            "https://www.linkedin.com/company/known-competitor",
+        ],
+    )
+
+    blocked = workspace_tasks._known_discovery_blocked_domains(
+        profile,
+        ["https://plannerco.example.com", "https://www.crunchbase.com/organization/plannerco"],
+    )
+
+    assert "4tpm.fr" in blocked
+    assert "known-competitor.example.com" in blocked
+    assert "plannerco.example.com" in blocked
+    assert "linkedin.com" not in blocked
+    assert "crunchbase.com" not in blocked
+
+
+def test_known_entity_suppression_drops_exact_known_domain_and_name():
+    profile = SimpleNamespace(
+        buyer_company_url="https://4tpm.fr",
+        comparator_seed_urls=[],
+    )
+    suppression = workspace_tasks._known_entity_suppression_profile(
+        profile,
+        existing_companies=[SimpleNamespace(name="Known Competitor", website="https://known-competitor.example.com")],
+        previous_entities=[],
+        previous_aliases=[],
+    )
+
+    kept, stats = workspace_tasks._suppress_known_entity_candidates(
+        [
+            {"name": "Known Competitor", "website": "https://known-competitor.example.com"},
+            {"name": "Fresh Vendor", "website": "https://fresh-vendor.example.com"},
+        ],
+        suppression,
+    )
+
+    assert [candidate["name"] for candidate in kept] == ["Fresh Vendor"]
+    assert stats["dropped_count"] == 1
+    assert stats["known_entity_domain"] == 1
+
+
+def test_known_entity_suppression_drops_third_party_page_about_known_entity():
+    profile = SimpleNamespace(
+        buyer_company_url="https://4tpm.fr",
+        comparator_seed_urls=[],
+    )
+    suppression = workspace_tasks._known_entity_suppression_profile(
+        profile,
+        existing_companies=[],
+        previous_entities=[],
+        previous_aliases=[],
+    )
+
+    kept, stats = workspace_tasks._suppress_known_entity_candidates(
+        [
+            {
+                "name": "4TPM - Overview, News & Competitors",
+                "website": "https://www.zoominfo.com/c/4tpm/123",
+                "discovery_url": "https://www.zoominfo.com/c/4tpm/123",
+                "first_party_domains": [],
+            },
+            {
+                "name": "New France TPM Vendor",
+                "website": "https://new-vendor.example.com",
+                "discovery_url": "https://new-vendor.example.com",
+                "first_party_domains": ["new-vendor.example.com"],
+            },
+        ],
+        suppression,
+    )
+
+    assert [candidate["name"] for candidate in kept] == ["New France TPM Vendor"]
+    assert stats["dropped_count"] == 1
+    assert stats["known_entity_third_party_page"] == 1

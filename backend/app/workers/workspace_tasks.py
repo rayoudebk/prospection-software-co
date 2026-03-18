@@ -66,6 +66,7 @@ from app.services.evidence_policy import (
 )
 from app.services.decision_engine import evaluate_decision
 from app.services.claims_graph import rebuild_workspace_claims_graph
+from app.services.discovery_readiness import build_workspace_discovery_readiness
 from app.services.llm.orchestrator import LLMOrchestrator
 from app.services.llm.types import LLMRequest, LLMStage, LLMOrchestrationError
 from app.services.retrieval.crawl_connectors import fetch_page_fast
@@ -665,6 +666,13 @@ def _is_non_first_party_profile_domain(domain: Optional[str]) -> bool:
     return _is_aggregator_domain(domain) or _is_registry_profile_domain(domain)
 
 
+def _is_known_third_party_context_domain(domain: Optional[str]) -> bool:
+    if not domain:
+        return False
+    lowered = str(domain).lower()
+    return any(lowered == item or lowered.endswith(f".{item}") for item in KNOWN_THIRD_PARTY_CONTEXT_DOMAINS)
+
+
 def _first_non_empty(*values: Any) -> Optional[str]:
     for value in values:
         normalized = str(value or "").strip()
@@ -996,6 +1004,19 @@ REGISTRY_PROFILE_DOMAINS = {
     "search.gleif.org",
 }
 
+KNOWN_THIRD_PARTY_CONTEXT_DOMAINS = {
+    "linkedin.com",
+    "crunchbase.com",
+    "zoominfo.com",
+    "pitchbook.com",
+    "societeinfo.com",
+    "rubypayeur.com",
+    "annuaire-entreprises.data.gouv.fr",
+    "pappers.fr",
+    "infogreffe.fr",
+    "data.inpi.fr",
+}
+
 
 def _normalize_name_for_matching(name: str) -> str:
     lowered = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode("ascii").lower()
@@ -1008,6 +1029,13 @@ def _normalize_name_for_matching(name: str) -> str:
         if token not in LEGAL_SUFFIXES and token not in NAME_STOPWORDS
     ]
     return " ".join(filtered)
+
+
+def _normalize_name_phrase(name: str) -> str:
+    lowered = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode("ascii").lower()
+    lowered = re.sub(r"[^a-z0-9\s]", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
+    return lowered
 
 
 def _name_similarity(a: str, b: str) -> float:
@@ -5458,6 +5486,194 @@ def _build_external_search_queries_from_plan(
     return queries, summary
 
 
+def _known_discovery_blocked_domains(
+    profile: CompanyProfile,
+    seed_urls: list[str],
+) -> list[str]:
+    blocked: list[str] = []
+
+    def register(raw_url: Any) -> None:
+        normalized = normalize_url(raw_url or "")
+        domain = normalize_domain(normalized)
+        if not domain or _is_non_first_party_profile_domain(domain):
+            return
+        if _is_known_third_party_context_domain(domain):
+            return
+        if domain in blocked:
+            return
+        blocked.append(domain)
+
+    register(profile.buyer_company_url)
+    for url in profile.comparator_seed_urls or []:
+        register(url)
+    for url in seed_urls or []:
+        register(url)
+
+    return blocked[:12]
+
+
+def _known_entity_suppression_profile(
+    profile: CompanyProfile | None,
+    *,
+    existing_companies: list[Any] | None = None,
+    previous_entities: list[Any] | None = None,
+    previous_aliases: list[Any] | None = None,
+) -> dict[str, Any]:
+    blocked_domains: set[str] = set()
+    blocked_registry_ids: set[str] = set()
+    exact_name_norms: set[str] = set()
+    phrase_names: set[str] = set()
+
+    def _read(item: Any, key: str) -> Any:
+        if isinstance(item, dict):
+            return item.get(key)
+        return getattr(item, key, None)
+
+    def register_name(raw_name: Any) -> None:
+        name = str(raw_name or "").strip()
+        if not name:
+            return
+        norm = _normalize_name_for_matching(name)
+        if norm:
+            exact_name_norms.add(norm)
+        phrase = _normalize_name_phrase(name)
+        if len(phrase) >= 4:
+            phrase_names.add(phrase)
+
+    def register_registry_id(raw_value: Any) -> None:
+        value = str(raw_value or "").strip()
+        if value:
+            blocked_registry_ids.add(value)
+
+    def register_domain(raw_domain: Any) -> None:
+        domain = normalize_domain(raw_domain or "")
+        if not domain:
+            return
+        if (
+            _is_non_first_party_profile_domain(domain)
+            or _is_registry_profile_domain(domain)
+            or _is_aggregator_domain(domain)
+            or _is_known_third_party_context_domain(domain)
+        ):
+            return
+        blocked_domains.add(domain)
+        first_label = domain.split(".")[0].replace("-", " ").replace("_", " ").strip()
+        if first_label:
+            register_name(first_label)
+
+    def register_url(raw_url: Any) -> None:
+        normalized = normalize_url(raw_url or "")
+        if not normalized:
+            return
+        register_domain(normalized)
+
+    if profile:
+        register_url(profile.buyer_company_url)
+        for url in profile.comparator_seed_urls or []:
+            register_url(url)
+
+    for company in existing_companies or []:
+        register_name(_read(company, "name"))
+        register_url(_read(company, "website"))
+
+    for entity in previous_entities or []:
+        register_name(_read(entity, "canonical_name"))
+        register_url(_read(entity, "canonical_website"))
+        register_registry_id(_read(entity, "registry_id"))
+
+    for alias in previous_aliases or []:
+        register_name(_read(alias, "alias_name"))
+        register_url(_read(alias, "alias_website"))
+
+    return {
+        "blocked_domains": sorted(blocked_domains),
+        "blocked_registry_ids": sorted(blocked_registry_ids),
+        "exact_name_norms": sorted(exact_name_norms),
+        "phrase_names": sorted(phrase_names, key=len, reverse=True),
+    }
+
+
+def _known_entity_suppression_reason(candidate: dict[str, Any], profile: dict[str, Any]) -> Optional[str]:
+    blocked_domains = set(profile.get("blocked_domains") or [])
+    blocked_registry_ids = set(profile.get("blocked_registry_ids") or [])
+    exact_name_norms = set(profile.get("exact_name_norms") or [])
+    phrase_names = [str(item) for item in (profile.get("phrase_names") or []) if str(item).strip()]
+
+    candidate_registry_id = _registry_identifier(candidate)
+    if candidate_registry_id and candidate_registry_id in blocked_registry_ids:
+        return "known_entity_registry_id"
+
+    candidate_domains = _normalize_domain_list(
+        [candidate.get("website"), candidate.get("official_website_url"), candidate.get("discovery_url"), candidate.get("profile_url")]
+        + list(candidate.get("first_party_domains") or [])
+    )
+    if any(domain in blocked_domains for domain in candidate_domains):
+        return "known_entity_domain"
+
+    candidate_name = str(candidate.get("name") or "").strip()
+    candidate_name_norm = _normalize_name_for_matching(candidate_name)
+    if candidate_name_norm and candidate_name_norm in exact_name_norms:
+        return "known_entity_name_exact"
+
+    if not candidate_name:
+        return None
+
+    candidate_name_phrase = _normalize_name_phrase(candidate_name)
+    if not candidate_name_phrase:
+        return None
+
+    first_party_candidate_domains = [
+        domain
+        for domain in candidate_domains
+        if not _is_non_first_party_profile_domain(domain)
+        and not _is_registry_profile_domain(domain)
+        and not _is_aggregator_domain(domain)
+        and not _is_known_third_party_context_domain(domain)
+    ]
+    if first_party_candidate_domains:
+        return None
+
+    for phrase in phrase_names:
+        if len(phrase) < 4:
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", candidate_name_phrase):
+            return "known_entity_third_party_page"
+    return None
+
+
+def _suppress_known_entity_candidates(
+    candidates: list[dict[str, Any]],
+    suppression_profile: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    stats = {
+        "dropped_count": 0,
+        "known_entity_domain": 0,
+        "known_entity_registry_id": 0,
+        "known_entity_name_exact": 0,
+        "known_entity_third_party_page": 0,
+        "examples": [],
+    }
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        reason = _known_entity_suppression_reason(candidate, suppression_profile)
+        if not reason:
+            kept.append(candidate)
+            continue
+        stats["dropped_count"] += 1
+        stats[reason] = int(stats.get(reason) or 0) + 1
+        if len(stats["examples"]) < 10:
+            stats["examples"].append(
+                {
+                    "name": str(candidate.get("name") or "").strip(),
+                    "website": str(candidate.get("website") or candidate.get("discovery_url") or "").strip() or None,
+                    "reason": reason,
+                }
+            )
+    return kept, stats
+
+
 def _domain_label_for_url(url: str) -> str:
     try:
         parsed = urlparse(url)
@@ -5511,8 +5727,11 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
                         "metadata": {
                             "query_id": row.get("query_id"),
                             "query_type": row.get("query_type"),
+                            "query_text": row.get("query_text"),
+                            "brick_name": row.get("brick_name"),
                             "scope_bucket": row.get("scope_bucket"),
                             "rank": row.get("rank"),
+                            "provider": row.get("provider"),
                         },
                     }
                 ],
@@ -5671,7 +5890,11 @@ def _validate_closed_world_candidates(
                     "metadata": {
                         "query_id": provenance.get("query_id"),
                         "query_type": provenance.get("query_type"),
+                        "query_text": provenance.get("query_text"),
+                        "brick_name": provenance.get("brick_name"),
+                        "scope_bucket": provenance.get("scope_bucket"),
                         "rank": provenance.get("rank"),
+                        "provider": provenance.get("provider"),
                     },
                 }
             )
@@ -7156,6 +7379,331 @@ def run_claims_graph_refresh(workspace_id: int):
         db.close()
 
 
+def _run_discovery_universe_fixture(job_id: int):
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return {"error": "Job not found"}
+
+        workspace = db.query(Workspace).filter(Workspace.id == job.workspace_id).first()
+        profile = db.query(CompanyProfile).filter(CompanyProfile.workspace_id == job.workspace_id).first()
+        company_context_pack = (
+            db.query(CompanyContextPack)
+            .filter(CompanyContextPack.workspace_id == job.workspace_id)
+            .first()
+        )
+        if not workspace or not profile or not company_context_pack:
+            return {"error": "Missing workspace/profile/company-context data"}
+
+        from app.services.company_context import normalize_expansion_brief
+
+        expansion_brief = normalize_expansion_brief(company_context_pack.expansion_brief_json or {})
+        adjacency_boxes = [
+            box for box in (expansion_brief.get("adjacency_boxes") or [])
+            if str(box.get("status") or "").strip().lower() != "user_removed"
+        ]
+        company_seeds = [
+            seed for seed in (expansion_brief.get("company_seeds") or [])
+            if str(seed.get("status") or "").strip().lower() != "user_removed"
+        ]
+        if not adjacency_boxes:
+            return {"error": "No approved adjacency boxes available for fixture discovery"}
+        if not company_seeds:
+            return {"error": "No company seeds available for fixture discovery"}
+
+        screening_run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+        ctx = _load_discovery_context(job_id)
+        ctx["screening_run_id"] = screening_run_id
+        ctx["stage_execution_mode"] = "fixture"
+        _save_discovery_context(job_id, ctx)
+
+        box_by_id = {
+            str(box.get("id") or ""): box
+            for box in adjacency_boxes
+            if str(box.get("id") or "").strip()
+        }
+
+        previous_screenings = db.query(CompanyScreening).filter(CompanyScreening.workspace_id == workspace.id).all()
+        for row in previous_screenings:
+            db.delete(row)
+        previous_claims = db.query(CompanyClaim).filter(CompanyClaim.workspace_id == workspace.id).all()
+        for row in previous_claims:
+            db.delete(row)
+        previous_registry_logs = db.query(RegistryQueryLog).filter(RegistryQueryLog.workspace_id == workspace.id).all()
+        for row in previous_registry_logs:
+            db.delete(row)
+        previous_entities = db.query(CandidateEntity).filter(CandidateEntity.workspace_id == workspace.id).all()
+        for entity in previous_entities:
+            db.delete(entity)
+        non_manual_companies = (
+            db.query(Company)
+            .filter(Company.workspace_id == workspace.id, Company.is_manual.is_(False))
+            .all()
+        )
+        for company in non_manual_companies:
+            db.delete(company)
+        db.flush()
+
+        created_companies = 0
+        claims_created = 0
+        kept_count = 0
+        review_count = 0
+        candidate_entities_count = 0
+        decision_class_counts: dict[str, int] = {}
+        evidence_sufficiency_counts: dict[str, int] = {}
+        ranking_eligible_count = 0
+
+        for seed in company_seeds[:16]:
+            seed_name = str(seed.get("name") or "").strip()
+            if not seed_name:
+                continue
+            matched_boxes = [
+                box_by_id.get(box_id)
+                for box_id in (seed.get("fit_to_adjacency_box_ids") or [])
+                if box_by_id.get(box_id)
+            ]
+            if not matched_boxes:
+                matched_boxes = adjacency_boxes[:1]
+            top_box = matched_boxes[0]
+            top_priority = str(top_box.get("priority_tier") or "").strip().lower()
+            decision_classification = "good_target" if top_priority == "core_adjacent" else "borderline_watchlist"
+            screening_status = "kept" if decision_classification == "good_target" else "review"
+            total_score = 68.0 if decision_classification == "good_target" else 52.0
+            if screening_status == "kept":
+                kept_count += 1
+            else:
+                review_count += 1
+            decision_class_counts[decision_classification] = decision_class_counts.get(decision_classification, 0) + 1
+            evidence_sufficiency_counts["sufficient"] = evidence_sufficiency_counts.get("sufficient", 0) + 1
+            ranking_eligible_count += 1
+
+            website = str(seed.get("website") or "").strip() or None
+            candidate_domain = normalize_domain(website)
+            hq_country = _infer_country_from_domain(candidate_domain) or "Unknown"
+            entity = CandidateEntity(
+                workspace_id=workspace.id,
+                canonical_name=seed_name[:300],
+                canonical_website=(website[:1000] if website else None),
+                canonical_domain=candidate_domain,
+                discovery_primary_url=(website[:1000] if website else None),
+                entity_type="company",
+                first_party_domains_json=[candidate_domain] if candidate_domain else [],
+                solutions_json=[],
+                country=hq_country,
+                identity_confidence="medium",
+                identity_error=None,
+                registry_country=None,
+                registry_id=None,
+                registry_source=None,
+                metadata_json={
+                    "origin_types": ["expansion_company_seed"],
+                    "fixture_mode": True,
+                    "fit_to_adjacency_box_ids": seed.get("fit_to_adjacency_box_ids") or [],
+                },
+            )
+            db.add(entity)
+            db.flush()
+            candidate_entities_count += 1
+            db.add(
+                CandidateOriginEdge(
+                    entity_id=entity.id,
+                    origin_type="expansion_company_seed",
+                    origin_url=(website[:1000] if website else None),
+                    source_run_id=None,
+                    metadata_json={
+                        "seed_role": seed.get("seed_role"),
+                        "scope_bucket": str(top_box.get("adjacency_kind") or "").strip().lower() or None,
+                        "query_type": "fixture_seed",
+                        "brick_name": top_box.get("label"),
+                    },
+                )
+            )
+
+            why_relevant = []
+            for evidence in (seed.get("evidence") or [])[:2]:
+                url = str(evidence.get("url") or "").strip()
+                if not url:
+                    continue
+                why_relevant.append(
+                    {
+                        "text": str(evidence.get("claim") or seed.get("why_relevant") or "Expansion company seed.")[:400],
+                        "citation_url": url,
+                        "dimension": "adjacent_workflow_seed",
+                    }
+                )
+            if not why_relevant and website:
+                why_relevant.append(
+                    {
+                        "text": str(seed.get("why_relevant") or "Expansion company seed.")[:400],
+                        "citation_url": website,
+                        "dimension": "adjacent_workflow_seed",
+                    }
+                )
+
+            company = Company(
+                workspace_id=workspace.id,
+                name=seed_name[:255],
+                website=(website[:500] if website else None),
+                hq_country=hq_country,
+                tags_custom=_dedupe_strings(
+                    [
+                        "discovery_mode:fixture",
+                        f"screening_run:{screening_run_id}",
+                        f"screening_status:{screening_status}",
+                        *(f"adjacency:{str(box.get('label') or '')}" for box in matched_boxes[:3]),
+                    ]
+                ),
+                status=CompanyStatus.kept if screening_status == "kept" else CompanyStatus.candidate,
+                why_relevant=why_relevant,
+                is_manual=False,
+            )
+            db.add(company)
+            db.flush()
+            created_companies += 1
+
+            for evidence in why_relevant[:2]:
+                citation_url = str(evidence.get("citation_url") or "").strip()
+                if not citation_url:
+                    continue
+                db.add(
+                    SourceEvidence(
+                        workspace_id=workspace.id,
+                        company_id=company.id,
+                        source_url=citation_url,
+                        source_title=source_label_for_url(citation_url),
+                        excerpt_text=str(evidence.get("text") or "")[:1200],
+                        content_type="web",
+                        source_tier="tier2_third_party" if citation_url != website else "tier1_first_party",
+                        source_kind="expansion_seed",
+                        freshness_ttl_days=90,
+                        valid_through=None,
+                        asserted_by="discovery_fixture_mode",
+                    )
+                )
+                claims_created += 1
+
+            screening = CompanyScreening(
+                workspace_id=workspace.id,
+                company_id=company.id,
+                candidate_entity_id=entity.id,
+                candidate_name=seed_name,
+                candidate_website=website,
+                candidate_discovery_url=website,
+                candidate_official_website=website,
+                screening_status=screening_status,
+                total_score=total_score,
+                component_scores_json={"fixture_seed_fit": total_score},
+                penalties_json=[],
+                reject_reasons_json=[],
+                positive_reason_codes_json=["fixture_seed_match"],
+                caution_reason_codes_json=[] if screening_status == "kept" else ["fixture_requires_live_validation"],
+                reject_reason_codes_json=[],
+                missing_claim_groups_json=[],
+                unresolved_contradictions_count=0,
+                decision_classification=decision_classification,
+                evidence_sufficiency="sufficient",
+                rationale_summary=str(seed.get("why_relevant") or f"Matched to {top_box.get('label')}.")[:500],
+                rationale_markdown=str(seed.get("why_relevant") or f"Matched to {top_box.get('label')}.")[:1000],
+                top_claim_json=why_relevant[0] if why_relevant else {},
+                decision_engine_version="fixture-v1",
+                gating_passed=True,
+                ranking_eligible=True,
+                screening_meta_json={
+                    "job_id": job.id,
+                    "screening_run_id": screening_run_id,
+                    "fixture_mode": True,
+                    "entity_type": "company",
+                    "capability_signals": [str(box.get("label") or "") for box in matched_boxes[:4] if str(box.get("label") or "").strip()],
+                    "likely_verticals": [],
+                    "origin_types": ["expansion_company_seed"],
+                    "scope_buckets": [str(box.get("adjacency_kind") or "").strip().lower() for box in matched_boxes[:4]],
+                    "registry_identity": {},
+                    "candidate_hq_country": hq_country,
+                    "expansion_provenance": [
+                        {
+                            "query_id": seed.get("id"),
+                            "query_type": "fixture_seed",
+                            "query_text": seed.get("name"),
+                            "provider": "expansion_brief_v3",
+                            "brick_name": box.get("label"),
+                            "scope_bucket": str(box.get("adjacency_kind") or "").strip().lower(),
+                        }
+                        for box in matched_boxes[:3]
+                    ],
+                },
+                source_summary_json={
+                    "expansion_provenance": [
+                        {
+                            "query_id": seed.get("id"),
+                            "query_type": "fixture_seed",
+                            "query_text": seed.get("name"),
+                            "provider": "expansion_brief_v3",
+                            "brick_name": box.get("label"),
+                            "scope_bucket": str(box.get("adjacency_kind") or "").strip().lower(),
+                        }
+                        for box in matched_boxes[:3]
+                    ]
+                },
+            )
+            db.add(screening)
+            db.flush()
+
+        claims_graph_metrics = rebuild_workspace_claims_graph(db, workspace.id)
+        job.state = JobState.completed
+        job.progress = 1.0
+        job.progress_message = "Complete (fixture mode)"
+        job.result_json = {
+            "screening_run_id": screening_run_id,
+            "companies_created": created_companies,
+            "vendors_updated": 0,
+            "kept_count": kept_count,
+            "review_count": review_count,
+            "rejected_count": 0,
+            "claims_created": claims_created,
+            "decision_class_counts": decision_class_counts,
+            "evidence_sufficiency_counts": evidence_sufficiency_counts,
+            "ranking_eligible_count": ranking_eligible_count,
+            "final_universe_count": candidate_entities_count,
+            "scoring_entities_count": candidate_entities_count,
+            "seed_directory_count": 0,
+            "seed_reference_count": 0,
+            "seed_benchmark_count": 0,
+            "seed_llm_count": 0,
+            "seed_external_search_count": 0,
+            "seed_mentions_count": 0,
+            "llm_candidates_found": 0,
+            "external_search_candidates_found": 0,
+            "source_coverage": {"fixture": {"company_seed_count": len(company_seeds), "adjacency_box_count": len(adjacency_boxes)}},
+            "run_quality_tier": "fixture",
+            "quality_gate_passed": True,
+            "quality_audit_passed": True,
+            "quality_validation_ready": True,
+            "quality_validation_blocked_reasons": [],
+            "pre_rerun_quality_validation_ready": False,
+            "pre_rerun_quality_validation_blocked_reasons": [],
+            "degraded_reasons": [],
+            "model_attempt_trace": [],
+            "stage_time_ms": {},
+            "timeout_events": [],
+            "stage_execution_mode": "fixture",
+            "fallback_mode": False,
+            "claims_graph_refresh": claims_graph_metrics,
+        }
+        job.finished_at = datetime.utcnow()
+        db.commit()
+        return {
+            "created": created_companies,
+            "screening_run_id": screening_run_id,
+            "stage_execution_mode": "fixture",
+        }
+    except Exception as exc:
+        db.rollback()
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
 def _run_discovery_universe_monolith(job_id: int):
     """Run discovery to find candidate universe."""
 
@@ -7400,6 +7948,15 @@ def _run_discovery_universe_monolith(job_id: int):
             for url in (profile.comparator_seed_urls or [])[:6]:
                 seed_urls.append(str(url))
             seed_urls = _dedupe_strings([normalize_url(url) for url in seed_urls if normalize_url(url)])
+            known_blocked_domains = _known_discovery_blocked_domains(profile, seed_urls)
+            if known_blocked_domains:
+                query_plan["domain_blocklist"] = _dedupe_strings(
+                    [str(item) for item in (query_plan.get("domain_blocklist") or [])] + known_blocked_domains
+                )[:12]
+                for query in search_queries:
+                    query["domain_blocklist"] = _dedupe_strings(
+                        [str(item) for item in (query.get("domain_blocklist") or [])] + known_blocked_domains
+                    )[:12]
             high_confidence_seed_urls: list[str] = []
             for seed_url in seed_urls:
                 seed_domain = normalize_domain(seed_url)
@@ -7656,6 +8213,26 @@ def _run_discovery_universe_monolith(job_id: int):
                 timeout_seconds=IDENTITY_RESOLUTION_TIMEOUT_SECONDS,
                 concurrency=IDENTITY_RESOLUTION_CONCURRENCY,
             )
+            previous_entities = db.query(CandidateEntity).filter(CandidateEntity.workspace_id == workspace.id).all()
+            previous_entity_ids = [int(entity.id) for entity in previous_entities if getattr(entity, "id", None) is not None]
+            previous_aliases = []
+            if previous_entity_ids:
+                previous_aliases = (
+                    db.query(CandidateEntityAlias)
+                    .filter(CandidateEntityAlias.entity_id.in_(previous_entity_ids))
+                    .all()
+                )
+            existing_companies = db.query(Company).filter(Company.workspace_id == workspace.id).all()
+            known_entity_profile = _known_entity_suppression_profile(
+                profile,
+                existing_companies=existing_companies,
+                previous_entities=previous_entities,
+                previous_aliases=previous_aliases,
+            )
+            raw_candidates, known_entity_raw_stats = _suppress_known_entity_candidates(
+                raw_candidates,
+                known_entity_profile,
+            )
             pre_registry_entities, pre_registry_metrics = _collapse_candidates_to_entities(raw_candidates)
             pre_registry_entities, registry_identity_metrics, registry_identity_query_logs = _apply_registry_identity_map(
                 pre_registry_entities,
@@ -7700,10 +8277,15 @@ def _run_discovery_universe_monolith(job_id: int):
                     "registry_neighbor_candidates_count": len(registry_neighbor_candidates),
                     "pre_registry_entities_count": len(pre_registry_entities),
                     "registry_queries_count": int(registry_queries_count_checkpoint),
+                    "known_entity_raw_drops": int(known_entity_raw_stats.get("dropped_count") or 0),
                 },
             )
 
             all_candidates = raw_candidates + registry_neighbor_candidates
+            all_candidates, known_entity_final_stats = _suppress_known_entity_candidates(
+                all_candidates,
+                known_entity_profile,
+            )
             canonical_entities, canonical_metrics = _collapse_candidates_to_entities(all_candidates)
             pre_score_universe_cap = max(50, int(getattr(settings, "discovery_pre_score_universe_cap", PRE_SCORE_UNIVERSE_CAP)))
             canonical_entities, trimmed_out_count = _trim_entities_for_universe(
@@ -7722,7 +8304,6 @@ def _run_discovery_universe_monolith(job_id: int):
             db.commit()
 
             # Reset canonical entity tables for this workspace (latest run snapshot).
-            previous_entities = db.query(CandidateEntity).filter(CandidateEntity.workspace_id == workspace.id).all()
             for previous in previous_entities:
                 db.delete(previous)
             db.flush()
@@ -7844,7 +8425,6 @@ def _run_discovery_universe_monolith(job_id: int):
                     )
 
             # Existing companies index
-            existing_companies = db.query(Company).filter(Company.workspace_id == workspace.id).all()
             existing_by_domain: dict[str, Company] = {}
             existing_by_name: dict[str, Company] = {}
             for company in existing_companies:
@@ -8573,6 +9153,8 @@ def _run_discovery_universe_monolith(job_id: int):
                         "merge_rationale": entity.get("merge_reasons") or [],
                         "origin_types": entity.get("origin_types") or [],
                         "scope_buckets": candidate_scope_buckets,
+                        "capability_signals": capability_signals[:10],
+                        "likely_verticals": likely_verticals[:8],
                         "registry_identity": entity.get("registry_identity") if isinstance(entity.get("registry_identity"), dict) else {},
                         "industry_signature": entity.get("industry_signature") if isinstance(entity.get("industry_signature"), dict) else {},
                         "registry_neighbors_with_first_party_website_count": registry_neighbors_with_first_party_website_count,
@@ -9041,6 +9623,8 @@ def _run_discovery_universe_monolith(job_id: int):
                 "external_search_brick_yield": external_search_brick_yield,
                 "external_search_dedupe_stats": external_search_dedupe_stats,
                 "external_search_errors": external_search_errors[:20],
+                "known_entity_suppression_raw": known_entity_raw_stats if isinstance(known_entity_raw_stats, dict) else {},
+                "known_entity_suppression_final": known_entity_final_stats if isinstance(known_entity_final_stats, dict) else {},
                 "claims_graph_refresh": claims_graph_refresh,
             }
             job.finished_at = datetime.utcnow()
@@ -9127,20 +9711,30 @@ def run_discovery_universe(job_id: int):
         ctx["stage_retry_counts"] = ctx.get("stage_retry_counts") if isinstance(ctx.get("stage_retry_counts"), dict) else {}
         ctx["stage_checkpoints"] = {}
         ctx["cache_stats_start"] = _read_retrieval_cache_stats_snapshot()
-        ctx["stage_execution_mode"] = "hybrid_preflight_monolith"
+        discovery_mode = str(getattr(settings, "discovery_execution_mode", "live") or "live").strip().lower() or "live"
+        if discovery_mode not in {"live", "fixture"}:
+            discovery_mode = "live"
+        ctx["stage_execution_mode"] = discovery_mode
         ctx["stale_runs_failed_count"] = int(stale_runs_failed)
         ctx["superseded_runs_count"] = int(len(superseded_runs))
         _save_discovery_context(job_id, ctx)
         _mark_stage_enqueued(job_id, "stage_seed_ingest")
 
-        pipeline = chain(
-            stage_seed_ingest.s(job_id),
-            stage_llm_discovery_fanout.s(job_id),
-            stage_registry_identity_expand.s(job_id),
-            stage_first_party_enrichment_parallel.s(job_id),
-            stage_scoring_claims_persist.s(job_id),
-            finalize_discovery_pipeline.s(job_id),
-        )
+        if discovery_mode == "fixture":
+            pipeline = chain(
+                stage_seed_ingest.s(job_id),
+                stage_scoring_claims_persist.s(job_id),
+                finalize_discovery_pipeline.s(job_id),
+            )
+        else:
+            pipeline = chain(
+                stage_seed_ingest.s(job_id),
+                stage_llm_discovery_fanout.s(job_id),
+                stage_registry_identity_expand.s(job_id),
+                stage_first_party_enrichment_parallel.s(job_id),
+                stage_scoring_claims_persist.s(job_id),
+                finalize_discovery_pipeline.s(job_id),
+            )
         pipeline.apply_async()
         discovery_watchdog.apply_async(
             args=[job_id],
@@ -9187,6 +9781,29 @@ def stage_seed_ingest(self, job_id: int):
         )
         if not workspace or not profile:
             raise RuntimeError("Missing workspace/profile data")
+        discovery_readiness = build_workspace_discovery_readiness(
+            expansion_confirmed=scope_review_confirmed,
+            database_url_sync=settings.database_url_sync,
+            # The job is already executing on a worker at this point. Rechecking
+            # worker availability via inspect() is circular and can fail on a
+            # healthy solo worker before it reports itself.
+            check_worker=False,
+        )
+        if not discovery_readiness.get("runnable"):
+            _save_stage_checkpoint(
+                job_id,
+                "stage_seed_ingest",
+                {
+                    "workspace_id": job.workspace_id,
+                    "profile_ready": bool(profile),
+                    "scope_review_ready": scope_review_confirmed,
+                    "scope_hints_ready": bool(scope_hints),
+                    "discovery_readiness": discovery_readiness,
+                },
+            )
+            raise RuntimeError(
+                "discovery_not_runnable:" + ",".join(discovery_readiness.get("reasons_blocked") or [])
+            )
         job.progress = 0.2
         job.progress_message = "Stage 1/5: seed ingest checks complete"
         db.commit()
@@ -9221,6 +9838,7 @@ def stage_seed_ingest(self, job_id: int):
                 "profile_ready": bool(profile),
                 "scope_review_ready": scope_review_confirmed,
                 "scope_hints_ready": bool(scope_hints),
+                "discovery_readiness": discovery_readiness,
                 "buyer_employee_estimate": buyer_employee_estimate,
                 "pre_rerun_quality_audit_run_id": previous_run_id,
                 "pre_rerun_quality_validation_ready": pre_rerun_quality_validation_ready,
@@ -9387,7 +10005,10 @@ def stage_scoring_claims_persist(self, _previous: Optional[dict[str, Any]], job_
     started = time.perf_counter()
     try:
         _record_stage_queue_wait(job_id, "stage_scoring_claims_persist")
-        result = _run_discovery_universe_monolith(job_id)
+        if str(getattr(settings, "discovery_execution_mode", "live") or "live").strip().lower() == "fixture":
+            result = _run_discovery_universe_fixture(job_id)
+        else:
+            result = _run_discovery_universe_monolith(job_id)
         if isinstance(result, dict) and result.get("error"):
             raise RuntimeError(str(result.get("error")))
         _save_stage_checkpoint(

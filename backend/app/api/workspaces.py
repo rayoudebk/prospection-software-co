@@ -59,6 +59,10 @@ from app.services.quality_audit import normalize_quality_audit_v1
 from app.services.company_context_graph import (
     sync_company_context_pack_graph,
 )
+from app.services.discovery_readiness import (
+    build_workspace_discovery_readiness,
+    normalize_sync_database_url,
+)
 from app.services.company_context import (
     assess_buyer_evidence,
     apply_scope_review_decisions,
@@ -647,6 +651,7 @@ class GatesResponse(BaseModel):
     segmentation: bool
     enrichment: bool
     missing_items: Dict[str, List[str]]
+    discovery_readiness: Dict[str, Any]
 
 
 class ReportGenerateRequest(BaseModel):
@@ -730,7 +735,10 @@ class UniverseTopCandidateResponse(BaseModel):
     company_id: Optional[int] = None
     candidate_entity_id: Optional[int] = None
     company_name: str
+    company_status: Optional[str] = None
     official_website_url: Optional[str] = None
+    hq_country: Optional[str] = None
+    evidence_count: int = 0
     discovery_sources: List[str] = Field(default_factory=list)
     entity_type: str = "company"
     decision_classification: str
@@ -744,6 +752,12 @@ class UniverseTopCandidateResponse(BaseModel):
     registry_origin_screening_counts: Dict[str, int] = Field(default_factory=dict)
     first_party_hint_urls_used_count: int = 0
     first_party_hint_pages_crawled_total: int = 0
+    capability_signals: List[str] = Field(default_factory=list)
+    likely_verticals: List[str] = Field(default_factory=list)
+    scope_buckets: List[str] = Field(default_factory=list)
+    origin_types: List[str] = Field(default_factory=list)
+    registry_identity: Dict[str, Any] = Field(default_factory=dict)
+    expansion_provenance: List[Dict[str, Any]] = Field(default_factory=list)
     missing_claim_groups: List[str] = Field(default_factory=list)
     unresolved_contradictions_count: int = 0
     ranking_eligible: bool = False
@@ -991,6 +1005,96 @@ def _screening_diagnostics_from_meta(screening_meta: Dict[str, Any]) -> Dict[str
         ),
         "first_party_hint_urls_used_count": int(screening_meta.get("first_party_hint_urls_used_count", 0)),
         "first_party_hint_pages_crawled_total": int(screening_meta.get("first_party_hint_pages_crawled_total", 0)),
+    }
+
+
+def _universe_context_from_screening(
+    screening_meta: Dict[str, Any],
+    source_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    capability_signals = [
+        str(item).strip()
+        for item in (screening_meta.get("capability_signals") or [])
+        if str(item).strip()
+    ][:10]
+    likely_verticals = [
+        str(item).strip()
+        for item in (screening_meta.get("likely_verticals") or [])
+        if str(item).strip()
+    ][:8]
+    scope_buckets = [
+        str(item).strip().lower()
+        for item in (screening_meta.get("scope_buckets") or [])
+        if str(item).strip()
+    ]
+    origin_types = [
+        str(item).strip()
+        for item in (screening_meta.get("origin_types") or [])
+        if str(item).strip()
+    ][:8]
+    registry_identity_raw = (
+        screening_meta.get("registry_identity")
+        if isinstance(screening_meta.get("registry_identity"), dict)
+        else {}
+    )
+    registry_identity = {
+        "id": str(registry_identity_raw.get("id") or "").strip() or None,
+        "country": str(registry_identity_raw.get("country") or "").strip() or None,
+        "source": str(registry_identity_raw.get("source") or "").strip() or None,
+        "match_confidence": float(registry_identity_raw.get("match_confidence") or 0.0),
+        "matched_query": str(registry_identity_raw.get("query") or "").strip() or None,
+        "status": str(registry_identity_raw.get("status") or "").strip() or None,
+    }
+    if not any(registry_identity.values()):
+        registry_identity = {}
+
+    raw_provenance = source_summary.get("expansion_provenance")
+    if not isinstance(raw_provenance, list):
+        raw_provenance = screening_meta.get("expansion_provenance")
+
+    seen_provenance: set[tuple[str, str, str, str]] = set()
+    expansion_provenance: List[Dict[str, Any]] = []
+    for item in raw_provenance or []:
+        if not isinstance(item, dict):
+            continue
+        query_id = str(item.get("query_id") or "").strip()
+        query_type = str(item.get("query_type") or "").strip()
+        query_text = str(item.get("query_text") or "").strip()
+        provider = str(item.get("provider") or item.get("source_name") or "").strip()
+        brick_name = str(item.get("brick_name") or "").strip() or None
+        scope_bucket = str(item.get("scope_bucket") or "").strip().lower() or None
+        rank_raw = item.get("rank")
+        try:
+            rank = int(rank_raw) if rank_raw is not None else None
+        except Exception:
+            rank = None
+        if not any([query_id, query_type, query_text, provider, brick_name, scope_bucket]):
+            continue
+        dedupe_key = (query_id, query_type, query_text, provider)
+        if dedupe_key in seen_provenance:
+            continue
+        seen_provenance.add(dedupe_key)
+        expansion_provenance.append(
+            {
+                "query_id": query_id or None,
+                "query_type": query_type or None,
+                "query_text": query_text[:220] or None,
+                "provider": provider or None,
+                "brick_name": brick_name,
+                "scope_bucket": scope_bucket,
+                "rank": rank,
+            }
+        )
+        if len(expansion_provenance) >= 6:
+            break
+
+    return {
+        "capability_signals": capability_signals,
+        "likely_verticals": likely_verticals,
+        "scope_buckets": scope_buckets[:4],
+        "origin_types": origin_types,
+        "registry_identity": registry_identity,
+        "expansion_provenance": expansion_provenance,
     }
 
 
@@ -1482,6 +1586,14 @@ async def _get_company_profile(db: AsyncSession, workspace_id: int) -> Optional[
         select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)
     )
     return result.scalar_one_or_none()
+
+
+def _database_url_sync_for_async_session(db: AsyncSession) -> Optional[str]:
+    bind = getattr(db, "bind", None)
+    bind_url = getattr(bind, "url", None)
+    if bind_url is None:
+        return None
+    return normalize_sync_database_url(str(bind_url))
 
 
 async def _sync_company_context_graph(
@@ -2770,6 +2882,35 @@ async def run_discovery(workspace_id: int, db: AsyncSession = Depends(get_db)):
     workspace = result.scalar_one_or_none()
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+
+    profile = await _get_company_profile(db, workspace_id)
+    company_context_result = await db.execute(
+        select(CompanyContextPack).where(CompanyContextPack.workspace_id == workspace_id)
+    )
+    company_context_pack = company_context_result.scalar_one_or_none()
+    expansion_brief = normalize_expansion_brief(
+        (company_context_pack.expansion_brief_json or {}) if company_context_pack else {}
+    )
+    discovery_readiness = build_workspace_discovery_readiness(
+        expansion_confirmed=bool(expansion_brief.get("confirmed_at")),
+        database_url_sync=_database_url_sync_for_async_session(db),
+        check_worker=True,
+    )
+    if not profile:
+        discovery_readiness["runnable"] = False
+        discovery_readiness["reasons_blocked"] = [
+            *list(discovery_readiness.get("reasons_blocked") or []),
+            "company_profile_missing",
+        ]
+    if not discovery_readiness.get("runnable"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Discovery is not runnable for this workspace yet.",
+                "code": "discovery_not_runnable",
+                "readiness": discovery_readiness,
+            },
+        )
     
     # Create job
     job = Job(
@@ -3254,6 +3395,19 @@ async def list_top_candidates(
         company_result = await db.execute(select(Company).where(Company.id.in_(company_ids)))
         company_map = {row.id: row for row in company_result.scalars().all()}
 
+    evidence_count_by_company: Dict[int, int] = {}
+    if company_ids:
+        evidence_counts_result = await db.execute(
+            select(SourceEvidence.company_id, func.count(SourceEvidence.id))
+            .where(SourceEvidence.company_id.in_(company_ids))
+            .group_by(SourceEvidence.company_id)
+        )
+        evidence_count_by_company = {
+            int(company_id): int(count)
+            for company_id, count in evidence_counts_result.all()
+            if company_id is not None
+        }
+
     entity_map: Dict[int, CandidateEntity] = {}
     origins_by_entity: Dict[int, List[CandidateOriginEdge]] = {}
     if entity_ids:
@@ -3285,8 +3439,10 @@ async def list_top_candidates(
         company = company_map.get(screening.company_id) if screening.company_id else None
         entity = entity_map.get(screening.candidate_entity_id) if screening.candidate_entity_id else None
         meta = screening.screening_meta_json if isinstance(screening.screening_meta_json, dict) else {}
+        source_summary = screening.source_summary_json if isinstance(screening.source_summary_json, dict) else {}
         diagnostics = _screening_diagnostics_from_meta(meta)
         citation_summary_v1 = _citation_summary_from_meta(meta)
+        universe_context = _universe_context_from_screening(meta, source_summary)
         if (
             diagnostics["registry_neighbors_with_first_party_website_count"] == 0
             and diagnostics["registry_neighbors_dropped_missing_official_website_count"] == 0
@@ -3322,11 +3478,18 @@ async def list_top_candidates(
                 company_id=screening.company_id,
                 candidate_entity_id=screening.candidate_entity_id,
                 company_name=(company.name if company else screening.candidate_name),
+                company_status=(company.status.value if company else None),
                 official_website_url=(
                     screening.candidate_official_website
                     or (company.website if company else None)
                     or (entity.canonical_website if entity else None)
                 ),
+                hq_country=(
+                    (company.hq_country if company else None)
+                    or str(meta.get("candidate_hq_country") or "").strip()
+                    or None
+                ),
+                evidence_count=(evidence_count_by_company.get(company.id, 0) if company else 0),
                 discovery_sources=deduped_sources[:12],
                 entity_type=(
                     str(entity.entity_type or "company")
@@ -3348,6 +3511,12 @@ async def list_top_candidates(
                 registry_origin_screening_counts=diagnostics["registry_origin_screening_counts"],
                 first_party_hint_urls_used_count=int(diagnostics["first_party_hint_urls_used_count"]),
                 first_party_hint_pages_crawled_total=int(diagnostics["first_party_hint_pages_crawled_total"]),
+                capability_signals=universe_context["capability_signals"],
+                likely_verticals=universe_context["likely_verticals"],
+                scope_buckets=universe_context["scope_buckets"],
+                origin_types=universe_context["origin_types"],
+                registry_identity=universe_context["registry_identity"],
+                expansion_provenance=universe_context["expansion_provenance"],
                 missing_claim_groups=[str(item) for item in (screening.missing_claim_groups_json or []) if str(item)],
                 unresolved_contradictions_count=int(screening.unresolved_contradictions_count or 0),
                 ranking_eligible=bool(screening.ranking_eligible),
@@ -5052,6 +5221,9 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         "enrichment": []
     }
     
+    company_context_pack: Optional[CompanyContextPack] = None
+    expansion_confirmed = False
+
     # Check company context
     profile = await _get_company_profile(db, workspace_id)
     context_pack_ready = False
@@ -5113,14 +5285,11 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     # Check scope review
     scope_review_ready = False
     if profile:
-        company_context_result = await db.execute(
-            select(CompanyContextPack).where(CompanyContextPack.workspace_id == workspace_id)
-        )
-        company_context_pack = company_context_result.scalar_one_or_none()
         if company_context_pack:
             scope_payload = derive_scope_review_payload(company_context_pack, profile)
             discovery_scope_hints = derive_discovery_scope_hints(company_context_pack, profile)
             expansion_brief = normalize_expansion_brief(company_context_pack.expansion_brief_json or {})
+            expansion_confirmed = bool(expansion_brief.get("confirmed_at"))
             adjacent_lanes = (
                 discovery_scope_hints.get("adjacent_lanes")
                 or discovery_scope_hints.get("adjacency_box_labels")
@@ -5130,7 +5299,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
                 missing_items["scope_review"].append("Keep at least 1 source capability or workflow in scope")
             if not adjacent_lanes:
                 missing_items["scope_review"].append("Approve at least 1 adjacency lane before discovery")
-            if not expansion_brief.get("confirmed_at"):
+            if not expansion_confirmed:
                 missing_items["scope_review"].append("Confirm the reviewed scope before universe discovery")
             if not (
                 scope_payload.get("source_capabilities")
@@ -5139,7 +5308,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
             ):
                 missing_items["scope_review"].append("Generate the expansion brief before scope review")
             scope_review_ready = bool(
-                expansion_brief.get("confirmed_at")
+                expansion_confirmed
                 and (discovery_scope_hints.get("source_capabilities") or [])
                 and adjacent_lanes
             )
@@ -5239,6 +5408,32 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         missing_items["enrichment"].append(
             f"Enrich at least {min_enriched} companies with required evidence groups ({enriched_with_groups}/{min_enriched})"
         )
+
+    discovery_readiness = build_workspace_discovery_readiness(
+        expansion_confirmed=expansion_confirmed,
+        database_url_sync=_database_url_sync_for_async_session(db),
+        check_worker=True,
+    )
+    if not profile and "company_profile_missing" not in discovery_readiness["reasons_blocked"]:
+        discovery_readiness["reasons_blocked"] = [
+            *list(discovery_readiness.get("reasons_blocked") or []),
+            "company_profile_missing",
+        ]
+        discovery_readiness["runnable"] = False
+    if not discovery_readiness.get("runnable"):
+        readable_labels = {
+            "db_schema_invalid": "Fix discovery database schema before running universe",
+            "redis_unavailable": "Start Redis before running universe",
+            "worker_unavailable": "Start a Celery worker before running universe",
+            "retrieval_provider_unavailable": "Configure at least one retrieval provider key before running universe",
+            "model_provider_unavailable": "Configure at least one model provider key before running universe",
+            "expansion_not_confirmed": "Confirm the expansion brief before running universe",
+            "company_profile_missing": "Create the company profile before running universe",
+        }
+        for reason in discovery_readiness.get("reasons_blocked") or []:
+            label = readable_labels.get(reason)
+            if label and label not in missing_items["universe"]:
+                missing_items["universe"].append(label)
     
     return GatesResponse(
         context_pack=context_pack_ready,
@@ -5246,7 +5441,8 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         universe=universe_ready,
         segmentation=segmentation_ready,
         enrichment=enrichment_ready,
-        missing_items=missing_items
+        missing_items=missing_items,
+        discovery_readiness=discovery_readiness,
     )
 
 

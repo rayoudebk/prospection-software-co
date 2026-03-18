@@ -1,6 +1,8 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import List, Tuple
+from urllib.parse import urlparse
+import re
 
 
 class Settings(BaseSettings):
@@ -11,6 +13,7 @@ class Settings(BaseSettings):
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
+    celery_queue_namespace: str = ""
 
     # Gemini
     gemini_api_key: str = ""
@@ -55,6 +58,7 @@ class Settings(BaseSettings):
     stage_retry_backoff_seconds: float = 1.0
 
     # Discovery runtime and quality gates
+    discovery_execution_mode: str = "live"
     discovery_global_timeout_seconds: int = 1800
     quality_min_claims_created: int = 3
     quality_min_ranking_eligible_count: int = 1
@@ -128,6 +132,15 @@ class Settings(BaseSettings):
             if provider and model:
                 pairs.append((provider, model))
         return pairs
+
+    def resolved_celery_queue_namespace(self) -> str:
+        explicit = str(self.celery_queue_namespace or "").strip().lower()
+        if explicit:
+            return re.sub(r"[^a-z0-9_-]+", "-", explicit).strip("-")
+        parsed = urlparse(str(self.database_url_sync or ""))
+        host = re.sub(r"[^a-z0-9_-]+", "-", str(parsed.hostname or "local").lower()).strip("-") or "local"
+        db_name = re.sub(r"[^a-z0-9_-]+", "-", str(parsed.path or "").strip("/").lower()).strip("-") or "prospection"
+        return f"{host}-{db_name}"
 
     def stage_model_routes(self, stage_name: str) -> List[Tuple[str, str]]:
         mapping = {

@@ -431,6 +431,7 @@ export interface CompanyContextPack {
   id: number;
   workspace_id: number;
   company_context_graph_ref?: string | null;
+  company_context_graph_namespace?: string | null;
   graph_status: string;
   graph_warning?: string | null;
   graph_synced_at?: string | null;
@@ -708,7 +709,10 @@ export interface UniverseTopCandidate {
   company_id: number | null;
   candidate_entity_id: number | null;
   company_name: string;
+  company_status?: "candidate" | "kept" | "removed" | "enriched" | string | null;
   official_website_url: string | null;
+  hq_country?: string | null;
+  evidence_count: number;
   discovery_sources: string[];
   entity_type: string;
   decision_classification: string;
@@ -733,6 +737,27 @@ export interface UniverseTopCandidate {
   registry_origin_screening_counts?: Record<string, number>;
   first_party_hint_urls_used_count?: number;
   first_party_hint_pages_crawled_total?: number;
+  capability_signals: string[];
+  likely_verticals: string[];
+  scope_buckets: string[];
+  origin_types: string[];
+  registry_identity?: {
+    id?: string | null;
+    country?: string | null;
+    source?: string | null;
+    match_confidence?: number | null;
+    matched_query?: string | null;
+    status?: string | null;
+  } | null;
+  expansion_provenance: Array<{
+    query_id?: string | null;
+    query_type?: string | null;
+    query_text?: string | null;
+    provider?: string | null;
+    brick_name?: string | null;
+    scope_bucket?: string | null;
+    rank?: number | null;
+  }>;
   missing_claim_groups: string[];
   unresolved_contradictions_count: number;
   ranking_eligible: boolean;
@@ -740,6 +765,39 @@ export interface UniverseTopCandidate {
   quality_gate_passed?: boolean;
   quality_audit_passed?: boolean;
   degraded_reasons?: string[];
+}
+
+export interface DiscoveryDiagnostics {
+  workspace_id: number;
+  screening_run_id?: string | null;
+  screening_totals?: {
+    screenings: number;
+    kept: number;
+    review: number;
+    rejected: number;
+  };
+  source_coverage?: {
+    external_search?: {
+      provider_mix?: Record<string, number>;
+      brick_yield?: Record<string, number>;
+      query_plan_summary?: {
+        scope_buckets?: string[];
+      };
+    };
+  };
+  funnel_metrics?: {
+    seed_directory_count?: number;
+    seed_reference_count?: number;
+    seed_llm_count?: number;
+    final_universe_count?: number;
+    registry_identity_candidates_count?: number;
+    registry_identity_mapped_count?: number;
+    registry_queries_count?: number;
+    registry_neighbors_kept_count?: number;
+    registry_queries_by_country?: Record<string, number>;
+    first_party_crawl_success_count?: number;
+    first_party_crawl_pages_total?: number;
+  };
 }
 
 export interface CompanyDossier {
@@ -826,6 +884,21 @@ export interface Job {
   finished_at: string | null;
 }
 
+export interface DiscoveryReadiness {
+  runnable: boolean;
+  execution_mode: "live" | "fixture" | string;
+  expansion_confirmed: boolean;
+  db_schema_ok: boolean;
+  redis_available: boolean;
+  worker_available: boolean;
+  retrieval_provider_available: boolean;
+  model_available: boolean;
+  reasons_blocked: string[];
+  available_retrieval_providers: string[];
+  available_model_providers: string[];
+  schema_missing_columns: string[];
+}
+
 export interface Gates {
   context_pack: boolean;
   scope_review: boolean;
@@ -833,6 +906,7 @@ export interface Gates {
   segmentation: boolean;
   enrichment: boolean;
   missing_items: Record<string, string[]>;
+  discovery_readiness: DiscoveryReadiness;
 }
 
 export interface SourcePill {
@@ -1120,7 +1194,7 @@ export const workspaceApi = {
     }),
 
   getDiscoveryDiagnostics: (id: number, includeQualityAudit = true) =>
-    fetchJSON<Record<string, unknown>>(
+    fetchJSON<DiscoveryDiagnostics>(
       `/workspaces/${id}/discovery:diagnostics?include_quality_audit=${includeQualityAudit ? "true" : "false"}`
     ),
   getTopCandidates: (id: number, limit = 25, allowDegraded = false) =>

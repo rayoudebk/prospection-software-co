@@ -30,6 +30,27 @@ def _disable_live_llm(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _stub_discovery_readiness(monkeypatch):
+    monkeypatch.setattr(
+        "app.api.workspaces.build_workspace_discovery_readiness",
+        lambda **kwargs: {
+            "runnable": bool(kwargs.get("expansion_confirmed")),
+            "execution_mode": "live",
+            "expansion_confirmed": bool(kwargs.get("expansion_confirmed")),
+            "db_schema_ok": True,
+            "redis_available": True,
+            "worker_available": True,
+            "retrieval_provider_available": True,
+            "model_available": True,
+            "reasons_blocked": [] if kwargs.get("expansion_confirmed") else ["expansion_not_confirmed"],
+            "available_retrieval_providers": ["exa"],
+            "available_model_providers": ["gemini"],
+            "schema_missing_columns": [],
+        },
+    )
+
+
 def _build_test_client(tmp_path: Path):
     db_path = tmp_path / "company-context-test.sqlite3"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", future=True)
@@ -326,6 +347,73 @@ def test_scope_review_contract_updates_and_confirms_scope(tmp_path: Path, monkey
     gates_response = client.get(f"/workspaces/{workspace_id}/gates")
     assert gates_response.status_code == 200
     assert gates_response.json()["scope_review"] is True
+    assert gates_response.json()["discovery_readiness"]["runnable"] is True
+
+
+def test_gates_include_discovery_readiness_payload(tmp_path: Path, monkeypatch):
+    client, session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Readiness workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+    _seed_company_profile(session_maker, workspace_id)
+    client.get(f"/workspaces/{workspace_id}/company-context")
+    _seed_expansion_brief(session_maker, workspace_id)
+    client.post(f"/workspaces/{workspace_id}/scope-review:confirm")
+
+    gates_response = client.get(f"/workspaces/{workspace_id}/gates")
+    assert gates_response.status_code == 200
+    payload = gates_response.json()
+
+    assert payload["discovery_readiness"]["runnable"] is True
+    assert payload["discovery_readiness"]["execution_mode"] == "live"
+    assert payload["discovery_readiness"]["expansion_confirmed"] is True
+    assert payload["discovery_readiness"]["available_retrieval_providers"] == ["exa"]
+    assert payload["discovery_readiness"]["available_model_providers"] == ["gemini"]
+
+
+def test_discovery_run_returns_409_when_readiness_blocked(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.workspaces.build_workspace_discovery_readiness",
+        lambda **kwargs: {
+            "runnable": False,
+            "execution_mode": "live",
+            "expansion_confirmed": True,
+            "db_schema_ok": True,
+            "redis_available": True,
+            "worker_available": False,
+            "retrieval_provider_available": False,
+            "model_available": False,
+            "reasons_blocked": [
+                "worker_unavailable",
+                "retrieval_provider_unavailable",
+                "model_provider_unavailable",
+            ],
+            "available_retrieval_providers": [],
+            "available_model_providers": [],
+            "schema_missing_columns": [],
+        },
+    )
+
+    client, session_maker = _build_test_client(tmp_path)
+
+    create_response = client.post("/workspaces", json={"name": "Blocked discovery workspace", "region_scope": "EU+UK"})
+    assert create_response.status_code == 200
+    workspace_id = create_response.json()["id"]
+    _seed_company_profile(session_maker, workspace_id)
+    client.get(f"/workspaces/{workspace_id}/company-context")
+    _seed_expansion_brief(session_maker, workspace_id)
+    client.post(f"/workspaces/{workspace_id}/scope-review:confirm")
+
+    response = client.post(f"/workspaces/{workspace_id}/discovery:run")
+    assert response.status_code == 409
+    payload = response.json()["detail"]
+    assert payload["code"] == "discovery_not_runnable"
+    assert payload["readiness"]["reasons_blocked"] == [
+        "worker_unavailable",
+        "retrieval_provider_unavailable",
+        "model_provider_unavailable",
+    ]
 
 
 def test_company_context_refresh_enqueues_worker_task_and_returns_refreshing(tmp_path: Path, monkeypatch):
