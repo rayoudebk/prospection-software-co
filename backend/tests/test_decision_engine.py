@@ -73,3 +73,25 @@ def test_score_below_threshold_is_not_exposed_as_user_reason_code():
     # Unknown/internal reject reasons collapse to caution-based evidence insufficiency.
     assert "CAU-05" in decision.caution_reason_codes
     assert all(not code.startswith("score_") for code in (decision.caution_reason_codes + decision.reject_reason_codes))
+
+
+def test_review_can_pass_when_only_vertical_workflow_is_missing_but_sources_are_strong():
+    claims = [
+        {"claim_group": "identity_scope", "claim_status": "fact"},
+        {"claim_group": "product_depth", "claim_status": "fact"},
+        {"claim_group": "product_depth", "claim_status": "fact"},
+    ]
+    decision = evaluate_decision(
+        screening_status="review",
+        reject_reasons=[],
+        claims=claims,
+        component_scores={},
+        source_type_counts={
+            "first_party_website": 1,
+            "directory_comparator": 1,
+            "official_registry_filing": 1,
+        },
+    )
+    assert decision.classification == "borderline_watchlist"
+    assert decision.evidence_sufficiency == "sufficient"
+    assert decision.gating_passed is True

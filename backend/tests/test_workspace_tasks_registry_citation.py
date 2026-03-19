@@ -194,6 +194,49 @@ def test_resolve_identities_canonicalizes_redirected_first_party_domain(monkeypa
     assert "jump-technology.com" in candidate["first_party_domains"]
 
 
+def test_resolve_directory_profile_seed_candidates_only_targets_directory_profiles(monkeypatch):
+    calls: list[str] = []
+
+    def fake_resolver(url: str, timeout_seconds: int = 4):
+        calls.append(url)
+        return {
+            "profile_url": url,
+            "official_website": "https://vendor.example.com",
+            "identity_confidence": "high",
+            "captured_at": "2026-01-01T00:00:00",
+            "error": None,
+        }
+
+    monkeypatch.setattr(workspace_tasks, "resolve_external_website_from_profile", fake_resolver)
+
+    directory_candidate = {
+        "name": "Vendor Profile",
+        "profile_url": "https://www.thewealthmosaic.com/vendors/vendor-profile/platform/",
+        "discovery_url": "https://www.thewealthmosaic.com/vendors/vendor-profile/platform/",
+        "website": None,
+        "official_website_url": None,
+        "_origins": [{"origin_type": "directory_seed", "source_name": "wealth_mosaic"}],
+    }
+    external_candidate = {
+        "name": "External Vendor",
+        "website": "https://vendor.example.com",
+        "official_website_url": "https://vendor.example.com",
+        "_origins": [{"origin_type": "external_search_seed", "source_name": "exa"}],
+    }
+
+    stats = workspace_tasks._resolve_directory_profile_seed_candidates(
+        [directory_candidate, external_candidate],
+        max_fetches=5,
+    )
+
+    assert stats["candidates_considered"] == 1
+    assert stats["candidates_selected"] == 1
+    assert stats["identity_resolved_count"] == 1
+    assert calls == ["https://www.thewealthmosaic.com/vendors/vendor-profile/platform/"]
+    assert directory_candidate["official_website_url"] == "https://vendor.example.com"
+    assert directory_candidate["website"] == "https://vendor.example.com"
+
+
 def test_build_first_party_hint_url_map_uses_evidence_urls_and_path_company_urls():
     profile = SimpleNamespace(
         supporting_evidence_urls=[

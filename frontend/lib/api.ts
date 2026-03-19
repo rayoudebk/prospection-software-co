@@ -761,10 +761,76 @@ export interface UniverseTopCandidate {
   missing_claim_groups: string[];
   unresolved_contradictions_count: number;
   ranking_eligible: boolean;
+  validation_status: string;
+  validation_recommendation: string;
+  validation_queue_rank?: number | null;
+  promoted_to_cards: boolean;
+  validation_lane_ids: string[];
+  validation_lane_labels: string[];
+  validation_query_families: string[];
+  validation_source_families: string[];
+  vendor_classification?: string | null;
+  identity_confidence?: string | null;
+  official_website_confidence?: string | null;
+  multi_origin_count: number;
+  priority_score: number;
   run_quality_tier?: "high_quality" | "degraded" | string;
   quality_gate_passed?: boolean;
   quality_audit_passed?: boolean;
   degraded_reasons?: string[];
+}
+
+export interface ValidationQueueItem {
+  candidate_entity_id: number;
+  company_id: number | null;
+  company_name: string;
+  official_website_url: string | null;
+  discovery_url: string | null;
+  hq_country?: string | null;
+  entity_type: string;
+  decision_classification: string;
+  evidence_sufficiency: string;
+  rationale_summary: string | null;
+  validation_status: string;
+  validation_recommendation: string;
+  validation_queue_rank: number;
+  promoted_to_cards: boolean;
+  validation_lane_ids: string[];
+  validation_lane_labels: string[];
+  validation_query_families: string[];
+  validation_source_families: string[];
+  discovery_sources: string[];
+  origin_types: string[];
+  capability_signals: string[];
+  likely_verticals: string[];
+  vendor_classification?: string | null;
+  identity_confidence?: string | null;
+  official_website_confidence?: string | null;
+  multi_origin_count: number;
+  priority_score: number;
+  top_claim: {
+    text?: string;
+    claim_type?: string;
+    source_url?: string;
+    source_tier?: string;
+    source_kind?: string;
+    captured_at?: string;
+  };
+  reason_codes: {
+    positive: string[];
+    caution: string[];
+    reject: string[];
+  };
+  expansion_provenance: Array<{
+    query_id?: string | null;
+    query_type?: string | null;
+    query_text?: string | null;
+    provider?: string | null;
+    brick_name?: string | null;
+    scope_bucket?: string | null;
+    rank?: number | null;
+  }>;
+  citation_summary_v1?: CitationSummaryV1 | null;
 }
 
 export interface DiscoveryDiagnostics {
@@ -903,6 +969,8 @@ export interface Gates {
   context_pack: boolean;
   scope_review: boolean;
   universe: boolean;
+  validation: boolean;
+  cards: boolean;
   segmentation: boolean;
   enrichment: boolean;
   missing_items: Record<string, string[]>;
@@ -1201,6 +1269,23 @@ export const workspaceApi = {
     fetchJSON<UniverseTopCandidate[]>(
       `/workspaces/${id}/universe/top-candidates?limit=${encodeURIComponent(String(limit))}&allow_degraded=${allowDegraded ? "true" : "false"}`
     ),
+  listValidationQueue: (id: number, limit = 36, allowDegraded = false, includeRejected = false) =>
+    fetchJSON<ValidationQueueItem[]>(
+      `/workspaces/${id}/validation/queue?limit=${encodeURIComponent(String(limit))}&allow_degraded=${allowDegraded ? "true" : "false"}&include_rejected=${includeRejected ? "true" : "false"}`
+    ),
+  getValidationCandidate: (workspaceId: number, candidateEntityId: number, allowDegraded = false) =>
+    fetchJSON<ValidationQueueItem>(
+      `/workspaces/${workspaceId}/validation/${candidateEntityId}?allow_degraded=${allowDegraded ? "true" : "false"}`
+    ),
+  updateValidationCandidate: (
+    workspaceId: number,
+    candidateEntityId: number,
+    data: { status: string }
+  ) =>
+    fetchJSON<ValidationQueueItem>(`/workspaces/${workspaceId}/validation/${candidateEntityId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
 
   // Companies
   listCompanies: (id: number, status?: string) =>

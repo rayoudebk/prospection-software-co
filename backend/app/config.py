@@ -70,8 +70,18 @@ class Settings(BaseSettings):
     audit_max_fn_missing_vertical_with_institutional_text: int = 8
     audit_max_fp_registry_or_directory_overweight: int = 5
     audit_max_fn_customer_proof_but_thin_grouping: int = 8
-    discovery_pre_score_universe_cap: int = 300
-    discovery_scoring_entities_cap: int = 90
+    discovery_candidate_entity_cap: int = 2000
+    discovery_scoring_entities_cap: int = 120
+    discovery_validation_queue_limit: int = 36
+    discovery_validation_lane_cap: int = 6
+    discovery_validation_query_family_cap: int = 4
+    discovery_validation_source_family_cap: int = 18
+    discovery_directory_seed_total_cap: int = 2000
+    discovery_directory_seed_per_listing_cap: int = 2000
+    discovery_directory_seed_per_source_cap: int = 2000
+    discovery_directory_seed_without_website_cap: int = 2000
+    discovery_directory_profile_resolution_enabled: bool = True
+    discovery_directory_profile_resolution_cap: int = 30
 
     # Registry expansion runtime controls
     registry_identity_top_seeds: int = 50
@@ -82,10 +92,10 @@ class Settings(BaseSettings):
     registry_neighbor_max_seconds: int = 150
 
     # First-party enrichment runtime controls
-    first_party_fetch_budget: int = 36
-    first_party_crawl_budget: int = 20
-    first_party_crawl_deep_budget: int = 8
-    first_party_hint_crawl_budget: int = 20
+    first_party_fetch_budget: int = 15
+    first_party_crawl_budget: int = 0
+    first_party_crawl_deep_budget: int = 0
+    first_party_hint_crawl_budget: int = 0
     first_party_crawl_light_max_pages: int = 3
     first_party_crawl_deep_max_pages: int = 6
     first_party_min_priority_for_crawl: float = 55.0
@@ -105,10 +115,14 @@ class Settings(BaseSettings):
     retrieval_url_cache_ttl_seconds: int = 43200
     external_search_candidates_cap: int = 25
     discovery_retrieval_provider_order: str = "exa,brave,tavily,serpapi"
-    discovery_retrieval_per_query_cap: int = 8
-    discovery_retrieval_total_cap: int = 60
+    discovery_retrieval_per_query_cap: int = 10
+    discovery_retrieval_total_cap: int = 90
     discovery_retrieval_per_domain_cap: int = 3
-    discovery_retrieval_similar_seed_cap: int = 4
+    discovery_retrieval_similar_seed_cap: int = 6
+    discovery_candidate_synthesis_enabled: bool = False
+    discovery_identity_resolution_enabled: bool = True
+    discovery_registry_expansion_enabled: bool = False
+    discovery_first_party_enrichment_enabled: bool = True
     company_context_secondary_provider_order: str = "serper,brave"
     company_context_secondary_per_query_cap: int = 4
     company_context_secondary_query_cap: int = 18

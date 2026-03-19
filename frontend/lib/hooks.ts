@@ -213,6 +213,39 @@ export function useTopCandidates(workspaceId: number, limit = 25, allowDegraded 
   });
 }
 
+export function useValidationQueue(
+  workspaceId: number,
+  limit = 36,
+  allowDegraded = false,
+  includeRejected = false
+) {
+  return useQuery({
+    queryKey: ["validation-queue", workspaceId, limit, allowDegraded, includeRejected],
+    queryFn: () => workspaceApi.listValidationQueue(workspaceId, limit, allowDegraded, includeRejected),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useUpdateValidationCandidate(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      candidateEntityId,
+      status,
+    }: {
+      candidateEntityId: number;
+      status: string;
+    }) => workspaceApi.updateValidationCandidate(workspaceId, candidateEntityId, { status }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["validation-queue", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["reports", workspaceId] });
+    },
+  });
+}
+
 export function useDiscoveryDiagnostics(workspaceId: number, includeQualityAudit = true) {
   return useQuery({
     queryKey: ["discovery-diagnostics", workspaceId, includeQualityAudit],

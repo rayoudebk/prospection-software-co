@@ -45,7 +45,7 @@ def _filter_results_by_excluded_domains(
         if not url:
             continue
         host = _normalized_host(url)
-        if host and host in blocked:
+        if host and any(host == domain or host.endswith(f".{domain}") for domain in blocked):
             continue
         filtered.append(row)
     return filtered

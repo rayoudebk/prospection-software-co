@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import math
 
+from app.config import get_settings
 from app.models.base import async_session_maker, get_db
 from app.models.workspace import Workspace, CompanyProfile
 from app.models.company_context import CompanyContextPack
@@ -62,6 +63,18 @@ from app.services.company_context_graph import (
 from app.services.discovery_readiness import (
     build_workspace_discovery_readiness,
     normalize_sync_database_url,
+)
+from app.services.discovery_validation import (
+    VALIDATION_STATUS_KEEP,
+    VALIDATION_STATUS_PROMOTED,
+    VALIDATION_STATUS_QUEUED,
+    VALIDATION_STATUS_REJECT,
+    VALIDATION_STATUS_REMOVED,
+    VALIDATION_STATUS_WATCHLIST,
+    build_candidate_validation_context,
+    build_diversified_validation_queue,
+    set_validation_metadata,
+    validation_metadata,
 )
 from app.services.company_context import (
     assess_buyer_evidence,
@@ -650,6 +663,8 @@ class GatesResponse(BaseModel):
     universe: bool
     segmentation: bool
     enrichment: bool
+    validation: bool = False
+    cards: bool = False
     missing_items: Dict[str, List[str]]
     discovery_readiness: Dict[str, Any]
 
@@ -761,10 +776,61 @@ class UniverseTopCandidateResponse(BaseModel):
     missing_claim_groups: List[str] = Field(default_factory=list)
     unresolved_contradictions_count: int = 0
     ranking_eligible: bool = False
+    validation_status: str = VALIDATION_STATUS_QUEUED
+    validation_recommendation: str = VALIDATION_STATUS_QUEUED
+    validation_queue_rank: Optional[int] = None
+    promoted_to_cards: bool = False
+    validation_lane_ids: List[str] = Field(default_factory=list)
+    validation_lane_labels: List[str] = Field(default_factory=list)
+    validation_query_families: List[str] = Field(default_factory=list)
+    validation_source_families: List[str] = Field(default_factory=list)
+    vendor_classification: Optional[str] = None
+    identity_confidence: Optional[str] = None
+    official_website_confidence: Optional[str] = None
+    multi_origin_count: int = 0
+    priority_score: float = 0.0
     run_quality_tier: str = "degraded"
     quality_gate_passed: bool = False
     quality_audit_passed: bool = False
     degraded_reasons: List[str] = Field(default_factory=list)
+
+
+class ValidationQueueItemResponse(BaseModel):
+    candidate_entity_id: int
+    company_id: Optional[int] = None
+    company_name: str
+    official_website_url: Optional[str] = None
+    discovery_url: Optional[str] = None
+    hq_country: Optional[str] = None
+    entity_type: str = "company"
+    decision_classification: str
+    evidence_sufficiency: str
+    rationale_summary: Optional[str] = None
+    validation_status: str
+    validation_recommendation: str
+    validation_queue_rank: int
+    promoted_to_cards: bool = False
+    validation_lane_ids: List[str] = Field(default_factory=list)
+    validation_lane_labels: List[str] = Field(default_factory=list)
+    validation_query_families: List[str] = Field(default_factory=list)
+    validation_source_families: List[str] = Field(default_factory=list)
+    discovery_sources: List[str] = Field(default_factory=list)
+    origin_types: List[str] = Field(default_factory=list)
+    capability_signals: List[str] = Field(default_factory=list)
+    likely_verticals: List[str] = Field(default_factory=list)
+    vendor_classification: Optional[str] = None
+    identity_confidence: Optional[str] = None
+    official_website_confidence: Optional[str] = None
+    multi_origin_count: int = 0
+    priority_score: float = 0.0
+    top_claim: Dict[str, Any] = Field(default_factory=dict)
+    reason_codes: Dict[str, List[str]] = Field(default_factory=lambda: {"positive": [], "caution": [], "reject": []})
+    expansion_provenance: List[Dict[str, Any]] = Field(default_factory=list)
+    citation_summary_v1: Optional[CitationSummaryV1] = None
+
+
+class ValidationStatusUpdateRequest(BaseModel):
+    status: str
 
 
 class QualityAuditPattern(BaseModel):
@@ -1280,6 +1346,175 @@ async def _latest_completed_discovery_job(
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def _latest_screenings_for_workspace_run(
+    db: AsyncSession,
+    workspace_id: int,
+) -> tuple[list[CompanyScreening], dict[str, Any], Optional[str]]:
+    latest_discovery_job = await _latest_completed_discovery_job(db, workspace_id)
+    latest_discovery_job_result: Dict[str, Any] = (
+        latest_discovery_job.result_json
+        if latest_discovery_job and isinstance(latest_discovery_job.result_json, dict)
+        else {}
+    )
+    quality_payload = _quality_payload_from_job_result(latest_discovery_job_result)
+    screenings_result = await db.execute(
+        select(CompanyScreening)
+        .where(CompanyScreening.workspace_id == workspace_id)
+        .order_by(CompanyScreening.created_at.desc())
+        .limit(4000)
+    )
+    screenings_all = screenings_result.scalars().all()
+    if not screenings_all:
+        return [], quality_payload, quality_payload.get("screening_run_id")
+
+    latest_run_id = quality_payload.get("screening_run_id")
+    if latest_run_id:
+        screenings = [
+            row for row in screenings_all
+            if (row.screening_meta_json or {}).get("screening_run_id") == latest_run_id
+        ]
+    else:
+        fallback_run_id = (screenings_all[0].screening_meta_json or {}).get("screening_run_id")
+        if fallback_run_id:
+            latest_run_id = fallback_run_id
+            screenings = [
+                row for row in screenings_all
+                if (row.screening_meta_json or {}).get("screening_run_id") == latest_run_id
+            ]
+        else:
+            screenings = screenings_all
+    return screenings, quality_payload, latest_run_id
+
+
+async def _candidate_entity_maps(
+    db: AsyncSession,
+    entity_ids: list[int],
+) -> tuple[dict[int, CandidateEntity], dict[int, list[CandidateOriginEdge]]]:
+    entity_map: Dict[int, CandidateEntity] = {}
+    origins_by_entity: Dict[int, List[CandidateOriginEdge]] = {}
+    if not entity_ids:
+        return entity_map, origins_by_entity
+    entity_result = await db.execute(select(CandidateEntity).where(CandidateEntity.id.in_(entity_ids)))
+    entities = entity_result.scalars().all()
+    entity_map = {row.id: row for row in entities}
+    origin_result = await db.execute(
+        select(CandidateOriginEdge).where(CandidateOriginEdge.entity_id.in_(entity_ids))
+    )
+    for origin in origin_result.scalars().all():
+        origins_by_entity.setdefault(origin.entity_id, []).append(origin)
+    return entity_map, origins_by_entity
+
+
+async def _build_validation_queue_items(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    allow_degraded: bool = False,
+    limit: Optional[int] = None,
+    include_rejected: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any], Optional[str]]:
+    screenings, quality_payload, latest_run_id = await _latest_screenings_for_workspace_run(db, workspace_id)
+    if not screenings:
+        return [], quality_payload, latest_run_id
+    if quality_payload["run_quality_tier"] == "degraded" and not allow_degraded:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "degraded_run_blocked",
+                "message": "Latest completed discovery run is degraded. Pass allow_degraded=true to inspect it.",
+                "screening_run_id": latest_run_id,
+                "run_quality_tier": quality_payload["run_quality_tier"],
+                "quality_gate_passed": bool(quality_payload["quality_gate_passed"]),
+                "quality_audit_passed": bool(quality_payload["quality_audit_passed"]),
+                "degraded_reasons": quality_payload["degraded_reasons"],
+            },
+        )
+
+    candidates = [row for row in screenings if bool(row.ranking_eligible) and row.candidate_entity_id]
+    if not include_rejected:
+        candidates = [
+            row for row in candidates
+            if str(row.decision_classification or "insufficient_evidence") != "not_good_target"
+        ]
+    if not candidates:
+        return [], quality_payload, latest_run_id
+
+    entity_ids = [int(row.candidate_entity_id) for row in candidates if row.candidate_entity_id]
+    entity_map, origins_by_entity = await _candidate_entity_maps(db, entity_ids)
+
+    items: list[dict[str, Any]] = []
+    for screening in candidates:
+        entity = entity_map.get(int(screening.candidate_entity_id or 0))
+        if entity is None:
+            continue
+        validation = build_candidate_validation_context(
+            screening=screening,
+            entity=entity,
+            origins=origins_by_entity.get(entity.id, []),
+        )
+        if validation["status"] in {VALIDATION_STATUS_REJECT, VALIDATION_STATUS_REMOVED} and not include_rejected:
+            continue
+        screening_meta = screening.screening_meta_json if isinstance(screening.screening_meta_json, dict) else {}
+        source_summary = screening.source_summary_json if isinstance(screening.source_summary_json, dict) else {}
+        universe_context = _universe_context_from_screening(screening_meta, source_summary)
+        top_claim = screening.top_claim_json if isinstance(screening.top_claim_json, dict) else {}
+        if not top_claim.get("source_url") or not top_claim.get("source_tier"):
+            top_claim = {}
+        item = {
+            "candidate_entity_id": entity.id,
+            "company_id": screening.company_id,
+            "company_name": screening.candidate_name,
+            "official_website_url": screening.candidate_official_website or entity.canonical_website,
+            "discovery_url": screening.candidate_discovery_url or entity.discovery_primary_url,
+            "hq_country": (screening_meta.get("candidate_hq_country") or entity.country or None),
+            "entity_type": validation["entity_type"],
+            "decision_classification": str(screening.decision_classification or "insufficient_evidence"),
+            "evidence_sufficiency": str(screening.evidence_sufficiency or "insufficient"),
+            "rationale_summary": screening.rationale_summary,
+            "validation_status": validation["status"],
+            "validation_recommendation": validation["recommendation"],
+            "promoted_to_cards": bool(validation["promoted_to_cards"]),
+            "validation_lane_ids": validation["lane_ids"],
+            "validation_lane_labels": validation["lane_labels"],
+            "validation_query_families": validation["query_families"],
+            "validation_source_families": validation["source_families"],
+            "origin_types": validation["origin_types"],
+            "discovery_sources": validation["discovery_sources"],
+            "capability_signals": universe_context["capability_signals"],
+            "likely_verticals": universe_context["likely_verticals"],
+            "vendor_classification": validation["vendor_classification"],
+            "identity_confidence": validation["identity_confidence"],
+            "official_website_confidence": validation["official_website_confidence"],
+            "multi_origin_count": len(validation["origin_types"]),
+            "priority_score": float(validation["priority_score"] or 0.0),
+            "top_claim": top_claim,
+            "reason_codes": _reason_codes_payload(screening),
+            "expansion_provenance": universe_context["expansion_provenance"],
+            "citation_summary_v1": _citation_summary_from_meta(screening_meta),
+        }
+        items.append(item)
+
+    settings = workspaces_settings = None
+    try:
+        workspaces_settings = get_settings()
+    except Exception:
+        workspaces_settings = None
+    limit_value = int(limit or getattr(workspaces_settings, "discovery_validation_queue_limit", 36))
+    lane_cap = int(getattr(workspaces_settings, "discovery_validation_lane_cap", 6))
+    family_cap = int(getattr(workspaces_settings, "discovery_validation_query_family_cap", 4))
+    source_cap = int(getattr(workspaces_settings, "discovery_validation_source_family_cap", 18))
+    queue = build_diversified_validation_queue(
+        items,
+        limit=limit_value,
+        lane_cap=max(1, lane_cap),
+        family_cap=max(1, family_cap),
+        source_family_cap=max(1, source_cap),
+    )
+    for item in queue:
+        item["validation_queue_rank"] = int(item.get("queue_rank") or 0)
+    return queue, quality_payload, latest_run_id
 
 
 def _company_context_response_from_payload(payload: Dict[str, Any]) -> CompanyContextPackResponse:
@@ -3313,88 +3548,21 @@ async def list_top_candidates(
     workspace = workspace_result.scalar_one_or_none()
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
-
-    latest_discovery_job = await _latest_completed_discovery_job(db, workspace_id)
-    latest_discovery_job_result: Dict[str, Any] = (
-        latest_discovery_job.result_json
-        if latest_discovery_job and isinstance(latest_discovery_job.result_json, dict)
-        else {}
+    queue_items, quality_payload, _latest_run_id = await _build_validation_queue_items(
+        db,
+        workspace_id,
+        allow_degraded=allow_degraded,
+        limit=limit,
+        include_rejected=True,
     )
-    quality_payload = _quality_payload_from_job_result(latest_discovery_job_result)
-
-    screenings_result = await db.execute(
-        select(CompanyScreening)
-        .where(CompanyScreening.workspace_id == workspace_id)
-        .order_by(CompanyScreening.created_at.desc())
-        .limit(4000)
-    )
-    screenings_all = screenings_result.scalars().all()
-    if not screenings_all:
+    if not queue_items:
         return []
 
-    latest_run_id = quality_payload.get("screening_run_id")
-    if latest_run_id:
-        screenings = [
-            row for row in screenings_all
-            if (row.screening_meta_json or {}).get("screening_run_id") == latest_run_id
-        ]
-    else:
-        fallback_run_id = (screenings_all[0].screening_meta_json or {}).get("screening_run_id")
-        if fallback_run_id:
-            latest_run_id = fallback_run_id
-            screenings = [
-                row for row in screenings_all
-                if (row.screening_meta_json or {}).get("screening_run_id") == latest_run_id
-            ]
-        else:
-            screenings = screenings_all
-
-    if quality_payload["run_quality_tier"] == "degraded" and not allow_degraded:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "degraded_run_blocked",
-                "message": "Latest completed discovery run is degraded. Pass allow_degraded=true to inspect it.",
-                "screening_run_id": latest_run_id,
-                "run_quality_tier": quality_payload["run_quality_tier"],
-                "quality_gate_passed": bool(quality_payload["quality_gate_passed"]),
-                "quality_audit_passed": bool(quality_payload["quality_audit_passed"]),
-                "degraded_reasons": quality_payload["degraded_reasons"],
-            },
-        )
-
-    candidates = [row for row in screenings if bool(row.ranking_eligible)]
-    if not candidates:
-        return []
-
-    fallback_diagnostics = {
-        "registry_neighbors_with_first_party_website_count": int(
-            latest_discovery_job_result.get("registry_neighbors_with_first_party_website_count", 0)
-        ),
-        "registry_neighbors_dropped_missing_official_website_count": int(
-            latest_discovery_job_result.get("registry_neighbors_dropped_missing_official_website_count", 0)
-        ),
-        "registry_origin_screening_counts": (
-            latest_discovery_job_result.get("registry_origin_screening_counts")
-            if isinstance(latest_discovery_job_result.get("registry_origin_screening_counts"), dict)
-            else {}
-        ),
-        "first_party_hint_urls_used_count": int(
-            latest_discovery_job_result.get("first_party_hint_urls_used_count", 0)
-        ),
-        "first_party_hint_pages_crawled_total": int(
-            latest_discovery_job_result.get("first_party_hint_pages_crawled_total", 0)
-        ),
-    }
-
-    company_ids = [row.company_id for row in candidates if row.company_id]
-    entity_ids = [row.candidate_entity_id for row in candidates if row.candidate_entity_id]
-
+    company_ids = [int(item["company_id"]) for item in queue_items if item.get("company_id")]
     company_map: Dict[int, Company] = {}
     if company_ids:
         company_result = await db.execute(select(Company).where(Company.id.in_(company_ids)))
         company_map = {row.id: row for row in company_result.scalars().all()}
-
     evidence_count_by_company: Dict[int, int] = {}
     if company_ids:
         evidence_counts_result = await db.execute(
@@ -3408,118 +3576,48 @@ async def list_top_candidates(
             if company_id is not None
         }
 
-    entity_map: Dict[int, CandidateEntity] = {}
-    origins_by_entity: Dict[int, List[CandidateOriginEdge]] = {}
-    if entity_ids:
-        entity_result = await db.execute(select(CandidateEntity).where(CandidateEntity.id.in_(entity_ids)))
-        entities = entity_result.scalars().all()
-        entity_map = {row.id: row for row in entities}
-        origin_result = await db.execute(
-            select(CandidateOriginEdge).where(CandidateOriginEdge.entity_id.in_(entity_ids))
-        )
-        for origin in origin_result.scalars().all():
-            origins_by_entity.setdefault(origin.entity_id, []).append(origin)
-
-    class_rank = {
-        "good_target": 0,
-        "borderline_watchlist": 1,
-        "insufficient_evidence": 2,
-        "not_good_target": 3,
-    }
-    candidates.sort(
-        key=lambda row: (
-            class_rank.get(str(row.decision_classification or "insufficient_evidence"), 99),
-            -float(row.total_score or 0.0),
-            row.id,
-        )
-    )
-
     output: List[UniverseTopCandidateResponse] = []
-    for screening in candidates[:limit]:
-        company = company_map.get(screening.company_id) if screening.company_id else None
-        entity = entity_map.get(screening.candidate_entity_id) if screening.candidate_entity_id else None
-        meta = screening.screening_meta_json if isinstance(screening.screening_meta_json, dict) else {}
-        source_summary = screening.source_summary_json if isinstance(screening.source_summary_json, dict) else {}
-        diagnostics = _screening_diagnostics_from_meta(meta)
-        citation_summary_v1 = _citation_summary_from_meta(meta)
-        universe_context = _universe_context_from_screening(meta, source_summary)
-        if (
-            diagnostics["registry_neighbors_with_first_party_website_count"] == 0
-            and diagnostics["registry_neighbors_dropped_missing_official_website_count"] == 0
-            and not diagnostics["registry_origin_screening_counts"]
-        ):
-            diagnostics = fallback_diagnostics
-        discovery_sources: List[str] = []
-        if screening.candidate_discovery_url:
-            discovery_sources.append(screening.candidate_discovery_url)
-        if entity:
-            for origin in origins_by_entity.get(entity.id, []):
-                if origin.origin_url:
-                    discovery_sources.append(origin.origin_url)
-        # Deduplicate while preserving order.
-        seen_sources: set[str] = set()
-        deduped_sources: List[str] = []
-        for source in discovery_sources:
-            key = str(source or "").strip()
-            if not key:
-                continue
-            lower = key.lower()
-            if lower in seen_sources:
-                continue
-            seen_sources.add(lower)
-            deduped_sources.append(key)
-
-        top_claim = screening.top_claim_json if isinstance(screening.top_claim_json, dict) else {}
-        if not top_claim.get("source_url") or not top_claim.get("source_tier"):
-            top_claim = {}
-
+    for item in queue_items:
+        company = company_map.get(int(item["company_id"])) if item.get("company_id") else None
         output.append(
             UniverseTopCandidateResponse(
-                company_id=screening.company_id,
-                candidate_entity_id=screening.candidate_entity_id,
-                company_name=(company.name if company else screening.candidate_name),
+                company_id=item.get("company_id"),
+                candidate_entity_id=item["candidate_entity_id"],
+                company_name=(company.name if company else item["company_name"]),
                 company_status=(company.status.value if company else None),
-                official_website_url=(
-                    screening.candidate_official_website
-                    or (company.website if company else None)
-                    or (entity.canonical_website if entity else None)
-                ),
-                hq_country=(
-                    (company.hq_country if company else None)
-                    or str(meta.get("candidate_hq_country") or "").strip()
-                    or None
-                ),
+                official_website_url=item.get("official_website_url"),
+                hq_country=(company.hq_country if company and company.hq_country else item.get("hq_country")),
                 evidence_count=(evidence_count_by_company.get(company.id, 0) if company else 0),
-                discovery_sources=deduped_sources[:12],
-                entity_type=(
-                    str(entity.entity_type or "company")
-                    if entity
-                    else str(meta.get("entity_type") or "company")
-                ),
-                decision_classification=str(screening.decision_classification or "insufficient_evidence"),
-                evidence_sufficiency=str(screening.evidence_sufficiency or "insufficient"),
-                reason_codes=_reason_codes_payload(screening),
-                rationale_summary=screening.rationale_summary,
-                top_claim=top_claim,
-                citation_summary_v1=citation_summary_v1,
-                registry_neighbors_with_first_party_website_count=int(
-                    diagnostics["registry_neighbors_with_first_party_website_count"]
-                ),
-                registry_neighbors_dropped_missing_official_website_count=int(
-                    diagnostics["registry_neighbors_dropped_missing_official_website_count"]
-                ),
-                registry_origin_screening_counts=diagnostics["registry_origin_screening_counts"],
-                first_party_hint_urls_used_count=int(diagnostics["first_party_hint_urls_used_count"]),
-                first_party_hint_pages_crawled_total=int(diagnostics["first_party_hint_pages_crawled_total"]),
-                capability_signals=universe_context["capability_signals"],
-                likely_verticals=universe_context["likely_verticals"],
-                scope_buckets=universe_context["scope_buckets"],
-                origin_types=universe_context["origin_types"],
-                registry_identity=universe_context["registry_identity"],
-                expansion_provenance=universe_context["expansion_provenance"],
-                missing_claim_groups=[str(item) for item in (screening.missing_claim_groups_json or []) if str(item)],
-                unresolved_contradictions_count=int(screening.unresolved_contradictions_count or 0),
-                ranking_eligible=bool(screening.ranking_eligible),
+                discovery_sources=item.get("discovery_sources") or [],
+                entity_type=item.get("entity_type") or "company",
+                decision_classification=item["decision_classification"],
+                evidence_sufficiency=item["evidence_sufficiency"],
+                reason_codes=item.get("reason_codes") or {"positive": [], "caution": [], "reject": []},
+                rationale_summary=item.get("rationale_summary"),
+                top_claim=item.get("top_claim") or {},
+                citation_summary_v1=item.get("citation_summary_v1"),
+                capability_signals=item.get("capability_signals") or [],
+                likely_verticals=item.get("likely_verticals") or [],
+                scope_buckets=item.get("validation_lane_ids") or [],
+                origin_types=item.get("origin_types") or [],
+                registry_identity={},
+                expansion_provenance=item.get("expansion_provenance") or [],
+                missing_claim_groups=[],
+                unresolved_contradictions_count=0,
+                ranking_eligible=True,
+                validation_status=item["validation_status"],
+                validation_recommendation=item["validation_recommendation"],
+                validation_queue_rank=item["validation_queue_rank"],
+                promoted_to_cards=bool(item.get("promoted_to_cards")),
+                validation_lane_ids=item.get("validation_lane_ids") or [],
+                validation_lane_labels=item.get("validation_lane_labels") or [],
+                validation_query_families=item.get("validation_query_families") or [],
+                validation_source_families=item.get("validation_source_families") or [],
+                vendor_classification=item.get("vendor_classification"),
+                identity_confidence=item.get("identity_confidence"),
+                official_website_confidence=item.get("official_website_confidence"),
+                multi_origin_count=int(item.get("multi_origin_count") or 0),
+                priority_score=float(item.get("priority_score") or 0.0),
                 run_quality_tier=quality_payload["run_quality_tier"],
                 quality_gate_passed=bool(quality_payload["quality_gate_passed"]),
                 quality_audit_passed=bool(quality_payload["quality_audit_passed"]),
@@ -3528,6 +3626,146 @@ async def list_top_candidates(
         )
 
     return output
+
+
+@router.get("/{workspace_id}/validation/queue", response_model=List[ValidationQueueItemResponse])
+async def list_validation_queue(
+    workspace_id: int,
+    limit: int = Query(36, ge=1, le=200),
+    allow_degraded: bool = Query(False),
+    include_rejected: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    queue_items, _quality_payload, _latest_run_id = await _build_validation_queue_items(
+        db,
+        workspace_id,
+        allow_degraded=allow_degraded,
+        limit=limit,
+        include_rejected=include_rejected,
+    )
+    return [ValidationQueueItemResponse(**item) for item in queue_items]
+
+
+@router.get("/{workspace_id}/validation/{candidate_entity_id}", response_model=ValidationQueueItemResponse)
+async def get_validation_candidate(
+    workspace_id: int,
+    candidate_entity_id: int,
+    allow_degraded: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+):
+    queue_items, _quality_payload, _latest_run_id = await _build_validation_queue_items(
+        db,
+        workspace_id,
+        allow_degraded=allow_degraded,
+        limit=200,
+        include_rejected=True,
+    )
+    for item in queue_items:
+        if int(item["candidate_entity_id"]) == candidate_entity_id:
+            return ValidationQueueItemResponse(**item)
+    raise HTTPException(status_code=404, detail="Validation candidate not found")
+
+
+@router.patch("/{workspace_id}/validation/{candidate_entity_id}", response_model=ValidationQueueItemResponse)
+async def update_validation_candidate(
+    workspace_id: int,
+    candidate_entity_id: int,
+    payload: ValidationStatusUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    requested_status = str(payload.status or "").strip()
+    allowed_statuses = {
+        VALIDATION_STATUS_QUEUED,
+        VALIDATION_STATUS_KEEP,
+        VALIDATION_STATUS_WATCHLIST,
+        VALIDATION_STATUS_REJECT,
+        VALIDATION_STATUS_REMOVED,
+        VALIDATION_STATUS_PROMOTED,
+    }
+    if requested_status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="Invalid validation status")
+
+    entity_result = await db.execute(
+        select(CandidateEntity).where(
+            CandidateEntity.workspace_id == workspace_id,
+            CandidateEntity.id == candidate_entity_id,
+        )
+    )
+    entity = entity_result.scalar_one_or_none()
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Candidate entity not found")
+
+    screening_result = await db.execute(
+        select(CompanyScreening)
+        .where(
+            CompanyScreening.workspace_id == workspace_id,
+            CompanyScreening.candidate_entity_id == candidate_entity_id,
+        )
+        .order_by(CompanyScreening.created_at.desc())
+        .limit(1)
+    )
+    screening = screening_result.scalar_one_or_none()
+    if screening is None:
+        raise HTTPException(status_code=404, detail="No screening found for candidate entity")
+
+    validation = validation_metadata(entity)
+    recommendation = str(validation.get("recommendation") or "").strip() or requested_status
+    promoted_to_cards = requested_status == VALIDATION_STATUS_PROMOTED
+    if requested_status in {VALIDATION_STATUS_KEEP, VALIDATION_STATUS_WATCHLIST, VALIDATION_STATUS_REJECT}:
+        recommendation = requested_status
+    set_validation_metadata(
+        entity,
+        {
+            "status": requested_status,
+            "recommendation": recommendation,
+            "promoted_to_cards": promoted_to_cards,
+            "promoted_to_cards_at": datetime.utcnow().isoformat() if promoted_to_cards else None,
+        },
+    )
+
+    company: Optional[Company] = None
+    if screening.company_id:
+        company_result = await db.execute(
+            select(Company).where(Company.workspace_id == workspace_id, Company.id == screening.company_id)
+        )
+        company = company_result.scalar_one_or_none()
+
+    if promoted_to_cards and company is None:
+        company = Company(
+            workspace_id=workspace_id,
+            name=screening.candidate_name,
+            website=screening.candidate_official_website or entity.canonical_website,
+            hq_country=(screening.screening_meta_json or {}).get("candidate_hq_country") if isinstance(screening.screening_meta_json, dict) else entity.country,
+            tags_custom=["validation:promoted_to_cards"],
+            status=CompanyStatus.kept,
+            why_relevant=[],
+            is_manual=False,
+        )
+        db.add(company)
+        await db.flush()
+        screening.company_id = company.id
+
+    if company is not None and not company.is_manual:
+        if requested_status == VALIDATION_STATUS_REJECT:
+            company.status = CompanyStatus.removed
+        elif requested_status in {VALIDATION_STATUS_KEEP, VALIDATION_STATUS_PROMOTED}:
+            company.status = CompanyStatus.kept
+        elif requested_status in {VALIDATION_STATUS_WATCHLIST, VALIDATION_STATUS_QUEUED}:
+            company.status = CompanyStatus.candidate
+        elif requested_status == VALIDATION_STATUS_REMOVED:
+            company.status = CompanyStatus.removed
+
+    await db.commit()
+    return await get_validation_candidate(
+        workspace_id=workspace_id,
+        candidate_entity_id=candidate_entity_id,
+        allow_degraded=True,
+        db=db,
+    )
 
 
 @router.post("/{workspace_id}/companies", response_model=CompanyResponse)
@@ -3626,6 +3864,28 @@ async def enrich_companies_batch(
         company = company_result.scalar_one_or_none()
         if not company:
             continue
+
+        screening_result = await db.execute(
+            select(CompanyScreening)
+            .where(
+                CompanyScreening.workspace_id == workspace_id,
+                CompanyScreening.company_id == company_id,
+            )
+            .order_by(CompanyScreening.created_at.desc())
+            .limit(1)
+        )
+        screening = screening_result.scalar_one_or_none()
+        if screening is None or not screening.candidate_entity_id:
+            continue
+        entity_result = await db.execute(
+            select(CandidateEntity).where(
+                CandidateEntity.workspace_id == workspace_id,
+                CandidateEntity.id == screening.candidate_entity_id,
+            )
+        )
+        entity = entity_result.scalar_one_or_none()
+        if entity is None or not bool(validation_metadata(entity).get("promoted_to_cards")):
+            continue
         
         for job_type_str in data.job_types:
             job_type = JobType(job_type_str)
@@ -3639,7 +3899,15 @@ async def enrich_companies_batch(
             db.add(job)
             await db.flush()
             jobs.append(job)
-    
+    if not jobs:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "cards_not_ready",
+                "message": "Deep enrichment is restricted to candidates promoted to Cards from Validation.",
+            },
+        )
+
     await db.commit()
     
     # Trigger async tasks
@@ -3713,6 +3981,25 @@ async def generate_report_snapshot(
     workspace = workspace_result.scalar_one_or_none()
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+
+    candidate_entities_result = await db.execute(
+        select(CandidateEntity).where(CandidateEntity.workspace_id == workspace_id)
+    )
+    promoted_to_cards_count = len(
+        [
+            entity
+            for entity in candidate_entities_result.scalars().all()
+            if bool(validation_metadata(entity).get("promoted_to_cards"))
+        ]
+    )
+    if promoted_to_cards_count <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "cards_not_ready",
+                "message": "Promote at least one validated candidate to Cards before generating a report snapshot.",
+            },
+        )
 
     job = Job(
         workspace_id=workspace_id,
@@ -5217,6 +5504,8 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         "context_pack": [],
         "scope_review": [],
         "universe": [],
+        "validation": [],
+        "cards": [],
         "segmentation": [],
         "enrichment": []
     }
@@ -5346,6 +5635,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         [row for row in latest_by_company.values() if str(row.evidence_sufficiency or "") == "insufficient"]
     )
     insufficient_ratio = insufficient_count / max(1, len(latest_by_company))
+    ranking_eligible_count = len([row for row in screenings_all if bool(row.ranking_eligible)])
 
     kept_companies_result = await db.execute(
         select(func.count(Company.id)).where(
@@ -5369,6 +5659,18 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
     if kept_companies_count < 5:
         missing_items["universe"].append(f"Keep at least 5 companies ({kept_companies_count} kept)")
     
+    candidate_entities_result = await db.execute(
+        select(CandidateEntity).where(CandidateEntity.workspace_id == workspace_id)
+    )
+    candidate_entities = candidate_entities_result.scalars().all()
+    promoted_to_cards_count = len(
+        [entity for entity in candidate_entities if bool(validation_metadata(entity).get("promoted_to_cards"))]
+    )
+
+    validation_ready = scope_review_ready and ranking_eligible_count > 0
+    if not validation_ready:
+        missing_items["validation"].append("Run universe discovery to populate a ranked validation queue")
+
     # Check segmentation (has reviewed and focused)
     segmentation_ready = universe_ready and len(decision_qualified) >= 10
     if not segmentation_ready and universe_ready:
@@ -5409,6 +5711,10 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
             f"Enrich at least {min_enriched} companies with required evidence groups ({enriched_with_groups}/{min_enriched})"
         )
 
+    cards_ready = promoted_to_cards_count > 0
+    if not cards_ready:
+        missing_items["cards"].append("Promote at least 1 validated company into Cards")
+
     discovery_readiness = build_workspace_discovery_readiness(
         expansion_confirmed=expansion_confirmed,
         database_url_sync=_database_url_sync_for_async_session(db),
@@ -5439,6 +5745,8 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         context_pack=context_pack_ready,
         scope_review=scope_review_ready,
         universe=universe_ready,
+        validation=validation_ready,
+        cards=cards_ready,
         segmentation=segmentation_ready,
         enrichment=enrichment_ready,
         missing_items=missing_items,

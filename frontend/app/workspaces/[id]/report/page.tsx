@@ -330,26 +330,26 @@ export default function ReportPage() {
       <StepHeader
         step={5}
         title="Cards"
-        subtitle="Generate exportable candidate cards with the canonical company buckets, KPI evidence, validation questions, and snapshot-level source traceability."
+        subtitle="Generate shortlist-only deep dossiers from the candidates explicitly promoted in Validation."
       />
 
       {gates && (
         <div
           className={clsx(
             "p-4 border",
-            gates.enrichment ? "bg-success/10 border-success" : "bg-warning/10 border-warning"
+            gates.cards ? "bg-success/10 border-success" : "bg-warning/10 border-warning"
           )}
         >
           <div className="flex items-center gap-2">
-            {gates.enrichment ? (
+            {gates.cards ? (
               <CheckCircle className="w-5 h-5 text-success" />
             ) : (
               <AlertCircle className="w-5 h-5 text-warning" />
             )}
-            <span className={gates.enrichment ? "text-success font-medium" : "text-warning font-medium"}>
-              {gates.enrichment
-                ? "Enrichment is complete — you can generate Cards"
-                : gates.missing_items.enrichment?.join(", ") || "Complete Validation and enrichment before generating Cards"}
+            <span className={gates.cards ? "text-success font-medium" : "text-warning font-medium"}>
+              {gates.cards
+                ? "Validation shortlist is ready — you can generate Cards"
+                : gates.missing_items.cards?.join(", ") || "Promote shortlist candidates from Validation before generating Cards"}
             </span>
           </div>
         </div>

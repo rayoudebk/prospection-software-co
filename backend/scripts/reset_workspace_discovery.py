@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.models.base import Base
 import app.models  # noqa: F401
 from app.models.company import Company
+from app.models.external_search import ExternalSearchRun
 from app.models.intelligence import CandidateEntity, CompanyClaim, CompanyScreening, RegistryQueryLog
 from app.models.job import Job, JobType
 
@@ -41,6 +42,8 @@ def main() -> None:
         for row in db.query(RegistryQueryLog).filter(RegistryQueryLog.workspace_id == workspace_id).all():
             db.delete(row)
         for row in db.query(CandidateEntity).filter(CandidateEntity.workspace_id == workspace_id).all():
+            db.delete(row)
+        for row in db.query(ExternalSearchRun).filter(ExternalSearchRun.workspace_id == workspace_id).all():
             db.delete(row)
         for row in (
             db.query(Job)

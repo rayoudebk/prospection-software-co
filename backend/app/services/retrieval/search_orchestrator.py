@@ -29,12 +29,16 @@ def _apply_query_modifiers(
     allow_domains: list[str],
     block_domains: list[str],
 ) -> str:
-    parts = [str(query or "").strip()]
-    for term in include_terms[:6]:
-        if term:
+    base_query = str(query or "").strip()
+    parts = [base_query]
+    lowered_query = base_query.lower()
+    for term in include_terms[:2]:
+        normalized_term = str(term or "").strip()
+        if normalized_term and normalized_term.lower() not in lowered_query:
             parts.append(f"\"{term}\"")
-    for term in exclude_terms[:6]:
-        if term:
+    for term in exclude_terms[:4]:
+        normalized_term = str(term or "").strip()
+        if normalized_term and normalized_term.lower() not in lowered_query:
             parts.append(f"-\"{term}\"")
     for domain in allow_domains[:3]:
         parts.append(f"site:{domain}")

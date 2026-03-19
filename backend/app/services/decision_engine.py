@@ -120,6 +120,21 @@ def _positive_reason_codes(
     return sorted(set(positive))
 
 
+def _has_minimal_review_evidence_for_workflow_gap(
+    coverage: Dict[str, int],
+    missing: List[str],
+    source_type_counts: Dict[str, int],
+) -> bool:
+    if sorted(missing) != ["vertical_workflow"]:
+        return False
+    if coverage.get("identity_scope", 0) <= 0 or coverage.get("product_depth", 0) <= 0:
+        return False
+    has_first_party = source_type_counts.get("first_party_website", 0) > 0
+    has_non_directory_corroboration = source_type_counts.get("official_registry_filing", 0) > 0
+    has_directory_context = source_type_counts.get("directory_comparator", 0) > 0
+    return has_first_party and (has_non_directory_corroboration or has_directory_context)
+
+
 def _missing_claim_groups(coverage: Dict[str, int], required: Iterable[str]) -> List[str]:
     return [group for group in required if coverage.get(group, 0) <= 0]
 
@@ -175,6 +190,8 @@ def evaluate_decision(
     if contradictions > 0:
         evidence_sufficiency = "contradictory"
     elif len(missing) == 0 and sum(coverage.values()) >= 5:
+        evidence_sufficiency = "sufficient"
+    elif _has_minimal_review_evidence_for_workflow_gap(coverage, missing, source_type_counts):
         evidence_sufficiency = "sufficient"
     else:
         evidence_sufficiency = "insufficient"
