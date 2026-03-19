@@ -772,6 +772,15 @@ export interface UniverseTopCandidate {
   vendor_classification?: string | null;
   identity_confidence?: string | null;
   official_website_confidence?: string | null;
+  identity_diagnostics?: {
+    identity_error?: string | null;
+    resolved_via_redirect?: boolean;
+    first_party_method?: string | null;
+    first_party_tier?: string | null;
+    pages_crawled?: number;
+    signals_extracted?: number;
+    has_first_party_evidence?: boolean;
+  } | null;
   multi_origin_count: number;
   priority_score: number;
   run_quality_tier?: "high_quality" | "degraded" | string;
@@ -806,6 +815,15 @@ export interface ValidationQueueItem {
   vendor_classification?: string | null;
   identity_confidence?: string | null;
   official_website_confidence?: string | null;
+  identity_diagnostics?: {
+    identity_error?: string | null;
+    resolved_via_redirect?: boolean;
+    first_party_method?: string | null;
+    first_party_tier?: string | null;
+    pages_crawled?: number;
+    signals_extracted?: number;
+    has_first_party_evidence?: boolean;
+  } | null;
   multi_origin_count: number;
   priority_score: number;
   top_claim: {
@@ -1277,6 +1295,14 @@ export const workspaceApi = {
     fetchJSON<ValidationQueueItem>(
       `/workspaces/${workspaceId}/validation/${candidateEntityId}?allow_degraded=${allowDegraded ? "true" : "false"}`
     ),
+  refreshValidationQueue: (
+    workspaceId: number,
+    data: { candidate_entity_ids?: number[]; top_n?: number | null } = {}
+  ) =>
+    fetchJSON<ValidationQueueItem[]>(`/workspaces/${workspaceId}/validation:refresh`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
   updateValidationCandidate: (
     workspaceId: number,
     candidateEntityId: number,

@@ -84,6 +84,16 @@ def validation_metadata(entity: Any) -> dict[str, Any]:
     validation["identity_confidence"] = str(validation.get("identity_confidence") or "").strip() or None
     validation["vendor_classification"] = str(validation.get("vendor_classification") or "").strip() or None
     validation["official_website_confidence"] = str(validation.get("official_website_confidence") or "").strip() or None
+    diagnostics = _as_dict(validation.get("identity_diagnostics"))
+    validation["identity_diagnostics"] = {
+        "identity_error": str(diagnostics.get("identity_error") or "").strip() or None,
+        "resolved_via_redirect": bool(diagnostics.get("resolved_via_redirect", False)),
+        "first_party_method": str(diagnostics.get("first_party_method") or "").strip() or None,
+        "first_party_tier": str(diagnostics.get("first_party_tier") or "").strip() or None,
+        "pages_crawled": int(diagnostics.get("pages_crawled") or 0),
+        "signals_extracted": int(diagnostics.get("signals_extracted") or 0),
+        "has_first_party_evidence": bool(diagnostics.get("has_first_party_evidence", False)),
+    }
     return validation
 
 
@@ -137,6 +147,40 @@ def official_website_confidence(official_website_url: Optional[str], discovery_s
     if any(str(item or "").strip() for item in discovery_sources):
         return "medium"
     return "low"
+
+
+def identity_diagnostics_from_context(
+    *,
+    entity: Any,
+    screening_meta: dict[str, Any],
+    entity_validation: dict[str, Any],
+) -> dict[str, Any]:
+    existing = _as_dict(entity_validation.get("identity_diagnostics"))
+    first_party = _as_dict(screening_meta.get("first_party_enrichment"))
+    return {
+        "identity_error": (
+            str(existing.get("identity_error") or "").strip()
+            or str(getattr(entity, "identity_error", "") or "").strip()
+            or None
+        ),
+        "resolved_via_redirect": bool(existing.get("resolved_via_redirect", False)),
+        "first_party_method": (
+            str(existing.get("first_party_method") or "").strip()
+            or str(first_party.get("method") or "").strip()
+            or None
+        ),
+        "first_party_tier": (
+            str(existing.get("first_party_tier") or "").strip()
+            or str(first_party.get("tier") or "").strip()
+            or None
+        ),
+        "pages_crawled": int(existing.get("pages_crawled") or first_party.get("pages_crawled") or 0),
+        "signals_extracted": int(existing.get("signals_extracted") or first_party.get("signals_extracted") or 0),
+        "has_first_party_evidence": bool(
+            existing.get("has_first_party_evidence", False)
+            or bool(int(first_party.get("signals_extracted") or 0) > 0)
+        ),
+    }
 
 
 def _lane_context_from_origin(origin_metadata: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -236,6 +280,19 @@ def build_candidate_validation_context(
     priority_score += min(4.0, float(source_count))
     if official_site:
         priority_score += 4.0
+    identity_confidence = str(
+        entity_validation.get("identity_confidence") or getattr(entity, "identity_confidence", "") or ""
+    ).strip() or None
+    if identity_confidence == "high":
+        priority_score += 3.0
+
+    diagnostics = identity_diagnostics_from_context(
+        entity=entity,
+        screening_meta=screening_meta,
+        entity_validation=entity_validation,
+    )
+    if diagnostics["has_first_party_evidence"]:
+        priority_score += 2.0
 
     return {
         "status": status,
@@ -249,7 +306,7 @@ def build_candidate_validation_context(
         "origin_types": origin_types,
         "priority_score": round(priority_score, 3),
         "queue_rank": int(entity_validation.get("queue_rank") or 0),
-        "identity_confidence": str(entity_validation.get("identity_confidence") or getattr(entity, "identity_confidence", "") or "").strip() or None,
+        "identity_confidence": identity_confidence,
         "vendor_classification": str(
             entity_validation.get("vendor_classification")
             or vendor_classification_from_screening(
@@ -263,6 +320,7 @@ def build_candidate_validation_context(
             entity_validation.get("official_website_confidence")
             or official_website_confidence(official_site, discovery_sources)
         ).strip(),
+        "identity_diagnostics": diagnostics,
         "discovery_sources": discovery_sources,
         "entity_type": str(getattr(entity, "entity_type", None) or screening_meta.get("entity_type") or "company"),
     }

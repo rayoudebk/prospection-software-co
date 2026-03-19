@@ -3243,6 +3243,7 @@ def _expand_registry_neighbors(
 
 
 def _candidate_priority_score(entity: dict[str, Any]) -> float:
+    lane_keys, query_families, source_families = _entity_scoring_dimensions(entity)
     origin_types = set(entity.get("origin_types") or [])
     score = 0.0
     entity_type = str(entity.get("entity_type") or "company").strip().lower()
@@ -3277,7 +3278,51 @@ def _candidate_priority_score(entity: dict[str, Any]) -> float:
         score += 8.0
     score += min(20.0, float(len(entity.get("why_relevant") or [])))
     score += min(10.0, float(len(entity.get("capability_signals") or [])))
+    score += min(8.0, max(0.0, float(len(origin_types) - 1) * 2.0))
+    score += min(6.0, float(len(lane_keys)))
+    score += min(4.0, float(len(query_families)))
+    score += min(3.0, float(len(source_families)))
     return score
+
+
+def _entity_scoring_dimensions(entity: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+    lane_keys: list[str] = []
+    query_families: list[str] = []
+    source_families: list[str] = []
+    for origin in entity.get("origins") or []:
+        if not isinstance(origin, dict):
+            continue
+        origin_type = str(origin.get("origin_type") or "").strip().lower()
+        metadata = origin.get("metadata") if isinstance(origin.get("metadata"), dict) else {}
+        lane_keys.extend(
+            _dedupe_strings(
+                metadata.get("fit_to_adjacency_box_ids")
+                or metadata.get("fit_to_adjacency_box_labels")
+                or metadata.get("source_capability_matches")
+                or ([metadata.get("brick_name")] if str(metadata.get("brick_name") or "").strip() else [])
+                or ([str(metadata.get("scope_bucket") or "").strip().lower()] if str(metadata.get("scope_bucket") or "").strip() else [])
+            )
+        )
+        provider = str(metadata.get("provider") or "").strip().lower()
+        query_type = str(metadata.get("query_type") or "").strip().lower()
+        brick_name = str(metadata.get("brick_name") or "").strip().lower()
+        if provider or query_type or brick_name:
+            query_families.append("::".join([part for part in [provider, query_type, brick_name] if part][:3]))
+        elif origin_type:
+            query_families.append(origin_type)
+        if origin_type in {"directory_seed", "directory_profile", "reference_seed"}:
+            source_families.append("directory")
+        elif origin_type in {"external_search_seed", "llm_seed", "benchmark_seed"}:
+            source_families.append("search")
+        elif origin_type.startswith("registry"):
+            source_families.append("registry")
+        elif origin_type:
+            source_families.append(origin_type)
+    return (
+        _dedupe_strings(lane_keys or ["unscoped"]),
+        _dedupe_strings(query_families or ["unknown"]),
+        _dedupe_strings(source_families or ["unknown"]),
+    )
 
 
 def _trim_entities_for_universe(
@@ -3323,11 +3368,72 @@ def _select_scoring_entities(
         else:
             fallback.append(entity)
 
-    selected = preferred[:cap]
-    preferred_selected_count = len(selected)
-    remaining = cap - len(selected)
-    if remaining > 0:
-        selected.extend(fallback[:remaining])
+    lane_cap = max(1, int(getattr(settings, "discovery_scoring_lane_cap", 18)))
+    query_family_cap = max(1, int(getattr(settings, "discovery_scoring_query_family_cap", 10)))
+    source_family_cap = max(1, int(getattr(settings, "discovery_scoring_source_family_cap", 48)))
+    lane_counts: dict[str, int] = {}
+    query_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+
+    def _entity_id(entity: dict[str, Any]) -> str:
+        return str(entity.get("temp_entity_id") or entity.get("canonical_name") or id(entity))
+
+    def _can_add(entity: dict[str, Any], *, relax: bool) -> bool:
+        lane_keys, query_families, source_families = _entity_scoring_dimensions(entity)
+        if not relax and all(lane_counts.get(key, 0) >= lane_cap for key in lane_keys):
+            return False
+        if all(query_counts.get(key, 0) >= query_family_cap for key in query_families):
+            return False
+        if all(source_counts.get(key, 0) >= source_family_cap for key in source_families):
+            return False
+        return True
+
+    def _mark(entity: dict[str, Any]) -> None:
+        lane_keys, query_families, source_families = _entity_scoring_dimensions(entity)
+        for key in lane_keys:
+            lane_counts[key] = lane_counts.get(key, 0) + 1
+        for key in query_families:
+            query_counts[key] = query_counts.get(key, 0) + 1
+        for key in source_families:
+            source_counts[key] = source_counts.get(key, 0) + 1
+
+    for relax in (False, True):
+        for pool_name, pool in (("preferred", preferred), ("fallback", fallback)):
+            for entity in pool:
+                entity_id = _entity_id(entity)
+                if entity_id in selected_ids:
+                    continue
+                if not _can_add(entity, relax=relax):
+                    continue
+                selected.append(entity)
+                selected_ids.add(entity_id)
+                _mark(entity)
+                if len(selected) >= cap:
+                    break
+            if len(selected) >= cap:
+                break
+        if len(selected) >= cap:
+            break
+
+    if len(selected) < cap:
+        for entity in ranked:
+            entity_id = _entity_id(entity)
+            if entity_id in selected_ids:
+                continue
+            selected.append(entity)
+            selected_ids.add(entity_id)
+            if len(selected) >= cap:
+                break
+
+    preferred_selected_count = 0
+    for entity in selected:
+        origin_types = set(entity.get("origin_types") or [])
+        canonical_domain = normalize_domain(str(entity.get("canonical_website") or "").strip())
+        has_first_party = bool(canonical_domain and not _is_non_first_party_profile_domain(canonical_domain))
+        if "external_search_seed" in origin_types or "llm_seed" in origin_types or has_first_party:
+            preferred_selected_count += 1
     fallback_selected_count = max(0, len(selected) - preferred_selected_count)
 
     return selected, {

@@ -8,7 +8,7 @@ import { AlertCircle, ArrowRight, CheckCircle, ExternalLink, Loader2 } from "luc
 
 import { StepHeader } from "@/components/StepHeader";
 import { ValidationQueueItem } from "@/lib/api";
-import { useGates, useUpdateValidationCandidate, useValidationQueue } from "@/lib/hooks";
+import { useGates, useRefreshValidationQueue, useUpdateValidationCandidate, useValidationQueue } from "@/lib/hooks";
 
 const STATUS_LABELS: Record<string, string> = {
   queued_for_validation: "Queued",
@@ -87,6 +87,9 @@ function QueueCard({
           <div>Identity {item.identity_confidence || "unknown"}</div>
           <div>Website {item.official_website_confidence || "unknown"}</div>
           <div>{item.vendor_classification || "unclassified"}</div>
+          {item.identity_diagnostics?.has_first_party_evidence ? (
+            <div>Homepage signals {item.identity_diagnostics.signals_extracted || 0}</div>
+          ) : null}
         </div>
       </div>
 
@@ -171,6 +174,7 @@ export default function ValidationPage() {
   const { data: gates } = useGates(workspaceId);
   const { data: queue, isLoading } = useValidationQueue(workspaceId, 48, false, false);
   const updateValidation = useUpdateValidationCandidate(workspaceId);
+  const refreshValidation = useRefreshValidationQueue(workspaceId);
 
   const grouped = useMemo(() => {
     const map = new Map<string, ValidationQueueItem[]>();
@@ -251,10 +255,19 @@ export default function ValidationPage() {
               This queue is sourced from Universe ranking and diversified by adjacency lane and query family.
             </p>
           </div>
-          <Link href={`/workspaces/${workspaceId}/report`} className="btn-secondary flex items-center gap-2">
-            Cards
-            <ArrowRight className="h-4 w-4" />
-          </Link>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => refreshValidation.mutate({ topN: 12 })}
+              disabled={refreshValidation.isPending}
+              className="btn-secondary"
+            >
+              {refreshValidation.isPending ? "Refreshing..." : "Refresh Top Slice"}
+            </button>
+            <Link href={`/workspaces/${workspaceId}/report`} className="btn-secondary flex items-center gap-2">
+              Cards
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
         </div>
       </div>
 

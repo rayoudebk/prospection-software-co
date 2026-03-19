@@ -246,6 +246,27 @@ export function useUpdateValidationCandidate(workspaceId: number) {
   });
 }
 
+export function useRefreshValidationQueue(workspaceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      candidateEntityIds,
+      topN,
+    }: {
+      candidateEntityIds?: number[];
+      topN?: number | null;
+    }) =>
+      workspaceApi.refreshValidationQueue(workspaceId, {
+        candidate_entity_ids: candidateEntityIds,
+        top_n: topN,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["validation-queue", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
+    },
+  });
+}
+
 export function useDiscoveryDiagnostics(workspaceId: number, includeQualityAudit = true) {
   return useQuery({
     queryKey: ["discovery-diagnostics", workspaceId, includeQualityAudit],

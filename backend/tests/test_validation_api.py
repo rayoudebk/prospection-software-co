@@ -172,3 +172,52 @@ def test_report_generation_requires_promoted_shortlist(tmp_path: Path):
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert detail["code"] == "cards_not_ready"
+
+
+def test_validation_refresh_updates_identity_diagnostics(tmp_path: Path, monkeypatch):
+    client, session_maker = _build_test_client(tmp_path)
+    _seed_validation_workspace(session_maker)
+
+    monkeypatch.setattr(
+        workspaces,
+        "_resolve_directory_profile_seed_candidates",
+        lambda candidates, max_fetches: {
+            "candidates_considered": len(candidates),
+            "candidates_selected": len(candidates),
+        },
+    )
+
+    def fake_resolve_identities(candidates, max_fetches, timeout_seconds=0, concurrency=0):
+        for candidate in candidates:
+            candidate["identity"] = {
+                "official_website": candidate.get("official_website_url") or candidate.get("website"),
+                "identity_confidence": "high",
+                "resolved_via_redirect": True,
+                "error": None,
+            }
+        return {"identity_resolved_count": len(candidates)}
+
+    monkeypatch.setattr(workspaces, "_resolve_identities_for_candidates", fake_resolve_identities)
+    monkeypatch.setattr(
+        workspaces,
+        "_extract_first_party_signals",
+        lambda website, candidate_name: (
+            [
+                {
+                    "text": f"{candidate_name} provides portfolio management platform software.",
+                    "citation_url": website,
+                    "dimension": "product",
+                }
+            ],
+            None,
+        ),
+    )
+
+    response = client.post("/workspaces/1/validation:refresh", json={"top_n": 1})
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["identity_confidence"] == "high"
+    assert payload[0]["vendor_classification"] == "vendor_candidate"
+    assert payload[0]["identity_diagnostics"]["resolved_via_redirect"] is True
+    assert payload[0]["identity_diagnostics"]["has_first_party_evidence"] is True

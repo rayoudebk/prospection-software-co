@@ -95,6 +95,12 @@ from app.services.company_context import (
     _build_sourcing_brief_artifacts,
     _derive_source_pills_from_profile,
 )
+from app.workers.workspace_tasks import (
+    _dedupe_strings as _worker_dedupe_strings,
+    _extract_first_party_signals,
+    _resolve_identities_for_candidates,
+    _resolve_directory_profile_seed_candidates,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -787,6 +793,7 @@ class UniverseTopCandidateResponse(BaseModel):
     vendor_classification: Optional[str] = None
     identity_confidence: Optional[str] = None
     official_website_confidence: Optional[str] = None
+    identity_diagnostics: Dict[str, Any] = Field(default_factory=dict)
     multi_origin_count: int = 0
     priority_score: float = 0.0
     run_quality_tier: str = "degraded"
@@ -821,6 +828,7 @@ class ValidationQueueItemResponse(BaseModel):
     vendor_classification: Optional[str] = None
     identity_confidence: Optional[str] = None
     official_website_confidence: Optional[str] = None
+    identity_diagnostics: Dict[str, Any] = Field(default_factory=dict)
     multi_origin_count: int = 0
     priority_score: float = 0.0
     top_claim: Dict[str, Any] = Field(default_factory=dict)
@@ -831,6 +839,11 @@ class ValidationQueueItemResponse(BaseModel):
 
 class ValidationStatusUpdateRequest(BaseModel):
     status: str
+
+
+class ValidationRefreshRequest(BaseModel):
+    candidate_entity_ids: List[int] = Field(default_factory=list)
+    top_n: Optional[int] = None
 
 
 class QualityAuditPattern(BaseModel):
@@ -1407,6 +1420,173 @@ async def _candidate_entity_maps(
     return entity_map, origins_by_entity
 
 
+async def _latest_screenings_by_candidate_entity(
+    db: AsyncSession,
+    workspace_id: int,
+    entity_ids: list[int],
+) -> dict[int, CompanyScreening]:
+    if not entity_ids:
+        return {}
+    result = await db.execute(
+        select(CompanyScreening)
+        .where(
+            CompanyScreening.workspace_id == workspace_id,
+            CompanyScreening.candidate_entity_id.in_(entity_ids),
+        )
+        .order_by(CompanyScreening.created_at.desc())
+    )
+    latest: dict[int, CompanyScreening] = {}
+    for row in result.scalars().all():
+        entity_id = int(row.candidate_entity_id or 0)
+        if not entity_id or entity_id in latest:
+            continue
+        latest[entity_id] = row
+    return latest
+
+
+async def _refresh_validation_identity_slice(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    candidate_entity_ids: list[int],
+    top_n: Optional[int] = None,
+) -> list[ValidationQueueItemResponse]:
+    settings = get_settings()
+    refresh_cap = max(1, int(getattr(settings, "discovery_validation_refresh_identity_cap", 12)))
+    effective_top_n = max(1, min(int(top_n or refresh_cap), refresh_cap))
+    queue_items, _quality_payload, _latest_run_id = await _build_validation_queue_items(
+        db,
+        workspace_id,
+        allow_degraded=True,
+        limit=max(refresh_cap, effective_top_n),
+        include_rejected=False,
+    )
+    if candidate_entity_ids:
+        requested_ids = {int(item) for item in candidate_entity_ids if int(item) > 0}
+        selected_items = [item for item in queue_items if int(item["candidate_entity_id"]) in requested_ids][:refresh_cap]
+    else:
+        selected_items = queue_items[:effective_top_n]
+    if not selected_items:
+        return []
+
+    entity_ids = [int(item["candidate_entity_id"]) for item in selected_items]
+    entity_map, origins_by_entity = await _candidate_entity_maps(db, entity_ids)
+    screening_map = await _latest_screenings_by_candidate_entity(db, workspace_id, entity_ids)
+
+    refresh_candidates: list[dict[str, Any]] = []
+    for item in selected_items:
+        entity = entity_map.get(int(item["candidate_entity_id"]))
+        screening = screening_map.get(int(item["candidate_entity_id"]))
+        if entity is None or screening is None:
+            continue
+        refresh_candidates.append(
+            {
+                "candidate_entity_id": int(entity.id),
+                "name": str(screening.candidate_name or entity.canonical_name or "").strip(),
+                "website": str(screening.candidate_official_website or entity.canonical_website or entity.discovery_primary_url or "").strip() or None,
+                "official_website_url": str(screening.candidate_official_website or entity.canonical_website or "").strip() or None,
+                "discovery_url": str(screening.candidate_discovery_url or entity.discovery_primary_url or "").strip() or None,
+                "profile_url": str(screening.candidate_discovery_url or entity.discovery_primary_url or "").strip() or None,
+                "first_party_domains": list(entity.first_party_domains_json or []),
+                "_origins": [
+                    {
+                        "origin_type": origin.origin_type,
+                        "origin_url": origin.origin_url,
+                        "source_run_id": origin.source_run_id,
+                        "source_name": (origin.metadata_json or {}).get("source_name") if isinstance(origin.metadata_json, dict) else None,
+                        "metadata": origin.metadata_json if isinstance(origin.metadata_json, dict) else {},
+                    }
+                    for origin in origins_by_entity.get(int(entity.id), [])
+                ],
+            }
+        )
+
+    _resolve_directory_profile_seed_candidates(
+        refresh_candidates,
+        max_fetches=min(refresh_cap, len(refresh_candidates)),
+    )
+    _resolve_identities_for_candidates(
+        refresh_candidates,
+        max_fetches=min(refresh_cap, len(refresh_candidates)),
+    )
+
+    refreshed_ids: list[int] = []
+    for candidate in refresh_candidates:
+        entity_id = int(candidate.get("candidate_entity_id") or 0)
+        entity = entity_map.get(entity_id)
+        screening = screening_map.get(entity_id)
+        if entity is None or screening is None:
+            continue
+        official_website = str(candidate.get("official_website_url") or candidate.get("website") or "").strip() or None
+        official_domain = normalize_domain(official_website)
+        if official_website and official_domain and official_domain not in set(entity.first_party_domains_json or []):
+            entity.first_party_domains_json = _worker_dedupe_strings([*(entity.first_party_domains_json or []), official_domain])
+        if official_website and official_domain:
+            entity.canonical_website = official_website
+            entity.canonical_domain = official_domain
+            if not screening.candidate_official_website:
+                screening.candidate_official_website = official_website
+        identity = candidate.get("identity") if isinstance(candidate.get("identity"), dict) else {}
+        entity.identity_confidence = str(identity.get("identity_confidence") or entity.identity_confidence or "low")[:20]
+        entity.identity_error = (str(identity.get("error") or "")[:255] or None)
+
+        homepage_reasons: list[dict[str, str]] = []
+        homepage_error: Optional[str] = None
+        vendor_classification = None
+        if official_website:
+            homepage_reasons, homepage_error = _extract_first_party_signals(official_website, str(candidate.get("name") or ""))
+            if any(reason.get("dimension") in {"product", "services", "pricing_gtm", "moat"} for reason in homepage_reasons):
+                vendor_classification = "vendor_candidate"
+            elif any(reason.get("dimension") in {"customer", "icp"} for reason in homepage_reasons):
+                vendor_classification = "vendor_candidate"
+
+        validation = validation_metadata(entity)
+        screening_meta = screening.screening_meta_json if isinstance(screening.screening_meta_json, dict) else {}
+        first_party_meta = screening_meta.get("first_party_enrichment") if isinstance(screening_meta.get("first_party_enrichment"), dict) else {}
+        if homepage_reasons:
+            first_party_meta = {
+                **first_party_meta,
+                "method": "validation_homepage_refresh",
+                "tier": "validation",
+                "pages_crawled": 1,
+                "signals_extracted": len(homepage_reasons),
+            }
+            screening_meta["first_party_enrichment"] = first_party_meta
+            screening.screening_meta_json = screening_meta
+
+        set_validation_metadata(
+            entity,
+            {
+                "identity_confidence": entity.identity_confidence,
+                "official_website_confidence": "high" if official_website else validation.get("official_website_confidence"),
+                "vendor_classification": vendor_classification or validation.get("vendor_classification"),
+                "identity_diagnostics": {
+                    "identity_error": homepage_error or entity.identity_error,
+                    "resolved_via_redirect": bool(identity.get("resolved_via_redirect", False)),
+                    "first_party_method": first_party_meta.get("method"),
+                    "first_party_tier": first_party_meta.get("tier"),
+                    "pages_crawled": int(first_party_meta.get("pages_crawled") or 0),
+                    "signals_extracted": int(first_party_meta.get("signals_extracted") or 0),
+                    "has_first_party_evidence": bool(homepage_reasons),
+                },
+            },
+        )
+        refreshed_ids.append(entity_id)
+
+    await db.commit()
+    refreshed_items: list[ValidationQueueItemResponse] = []
+    for entity_id in refreshed_ids:
+        refreshed_items.append(
+            await get_validation_candidate(
+                workspace_id=workspace_id,
+                candidate_entity_id=entity_id,
+                allow_degraded=True,
+                db=db,
+            )
+        )
+    return refreshed_items
+
+
 async def _build_validation_queue_items(
     db: AsyncSession,
     workspace_id: int,
@@ -1487,6 +1667,7 @@ async def _build_validation_queue_items(
             "vendor_classification": validation["vendor_classification"],
             "identity_confidence": validation["identity_confidence"],
             "official_website_confidence": validation["official_website_confidence"],
+            "identity_diagnostics": validation.get("identity_diagnostics") if isinstance(validation.get("identity_diagnostics"), dict) else {},
             "multi_origin_count": len(validation["origin_types"]),
             "priority_score": float(validation["priority_score"] or 0.0),
             "top_claim": top_claim,
@@ -3668,6 +3849,24 @@ async def get_validation_candidate(
         if int(item["candidate_entity_id"]) == candidate_entity_id:
             return ValidationQueueItemResponse(**item)
     raise HTTPException(status_code=404, detail="Validation candidate not found")
+
+
+@router.post("/{workspace_id}/validation:refresh", response_model=List[ValidationQueueItemResponse])
+async def refresh_validation_queue(
+    workspace_id: int,
+    payload: ValidationRefreshRequest = ValidationRefreshRequest(),
+    db: AsyncSession = Depends(get_db),
+):
+    workspace_result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = workspace_result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return await _refresh_validation_identity_slice(
+        db,
+        workspace_id,
+        candidate_entity_ids=payload.candidate_entity_ids,
+        top_n=payload.top_n,
+    )
 
 
 @router.patch("/{workspace_id}/validation/{candidate_entity_id}", response_model=ValidationQueueItemResponse)

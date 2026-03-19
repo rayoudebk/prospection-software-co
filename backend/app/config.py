@@ -72,10 +72,14 @@ class Settings(BaseSettings):
     audit_max_fn_customer_proof_but_thin_grouping: int = 8
     discovery_candidate_entity_cap: int = 2000
     discovery_scoring_entities_cap: int = 120
+    discovery_scoring_lane_cap: int = 18
+    discovery_scoring_query_family_cap: int = 10
+    discovery_scoring_source_family_cap: int = 48
     discovery_validation_queue_limit: int = 36
     discovery_validation_lane_cap: int = 6
     discovery_validation_query_family_cap: int = 4
     discovery_validation_source_family_cap: int = 18
+    discovery_validation_refresh_identity_cap: int = 12
     discovery_directory_seed_total_cap: int = 2000
     discovery_directory_seed_per_listing_cap: int = 2000
     discovery_directory_seed_per_source_cap: int = 2000
