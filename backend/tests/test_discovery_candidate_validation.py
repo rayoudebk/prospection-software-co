@@ -121,6 +121,7 @@ def test_scope_hints_driven_query_plan_overrides_legacy_brick_hints():
         "source_customer_segments": ["private equity"],
         "adjacency_boxes": [
             {
+                "id": "adj_reporting",
                 "label": "Voting rights workflow",
                 "adjacency_kind": "adjacent_workflow",
                 "status": "corroborated_expansion",
@@ -151,11 +152,17 @@ def test_scope_hints_driven_query_plan_overrides_legacy_brick_hints():
     assert all("Legacy brick" not in text for text in precision_texts)
     assert any("software vendor" in text for text in precision_texts + recall_texts)
 
-    queries, summary = workspace_tasks._build_external_search_queries_from_plan(plan)
+    queries, summary = workspace_tasks._build_external_search_queries_from_plan(
+        plan,
+        normalized_scope=scope_hints,
+    )
     assert any(query["scope_bucket"] == "core" for query in queries)
     assert any(query["scope_bucket"] == "adjacent" for query in queries)
     assert "private equity" in queries[0]["must_include_terms"]
     assert summary["scope_buckets"] == ["core", "adjacent"]
+    adjacent_query = next(query for query in queries if query["scope_bucket"] == "adjacent")
+    assert adjacent_query["fit_to_adjacency_box_ids"] == ["adj_reporting"]
+    assert adjacent_query["fit_to_adjacency_box_labels"] == ["Voting rights workflow"]
 
 
 def test_scope_hints_query_plan_prioritizes_canonical_adjacency_boxes_and_seed_urls():
@@ -318,6 +325,78 @@ def test_candidates_from_retrieval_results_use_homepage_as_canonical_website():
     assert candidates[0]["why_relevant"][0]["citation_url"] == "https://vendor.example.com/platform/reporting"
 
 
+def test_candidates_from_retrieval_results_preserve_lane_metadata():
+    candidates = workspace_tasks._candidates_from_retrieval_results(
+        [
+            {
+                "url": "https://vendor.example.com/platform/reporting",
+                "provider": "exa",
+                "query_id": "precision_1",
+                "query_type": "precision",
+                "scope_bucket": "adjacent",
+                "brick_name": "Workforce planning",
+                "fit_to_adjacency_box_ids": ["adj_workforce"],
+                "fit_to_adjacency_box_labels": ["Workforce planning"],
+                "source_capability_matches": [],
+                "rank": 1,
+                "snippet": "Workforce planning platform for hospitals.",
+            }
+        ]
+    )
+
+    metadata = candidates[0]["_origins"][0]["metadata"]
+    assert metadata["fit_to_adjacency_box_ids"] == ["adj_workforce"]
+    assert metadata["fit_to_adjacency_box_labels"] == ["Workforce planning"]
+
+
+def test_scope_metadata_for_query_entry_matches_query_text_to_adjacency_box():
+    scope_hints = {
+        "source_capabilities": ["Clinical staffing"],
+        "adjacency_boxes": [
+            {
+                "id": "adj_workforce",
+                "label": "Workforce planning",
+                "retrieval_query_seeds": ["hospital workforce planning software"],
+                "likely_workflows": ["Shift planning"],
+            }
+        ],
+    }
+
+    metadata = workspace_tasks._scope_metadata_for_query_entry(
+        {
+            "query_text": "hospital workforce planning software vendor France Belgium",
+            "query_intent": "find adjacent workflow vendors",
+            "scope_bucket": "adjacent",
+        },
+        normalized_scope=scope_hints,
+    )
+
+    assert metadata["fit_to_adjacency_box_ids"] == ["adj_workforce"]
+    assert metadata["fit_to_adjacency_box_labels"] == ["Workforce planning"]
+
+
+def test_candidate_validation_lane_metadata_prefers_origin_lane_labels():
+    lane_ids, lane_labels = workspace_tasks._candidate_validation_lane_metadata(
+        {
+            "origins": [
+                {
+                    "origin_type": "external_search_seed",
+                    "metadata": {
+                        "scope_bucket": "adjacent",
+                        "brick_name": "Workforce planning",
+                        "fit_to_adjacency_box_ids": ["adj_workforce"],
+                        "fit_to_adjacency_box_labels": ["Workforce planning"],
+                    },
+                }
+            ]
+        },
+        scope_buckets=["adjacent"],
+    )
+
+    assert lane_ids == ["adj_workforce"]
+    assert lane_labels == ["Workforce planning"]
+
+
 def test_candidates_from_retrieval_results_skip_aggregator_profile_domains():
     candidates = workspace_tasks._candidates_from_retrieval_results(
         [
@@ -353,6 +432,26 @@ def test_candidates_from_retrieval_results_skip_known_non_vendor_hosts():
     )
 
     assert candidates == []
+
+
+def test_is_persistable_vendor_entity_rejects_blocked_and_training_blog_entities():
+    assert not workspace_tasks._is_persistable_vendor_entity(
+        {
+            "canonical_name": "Reddit",
+            "canonical_website": "https://reddit.com",
+            "discovery_primary_url": "https://reddit.com/r/ValueInvesting/comments/example",
+            "why_relevant": [{"text": "Discussion thread"}],
+        }
+    )
+    assert not workspace_tasks._is_persistable_vendor_entity(
+        {
+            "canonical_name": "Nucamp",
+            "canonical_website": "https://www.nucamp.co/",
+            "discovery_primary_url": "https://nucamp.co/blog/coding-bootcamp-belgium-bel-healthcare-how-ai-is-helping-healthcare-companies-in-belgium-cut-costs-and-improve-efficiency",
+            "why_relevant": [{"text": "Coding bootcamp industry blog post."}],
+        }
+    )
+
 
 
 def test_external_candidate_name_prefers_domain_label_for_article_like_titles():
@@ -465,6 +564,30 @@ def test_looks_like_vendor_candidate_result_rejects_media_rankings_and_bootcamp_
             "snippet": "Coding bootcamp industry blog post.",
         }
     )
+
+
+def test_looks_like_vendor_candidate_result_rejects_service_provider_pages_without_product_signal():
+    assert not workspace_tasks._looks_like_vendor_candidate_result(
+        {
+            "url": "https://tateeda.com/services/medical-hr-software-development-company",
+            "title": "Medical HR Software Development Company",
+            "snippet": "Custom software development and consulting services for healthcare HR teams.",
+        }
+    )
+
+
+def test_capability_signals_from_reason_items_extracts_product_and_service_context():
+    signals = workspace_tasks._capability_signals_from_reason_items(
+        [
+            {"text": "Hospital workforce planning platform for staff scheduling.", "dimension": "product"},
+            {"text": "Implementation and onboarding services for rostering teams.", "dimension": "services"},
+            {"text": "Named customer evidence: CHU Lille", "dimension": "customer"},
+        ]
+    )
+    assert signals[:2] == [
+        "Hospital workforce planning platform for staff scheduling.",
+        "Implementation and onboarding services for rostering teams.",
+    ]
 
 
 def test_looks_like_vendor_candidate_result_accepts_vendor_blog_when_brand_is_explicit():

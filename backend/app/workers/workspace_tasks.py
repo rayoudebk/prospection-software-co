@@ -1080,6 +1080,8 @@ DISCOVERY_NON_VENDOR_HOSTS = {
     "talentbusinesspartners.com",
     "verifiedmarketresearch.com",
     "wealthbriefing.com",
+    "reddit.com",
+    "inven.ai",
     "ey.com",
     "europa.eu",
 }
@@ -1143,6 +1145,36 @@ DISCOVERY_EDITORIAL_TOKENS = {
     " conference",
     " rankings",
     " research",
+}
+
+DISCOVERY_SERVICE_PROVIDER_TOKENS = {
+    " development company",
+    " software development",
+    " custom software",
+    " app developers",
+    " app development",
+    " outsourcing",
+    " consulting",
+    " consultancy",
+    " agency",
+    " recruitment",
+    " staffing agency",
+    " locum",
+    " contractor",
+    " temporary staffing",
+    " hire developers",
+    " hire developer",
+}
+
+DISCOVERY_INVESTOR_TOKENS = {
+    " investors",
+    " investment firm",
+    " venture capital",
+    " private equity",
+    " investor list",
+    " top investors",
+    " funding",
+    " portfolio company",
 }
 
 DISCOVERY_INSTITUTION_TOKENS = {
@@ -6328,6 +6360,58 @@ def _query_is_seller_oriented(query_text: Any) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _scope_metadata_for_query_entry(
+    entry: dict[str, Any],
+    *,
+    normalized_scope: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    scope = normalized_scope if isinstance(normalized_scope, dict) else {}
+    brick_name = str(entry.get("brick_name") or "").strip()
+    query_text = str(entry.get("query_text") or "").strip()
+    query_intent = str(entry.get("query_intent") or "").strip()
+    scope_bucket = str(entry.get("scope_bucket") or "").strip().lower() or None
+    search_text = " | ".join(item for item in [brick_name, query_text, query_intent] if item)
+
+    fit_to_adjacency_box_ids: list[str] = []
+    fit_to_adjacency_box_labels: list[str] = []
+    source_capability_matches: list[str] = []
+    if search_text:
+        for raw_box in (scope.get("adjacency_boxes") or []):
+            if not isinstance(raw_box, dict):
+                continue
+            box_label = str(raw_box.get("label") or "").strip()
+            if not box_label:
+                continue
+            candidate_terms = [box_label]
+            candidate_terms.extend(
+                _normalize_string_list(raw_box.get("likely_workflows"), max_items=4, max_len=120)
+            )
+            candidate_terms.extend(
+                _normalize_string_list(raw_box.get("retrieval_query_seeds"), max_items=4, max_len=180)
+            )
+            if any(_scope_match_text(search_text, term) for term in candidate_terms if str(term).strip()):
+                box_id = str(raw_box.get("id") or "").strip()
+                if box_id:
+                    fit_to_adjacency_box_ids.append(box_id)
+                fit_to_adjacency_box_labels.append(box_label)
+        if not fit_to_adjacency_box_labels:
+            for capability in _normalize_string_list(scope.get("source_capabilities"), max_items=12, max_len=140):
+                if _scope_match_text(search_text, capability):
+                    source_capability_matches.append(capability)
+
+    fit_to_adjacency_box_ids = _dedupe_strings(fit_to_adjacency_box_ids)[:8]
+    fit_to_adjacency_box_labels = _dedupe_strings(fit_to_adjacency_box_labels)[:8]
+    source_capability_matches = _dedupe_strings(source_capability_matches)[:8]
+    if not scope_bucket:
+        scope_bucket = "adjacent" if fit_to_adjacency_box_ids or fit_to_adjacency_box_labels else ("core" if source_capability_matches else None)
+    return {
+        "scope_bucket": scope_bucket,
+        "fit_to_adjacency_box_ids": fit_to_adjacency_box_ids,
+        "fit_to_adjacency_box_labels": fit_to_adjacency_box_labels,
+        "source_capability_matches": source_capability_matches,
+    }
+
+
 def _merge_query_entries(*entry_sets: list[dict[str, Any]], max_items: int = 8) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -6456,6 +6540,7 @@ def _build_external_search_queries_from_plan(
     *,
     preferred_countries: Optional[list[str]] = None,
     preferred_languages: Optional[list[str]] = None,
+    normalized_scope: Optional[dict[str, Any]] = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     queries: list[dict[str, Any]] = []
     precision_entries = plan.get("precision_queries") or []
@@ -6474,6 +6559,7 @@ def _build_external_search_queries_from_plan(
             query_text = str(entry.get("query_text") or "").strip()
             if hint_suffix:
                 query_text = f"{query_text} {hint_suffix}".strip()
+            scope_metadata = _scope_metadata_for_query_entry(entry, normalized_scope=normalized_scope)
             queries.append(
                 {
                     "query_id": f"{query_type}_{idx}",
@@ -6481,7 +6567,10 @@ def _build_external_search_queries_from_plan(
                     "query_type": query_type,
                     "query_intent": entry.get("query_intent"),
                     "brick_name": entry.get("brick_name"),
-                    "scope_bucket": entry.get("scope_bucket"),
+                    "scope_bucket": scope_metadata.get("scope_bucket"),
+                    "fit_to_adjacency_box_ids": scope_metadata.get("fit_to_adjacency_box_ids") or [],
+                    "fit_to_adjacency_box_labels": scope_metadata.get("fit_to_adjacency_box_labels") or [],
+                    "source_capability_matches": scope_metadata.get("source_capability_matches") or [],
                     "must_include_terms": include_terms,
                     "must_exclude_terms": exclude_terms,
                     "domain_allowlist": allowlist,
@@ -6822,6 +6911,8 @@ def _looks_like_vendor_candidate_result(row: dict[str, Any]) -> bool:
     )
     has_editorial_signal = any(token in f" {combined} " for token in DISCOVERY_EDITORIAL_TOKENS)
     has_institution_signal = any(token in f" {combined} " for token in DISCOVERY_INSTITUTION_TOKENS)
+    has_service_provider_signal = any(token in f" {combined} " for token in DISCOVERY_SERVICE_PROVIDER_TOKENS)
+    has_investor_signal = any(token in f" {combined} " for token in DISCOVERY_INVESTOR_TOKENS)
     has_non_vendor_domain_label = bool(
         (domain_label_tokens | host_tokens) & DISCOVERY_NON_VENDOR_DOMAIN_LABEL_TOKENS
     ) or any(token in domain_label or token in host for token in DISCOVERY_NON_VENDOR_DOMAIN_LABEL_TOKENS)
@@ -6830,6 +6921,16 @@ def _looks_like_vendor_candidate_result(row: dict[str, Any]) -> bool:
     if has_editorial_signal and not has_strong_vendor_signal:
         return False
     if has_institution_signal and not has_strong_vendor_signal:
+        return False
+    if has_investor_signal and not has_strong_vendor_signal:
+        return False
+    if has_service_provider_signal and not has_specific_strong_vendor_signal:
+        return False
+    if (
+        article_like_path
+        and any(token in combined for token in ("bootcamp", "academy", "course", "tutorial", "community"))
+        and not has_specific_strong_vendor_signal
+    ):
         return False
     if has_non_vendor_domain_label and (article_like_path or has_editorial_signal):
         return False
@@ -6905,6 +7006,9 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
                         "provider": row.get("provider"),
                         "query_id": row.get("query_id"),
                         "scope_bucket": row.get("scope_bucket"),
+                        "fit_to_adjacency_box_ids": row.get("fit_to_adjacency_box_ids") or [],
+                        "fit_to_adjacency_box_labels": row.get("fit_to_adjacency_box_labels") or [],
+                        "source_capability_matches": row.get("source_capability_matches") or [],
                         "rank": row.get("rank"),
                     }
                 ],
@@ -6920,6 +7024,9 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
                             "query_text": row.get("query_text"),
                             "brick_name": row.get("brick_name"),
                             "scope_bucket": row.get("scope_bucket"),
+                            "fit_to_adjacency_box_ids": row.get("fit_to_adjacency_box_ids") or [],
+                            "fit_to_adjacency_box_labels": row.get("fit_to_adjacency_box_labels") or [],
+                            "source_capability_matches": row.get("source_capability_matches") or [],
                             "rank": row.get("rank"),
                             "provider": row.get("provider"),
                         },
@@ -6928,6 +7035,94 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
             }
         )
     return candidates
+
+
+def _candidate_validation_lane_metadata(
+    candidate: dict[str, Any],
+    *,
+    scope_buckets: Optional[list[str]] = None,
+) -> tuple[list[str], list[str]]:
+    origin_items = candidate.get("origins")
+    if not isinstance(origin_items, list):
+        origin_items = _origin_entries(candidate)
+    lane_ids: list[str] = []
+    lane_labels: list[str] = []
+    source_caps: list[str] = []
+    brick_labels: list[str] = []
+
+    for origin in origin_items:
+        if not isinstance(origin, dict):
+            continue
+        metadata = origin.get("metadata") if isinstance(origin.get("metadata"), dict) else {}
+        lane_ids.extend(_dedupe_strings(metadata.get("fit_to_adjacency_box_ids") or []))
+        lane_labels.extend(_dedupe_strings(metadata.get("fit_to_adjacency_box_labels") or []))
+        source_caps.extend(_dedupe_strings(metadata.get("source_capability_matches") or []))
+        brick_name = str(metadata.get("brick_name") or "").strip()
+        if brick_name:
+            brick_labels.append(brick_name)
+
+    lane_ids = _dedupe_strings(lane_ids)[:8]
+    lane_labels = _dedupe_strings(lane_labels)[:8]
+    source_caps = _dedupe_strings(source_caps)[:8]
+    brick_labels = _dedupe_strings(brick_labels)[:8]
+    scope_bucket_labels = [
+        str(bucket).strip().title()
+        for bucket in _dedupe_strings(scope_buckets or [])
+        if str(bucket).strip()
+    ]
+
+    brick_lane_ids = [
+        _normalize_name_phrase(label).replace(" ", "_")
+        for label in brick_labels
+        if _normalize_name_phrase(label)
+    ]
+    final_lane_ids = lane_ids or source_caps or brick_lane_ids or _dedupe_strings(scope_buckets or [])[:8]
+    final_lane_labels = lane_labels or source_caps or brick_labels or scope_bucket_labels
+    return _dedupe_strings(final_lane_ids)[:8], _dedupe_strings(final_lane_labels)[:8]
+
+
+def _is_persistable_vendor_entity(entity: dict[str, Any]) -> bool:
+    canonical_website = str(entity.get("canonical_website") or "").strip()
+    discovery_url = str(entity.get("discovery_primary_url") or "").strip()
+    canonical_domain = normalize_domain(canonical_website)
+    discovery_domain = normalize_domain(discovery_url)
+
+    for domain in [canonical_domain, discovery_domain]:
+        if not domain:
+            continue
+        if _is_non_first_party_profile_domain(domain):
+            return False
+        if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in DISCOVERY_NON_VENDOR_HOSTS):
+            return False
+
+    parsed_discovery = urlparse(normalize_url(discovery_url) or discovery_url) if discovery_url else None
+    discovery_path = str(parsed_discovery.path or "").strip().lower() if parsed_discovery else ""
+    article_like_path = any(token in discovery_path for token in DISCOVERY_ARTICLE_PATH_TOKENS)
+
+    evidence_text = " ".join(
+        str(reason.get("text") or "").strip().lower()
+        for reason in (entity.get("why_relevant") or [])
+        if isinstance(reason, dict)
+    )
+    combined = " ".join(
+        item
+        for item in [
+            str(entity.get("canonical_name") or "").strip().lower(),
+            canonical_website.lower(),
+            discovery_url.lower(),
+            evidence_text,
+        ]
+        if item
+    )
+    has_specific_strong_vendor_signal = any(
+        token in combined for token in (DISCOVERY_STRONG_VENDOR_TOKENS - DISCOVERY_GENERIC_VENDOR_TOKENS)
+    )
+    has_training_or_community_signal = any(
+        token in combined for token in ("bootcamp", "academy", "course", "training", "tutorial", "community")
+    )
+    if article_like_path and has_training_or_community_signal and not has_specific_strong_vendor_signal:
+        return False
+    return True
 
 
 def _build_candidate_synthesis_prompt(
@@ -7103,6 +7298,25 @@ def _validate_closed_world_candidates(
         validated.append(candidate)
 
     return validated, stats
+
+
+def _capability_signals_from_reason_items(reasons: list[dict[str, Any]], max_items: int = 6) -> list[str]:
+    extracted: list[str] = []
+    for item in reasons or []:
+        if not isinstance(item, dict):
+            continue
+        dimension = str(item.get("dimension") or "").strip().lower()
+        if dimension not in {"product", "services", "customer"}:
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        short = " ".join(text.split())[:180]
+        if short:
+            extracted.append(short)
+        if len(extracted) >= max(1, int(max_items)):
+            break
+    return _dedupe_strings(extracted)[: max(1, int(max_items))]
 
 
 def _parse_discovery_candidates_from_text(raw_text: str) -> list[dict[str, Any]]:
@@ -9247,6 +9461,7 @@ def _run_discovery_universe_monolith(job_id: int):
                 query_plan,
                 preferred_countries=preferred_countries,
                 preferred_languages=preferred_languages,
+                normalized_scope=normalized_scope_hints,
             )
             query_plan_summary["plan_adjustments"] = query_plan_adjustments
             query_plan_summary["used_fallback_plan"] = bool(query_plan_adjustments)
@@ -9674,6 +9889,11 @@ def _run_discovery_universe_monolith(job_id: int):
                 canonical_entities,
                 cap=candidate_entity_cap,
             )
+            canonical_entities = [
+                entity
+                for entity in canonical_entities
+                if _is_persistable_vendor_entity(entity)
+            ]
             registry_neighbors_unique_post_dedupe = len(
                 [
                     entity for entity in canonical_entities
@@ -10242,6 +10462,10 @@ def _run_discovery_universe_monolith(job_id: int):
                         normalized_reasons = _normalize_reasons(normalized_reasons + cached_first_party)
                     if cached_capabilities:
                         capability_signals = _dedupe_strings(capability_signals + cached_capabilities)
+                    elif cached_first_party:
+                        capability_signals = _dedupe_strings(
+                            capability_signals + _capability_signals_from_reason_items(cached_first_party)
+                        )
 
                 passed_gate, reject_reasons, gate_meta = _evaluate_enterprise_b2b_fit(candidate, normalized_reasons)
 
@@ -10352,6 +10576,10 @@ def _run_discovery_universe_monolith(job_id: int):
                         if isinstance(reason, dict)
                         and str(reason.get("scope_bucket") or "").strip()
                     ]
+                )
+                validation_lane_ids, validation_lane_labels = _candidate_validation_lane_metadata(
+                    entity,
+                    scope_buckets=candidate_scope_buckets,
                 )
 
                 company_ref: Optional[Company] = existing_company
@@ -10702,8 +10930,8 @@ def _run_discovery_universe_monolith(job_id: int):
                                 if str(candidate.get("website") or "").strip()
                                 else "low"
                             ),
-                            "lane_ids": candidate_scope_buckets,
-                            "lane_labels": capability_signals[:6],
+                            "lane_ids": validation_lane_ids,
+                            "lane_labels": validation_lane_labels,
                             "query_families": _dedupe_strings(
                                 [
                                     str((origin.get("metadata") or {}).get("query_type") or "").strip()
