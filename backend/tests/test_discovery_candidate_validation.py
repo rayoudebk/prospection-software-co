@@ -453,6 +453,25 @@ def test_is_persistable_vendor_entity_rejects_blocked_and_training_blog_entities
     )
 
 
+def test_is_persistable_vendor_entity_rejects_consulting_and_social_entities_without_vendor_signal():
+    assert not workspace_tasks._is_persistable_vendor_entity(
+        {
+            "canonical_name": "INCITE Consulting Solutions",
+            "canonical_website": "https://inciteconsultingsolutions.com",
+            "discovery_primary_url": "https://mhca.com/vendors/vendor-showcase",
+            "why_relevant": [{"text": "Healthcare consulting services and advisory support."}],
+        }
+    )
+    assert not workspace_tasks._is_persistable_vendor_entity(
+        {
+            "canonical_name": "Flickr",
+            "canonical_website": "https://www.flickr.com/photos/11157300@N08/",
+            "discovery_primary_url": "https://mhca.com/vendors/vendor-showcase",
+            "why_relevant": [{"text": "Listed in directory showcase."}],
+        }
+    )
+
+
 
 def test_external_candidate_name_prefers_domain_label_for_article_like_titles():
     assert (
@@ -461,6 +480,16 @@ def test_external_candidate_name_prefers_domain_label_for_article_like_titles():
             "https://masttro.com/institutions",
         )
         == "Masttro"
+    )
+
+
+def test_external_candidate_name_demotes_generic_geo_solution_titles():
+    assert (
+        workspace_tasks._external_candidate_name(
+            "Perfect Patient Management System in Belgium",
+            "https://sarutech.com",
+        )
+        == "Sarutech"
     )
 
 
@@ -500,6 +529,24 @@ def test_external_candidate_name_prefers_brand_segment_when_present():
         )
         == "Venn"
     )
+
+
+def test_discovery_source_names_for_healthcare_workspace_selects_healthcare_directory_only():
+    profile = SimpleNamespace(
+        buyer_company_url="https://www.hublo.com/en",
+        context_pack_markdown="Hospital staffing and workforce planning software for healthcare providers.",
+    )
+    source_names = workspace_tasks._discovery_source_names_for_workspace(
+        profile,
+        ["healthcare staffing", "workforce planning"],
+        normalized_scope={
+            "source_capabilities": ["shift replacement", "pool management"],
+            "source_customer_segments": ["Hospitals", "Clinics"],
+            "adjacency_box_labels": ["Internal mobility", "Vendor management system"],
+        },
+    )
+    assert "healthcare_vendor_showcase_seed" in source_names
+    assert "wealth_mosaic" not in source_names
 
 
 def test_looks_like_vendor_candidate_result_rejects_editorial_report_hit():

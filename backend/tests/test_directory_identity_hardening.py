@@ -1,4 +1,7 @@
-from app.services.comparator_sources import parse_wealth_mosaic_listing
+from app.services.comparator_sources import (
+    parse_healthcare_vendor_showcase_listing,
+    parse_wealth_mosaic_listing,
+)
 from app.workers.workspace_tasks import _seed_candidates_from_mentions, _source_type_for_url
 
 
@@ -58,3 +61,18 @@ def test_source_type_for_url_never_marks_directory_as_first_party():
     assert _source_type_for_url(directory_url, "dorsum.eu", first_party_domains=first_party) == "directory_comparator"
     assert _source_type_for_url("https://dorsum.eu/products", "dorsum.eu", first_party_domains=first_party) == "first_party_website"
 
+
+def test_healthcare_vendor_showcase_normalizes_generic_anchor_text_to_domain_label():
+    html = """
+    <html>
+      <body>
+        <a href="https://cantatahealth.com">https://cantatahealth.com</a>
+        <a href="https://continuumcloud.com">View site</a>
+      </body>
+    </html>
+    """
+    mentions = parse_healthcare_vendor_showcase_listing(
+        html,
+        "https://mhca.com/vendors/vendor-showcase",
+    )
+    assert [row["company_name"] for row in mentions[:2]] == ["Cantatahealth", "Continuumcloud"]

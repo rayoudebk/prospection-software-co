@@ -280,6 +280,25 @@ WEALTH_CONTEXT_TOKENS = {
     "pms",
 }
 
+HEALTHCARE_CONTEXT_TOKENS = {
+    "healthcare",
+    "hospital",
+    "hospitals",
+    "clinic",
+    "clinics",
+    "care provider",
+    "care providers",
+    "staffing",
+    "shift",
+    "shift replacement",
+    "rostering",
+    "workforce",
+    "pool management",
+    "internal mobility",
+    "vendor management system",
+    "vms",
+}
+
 SCREEN_WEIGHTS = {
     "institutional_icp_fit": 30.0,
     "platform_product_depth": 25.0,
@@ -1084,6 +1103,8 @@ DISCOVERY_NON_VENDOR_HOSTS = {
     "inven.ai",
     "ey.com",
     "europa.eu",
+    "flickr.com",
+    "klasresearch.com",
 }
 
 DISCOVERY_VENDORISH_TOKENS = {
@@ -4630,8 +4651,21 @@ def _extract_first_party_signals(
 
             snippets: list[str] = []
             title = tree.css_first("title")
-            if title and title.text(strip=True):
-                snippets.append(title.text(strip=True))
+            title_text = title.text(strip=True) if title and title.text(strip=True) else ""
+            if title_text:
+                snippets.append(title_text)
+            site_name = ""
+            for selector, attr in (
+                ('meta[property="og:site_name"]', "content"),
+                ('meta[name="application-name"]', "content"),
+                ('meta[property="og:title"]', "content"),
+            ):
+                node = tree.css_first(selector)
+                if node:
+                    site_name = str(node.attributes.get(attr) or "").strip()
+                if site_name:
+                    snippets.append(site_name)
+                    break
             meta_desc = tree.css_first('meta[name="description"]')
             if meta_desc:
                 desc = str(meta_desc.attributes.get("content") or "").strip()
@@ -4701,6 +4735,18 @@ def _extract_first_party_signals(
             }
 
             reasons: list[dict[str, str]] = []
+            brand_hint = _extract_brand_name_hint_from_reasons(
+                [{"text": value, "citation_url": final_url} for value in deduped_snippets[:6]],
+                final_url,
+            )
+            if brand_hint:
+                reasons.append(
+                    {
+                        "text": f"Brand identity: {brand_hint}",
+                        "citation_url": final_url,
+                        "dimension": "company_profile",
+                    }
+                )
             for snippet in deduped_snippets:
                 lowered = snippet.lower()
                 dimension = "product"
@@ -5580,10 +5626,15 @@ def _discovery_source_names_for_workspace(
     combined_text = " ".join(text_chunks).lower()
     source_names: list[str] = []
     wealth_context = any(token in combined_text for token in WEALTH_CONTEXT_TOKENS)
+    healthcare_context = any(token in combined_text for token in HEALTHCARE_CONTEXT_TOKENS)
 
     if wealth_context:
         for source_name in ["wealth_mosaic", "partner_graph_seed", "conference_exhibitors_seed"]:
             if source_name in SOURCE_REGISTRY:
+                source_names.append(source_name)
+    if healthcare_context:
+        for source_name in ["healthcare_vendor_showcase_seed"]:
+            if source_name in SOURCE_REGISTRY and source_name not in source_names:
                 source_names.append(source_name)
 
     return source_names
@@ -6805,9 +6856,143 @@ def _brand_key(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", lowered)
 
 
+DISCOVERY_GENERIC_TITLE_TOKENS = {
+    "advanced",
+    "best",
+    "care",
+    "clinic",
+    "company",
+    "ehr",
+    "employee",
+    "eu",
+    "europe",
+    "france",
+    "belgium",
+    "germany",
+    "health",
+    "healthcare",
+    "hospital",
+    "hospitals",
+    "hr",
+    "internal",
+    "management",
+    "mobility",
+    "patient",
+    "patients",
+    "payroll",
+    "perfect",
+    "planning",
+    "platform",
+    "pool",
+    "provider",
+    "providers",
+    "replacement",
+    "roster",
+    "rostering",
+    "schedule",
+    "scheduling",
+    "shift",
+    "software",
+    "solution",
+    "solutions",
+    "staff",
+    "staffing",
+    "system",
+    "systems",
+    "time",
+    "timesheet",
+    "vendor",
+    "vms",
+    "workforce",
+}
+
+DISCOVERY_DOMAIN_BRAND_PREFIXES = ("get", "go", "use", "try", "meet", "hello", "my", "whatis")
+
+
+def _brand_key_variants(text: str) -> set[str]:
+    variants = {_brand_key(text)}
+    base = next(iter(variants))
+    for prefix in DISCOVERY_DOMAIN_BRAND_PREFIXES:
+        if base.startswith(prefix) and len(base) > len(prefix) + 3:
+            variants.add(base[len(prefix):])
+    return {item for item in variants if item}
+
+
+def _looks_like_generic_solution_title(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    tokens = [token for token in re.split(r"[^a-z0-9]+", lowered) if token]
+    informative = [token for token in tokens if token not in {"the", "and", "for", "in", "of", "to", "a", "an"}]
+    if len(informative) < 4:
+        return False
+    generic_hits = sum(1 for token in informative if token in DISCOVERY_GENERIC_TITLE_TOKENS)
+    return generic_hits >= max(3, len(informative) // 2 + 1)
+
+
+def _looks_like_reasonable_brand_name(text: str) -> bool:
+    normalized = str(text or "").strip(" -|:")
+    if not normalized:
+        return False
+    tokens = normalized.split()
+    if len(tokens) > 5:
+        return False
+    lowered = normalized.lower()
+    if _looks_like_generic_solution_title(normalized):
+        return False
+    if lowered in {"home", "homepage", "platform", "software", "solution", "solutions", "company"}:
+        return False
+    return any(char.isalpha() for char in normalized)
+
+
+def _extract_brand_name_hint_from_reasons(
+    reasons: list[dict[str, Any]],
+    website_url: str,
+) -> Optional[str]:
+    explicit_brand_prefix = "Brand identity:"
+    domain_label = _domain_label_for_url(website_url)
+    domain_variants = _brand_key_variants(domain_label)
+    for reason in reasons:
+        text = str(reason.get("text") or "").strip()
+        if text.startswith(explicit_brand_prefix):
+            brand = text.split(":", 1)[1].strip()
+            if _looks_like_reasonable_brand_name(brand):
+                return brand[:300]
+    for reason in reasons:
+        text = str(reason.get("text") or "").strip()
+        for segment in [part.strip(" -|:") for part in re.split(r"[|:-]", text) if part.strip(" -|:")]:
+            if not _looks_like_reasonable_brand_name(segment):
+                continue
+            segment_variants = _brand_key_variants(segment)
+            if domain_variants & segment_variants:
+                return segment[:300]
+            if any(segment_key in domain_variants or any(domain_key in segment_key for domain_key in domain_variants) for segment_key in segment_variants):
+                return segment[:300]
+    return None
+
+
+def _should_replace_candidate_name_with_brand_hint(
+    current_name: str,
+    brand_hint: Optional[str],
+    website_url: str,
+) -> bool:
+    brand = str(brand_hint or "").strip()
+    current = str(current_name or "").strip()
+    if not brand or not current:
+        return False
+    if _brand_key(current) == _brand_key(brand):
+        return False
+    domain_label = _domain_label_for_url(website_url)
+    current_variants = _brand_key_variants(current)
+    domain_variants = _brand_key_variants(domain_label)
+    if _looks_like_generic_solution_title(current):
+        return True
+    if current_variants & domain_variants:
+        return True
+    return False
+
+
 def _external_candidate_name(title: Any, url: str) -> str:
     domain_label = _domain_label_for_url(url)
-    domain_key = _brand_key(domain_label)
+    domain_variants = _brand_key_variants(domain_label)
     raw_title = str(title or "").strip()
     if not raw_title:
         return domain_label
@@ -6840,13 +7025,15 @@ def _external_candidate_name(title: Any, url: str) -> str:
     )
     if any(marker in f" {lower} " for marker in article_markers):
         return domain_label
+    if _looks_like_generic_solution_title(normalized) and all(variant not in _brand_key(normalized) for variant in domain_variants):
+        return domain_label
     segments = [segment.strip(" -|:") for segment in re.split(r"[|:-]", normalized) if segment.strip(" -|:")]
     for segment in segments:
-        segment_key = _brand_key(segment)
+        segment_variants = _brand_key_variants(segment)
         segment_lower = segment.lower()
-        if segment_lower.endswith(" home") and domain_key and domain_key in segment_key:
+        if segment_lower.endswith(" home") and any(domain_key in segment_key for domain_key in domain_variants for segment_key in segment_variants):
             return domain_label
-        if domain_key and segment_key and domain_key in segment_key:
+        if any(domain_key in segment_key for domain_key in domain_variants for segment_key in segment_variants):
             if len(segment.split()) > 5:
                 return domain_label
             return segment[:300]
@@ -6854,9 +7041,10 @@ def _external_candidate_name(title: Any, url: str) -> str:
         segment_lower = segment.lower()
         if len(segment.split()) <= 4 and not any(token in segment_lower for token in generic_segment_tokens):
             return segment[:300]
+    normalized_key = _brand_key(normalized)
     if domain_lower and lower.startswith(f"{domain_lower} ") and len(normalized.split()) >= 5:
         return domain_label
-    if domain_lower and domain_lower in lower and len(normalized.split()) >= 6:
+    if any(variant in normalized_key for variant in domain_variants) and len(normalized.split()) >= 6:
         return domain_label
     if domain_lower and domain_lower not in lower and any(marker in lower for marker in (" for ", " with ", " by ")) and len(normalized.split()) > 4:
         return domain_label
@@ -7109,7 +7297,6 @@ def _is_persistable_vendor_entity(entity: dict[str, Any]) -> bool:
         for item in [
             str(entity.get("canonical_name") or "").strip().lower(),
             canonical_website.lower(),
-            discovery_url.lower(),
             evidence_text,
         ]
         if item
@@ -7120,7 +7307,16 @@ def _is_persistable_vendor_entity(entity: dict[str, Any]) -> bool:
     has_training_or_community_signal = any(
         token in combined for token in ("bootcamp", "academy", "course", "training", "tutorial", "community")
     )
+    has_service_provider_signal = any(token in f" {combined} " for token in DISCOVERY_SERVICE_PROVIDER_TOKENS)
+    has_institution_signal = any(token in f" {combined} " for token in DISCOVERY_INSTITUTION_TOKENS)
+    has_investor_signal = any(token in f" {combined} " for token in DISCOVERY_INVESTOR_TOKENS)
     if article_like_path and has_training_or_community_signal and not has_specific_strong_vendor_signal:
+        return False
+    if has_service_provider_signal and not has_specific_strong_vendor_signal:
+        return False
+    if has_institution_signal and not has_specific_strong_vendor_signal:
+        return False
+    if has_investor_signal and not has_specific_strong_vendor_signal:
         return False
     return True
 
@@ -9108,6 +9304,11 @@ def _run_discovery_universe_fixture(job_id: int):
             if entity_row is None:
                 continue
             validation = validation_metadata(entity_row)
+            validation_lane_ids = validation.get("lane_ids") or []
+            validation_lane_labels = validation.get("lane_labels") or []
+            validation_source_families = validation.get("source_families") or []
+            if not (validation_lane_ids or validation_lane_labels) and set(validation_source_families) <= {"directory"}:
+                continue
             validation_queue_candidates.append(
                 {
                     "candidate_entity_id": int(entity_row.id),
@@ -9121,10 +9322,10 @@ def _run_discovery_universe_fixture(job_id: int):
                     "multi_origin_count": len(validation.get("origin_types") or []),
                     "validation_status": validation.get("status") or VALIDATION_STATUS_QUEUED,
                     "promoted_to_cards": bool(validation.get("promoted_to_cards")),
-                    "validation_lane_ids": validation.get("lane_ids") or [],
-                    "validation_lane_labels": validation.get("lane_labels") or [],
+                    "validation_lane_ids": validation_lane_ids,
+                    "validation_lane_labels": validation_lane_labels,
                     "validation_query_families": validation.get("query_families") or [],
-                    "validation_source_families": validation.get("source_families") or [],
+                    "validation_source_families": validation_source_families,
                 }
             )
 
@@ -9142,6 +9343,9 @@ def _run_discovery_universe_fixture(job_id: int):
         for entity_id, entity_row in entity_row_by_id.items():
             validation = validation_metadata(entity_row)
             validation["queue_rank"] = int(queue_rank_by_entity_id.get(int(entity_id), 0))
+            if validation["queue_rank"] > 0 and not str(validation.get("status") or "").strip():
+                validation["status"] = VALIDATION_STATUS_QUEUED
+            validation["validation_state"] = str(validation.get("status") or VALIDATION_STATUS_QUEUED)
             set_validation_metadata(entity_row, validation)
 
         discovery_candidate_graph_sync = {"status": "not_run"}
@@ -10456,6 +10660,12 @@ def _run_discovery_universe_monolith(job_id: int):
                             cached_capabilities = []
                             cached_meta = first_party_meta_cache[candidate_domain_for_fetch]
 
+                    if cached_first_party:
+                        brand_hint = _extract_brand_name_hint_from_reasons(cached_first_party, candidate_website)
+                        if _should_replace_candidate_name_with_brand_hint(candidate_name, brand_hint, candidate_website):
+                            candidate["canonical_name"] = str(brand_hint).strip()[:300]
+                            candidate_name = candidate["canonical_name"]
+
                     if cached_meta:
                         first_party_enrichment_meta = cached_meta
                     if cached_first_party:
@@ -10992,6 +11202,11 @@ def _run_discovery_universe_monolith(job_id: int):
                 if entity_row is None:
                     continue
                 validation = validation_metadata(entity_row)
+                validation_lane_ids = validation.get("lane_ids") or []
+                validation_lane_labels = validation.get("lane_labels") or []
+                validation_source_families = validation.get("source_families") or []
+                if not (validation_lane_ids or validation_lane_labels) and set(validation_source_families) <= {"directory"}:
+                    continue
                 source_summary = screening.source_summary_json if isinstance(screening.source_summary_json, dict) else {}
                 validation_queue_candidates.append(
                     {
@@ -11006,10 +11221,10 @@ def _run_discovery_universe_monolith(job_id: int):
                         "multi_origin_count": len(validation.get("origin_types") or []),
                         "validation_status": validation.get("status") or VALIDATION_STATUS_QUEUED,
                         "promoted_to_cards": bool(validation.get("promoted_to_cards")),
-                        "validation_lane_ids": validation.get("lane_ids") or [],
-                        "validation_lane_labels": validation.get("lane_labels") or [],
+                        "validation_lane_ids": validation_lane_ids,
+                        "validation_lane_labels": validation_lane_labels,
                         "validation_query_families": validation.get("query_families") or [],
-                        "validation_source_families": validation.get("source_families") or [],
+                        "validation_source_families": validation_source_families,
                     }
                 )
 
@@ -11027,6 +11242,9 @@ def _run_discovery_universe_monolith(job_id: int):
             for entity_id, entity_row in entity_row_by_id.items():
                 validation = validation_metadata(entity_row)
                 validation["queue_rank"] = int(queue_rank_by_entity_id.get(int(entity_id), 0))
+                if validation["queue_rank"] > 0 and not str(validation.get("status") or "").strip():
+                    validation["status"] = VALIDATION_STATUS_QUEUED
+                validation["validation_state"] = str(validation.get("status") or VALIDATION_STATUS_QUEUED)
                 set_validation_metadata(entity_row, validation)
 
             discovery_candidate_graph_sync = {"status": "not_run"}

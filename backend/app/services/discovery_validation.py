@@ -69,9 +69,12 @@ def _title_case_token(value: Any) -> str:
 def validation_metadata(entity: Any) -> dict[str, Any]:
     metadata = _as_dict(getattr(entity, "metadata_json", None))
     validation = _as_dict(metadata.get("validation"))
-    status = str(validation.get("status") or "").strip()
+    status = str(validation.get("status") or validation.get("validation_state") or "").strip()
     if status not in VALIDATION_STATUSES:
         validation["status"] = VALIDATION_STATUS_QUEUED
+    else:
+        validation["status"] = status
+    validation["validation_state"] = validation["status"]
     validation["promoted_to_cards"] = bool(validation.get("promoted_to_cards", False))
     validation["queue_rank"] = int(validation.get("queue_rank") or 0)
     validation["priority_score"] = float(validation.get("priority_score") or 0.0)
@@ -101,8 +104,12 @@ def set_validation_metadata(entity: Any, payload: dict[str, Any]) -> None:
     metadata = _as_dict(getattr(entity, "metadata_json", None))
     validation = validation_metadata(entity)
     validation.update(_as_dict(payload))
-    if str(validation.get("status") or "").strip() not in VALIDATION_STATUSES:
+    status = str(validation.get("status") or validation.get("validation_state") or "").strip()
+    if status not in VALIDATION_STATUSES:
         validation["status"] = VALIDATION_STATUS_QUEUED
+    else:
+        validation["status"] = status
+    validation["validation_state"] = validation["status"]
     validation["promoted_to_cards"] = bool(validation.get("promoted_to_cards", False))
     validation["lane_ids"] = _dedupe_strings(validation.get("lane_ids") or [])
     validation["lane_labels"] = _dedupe_strings(validation.get("lane_labels") or [])

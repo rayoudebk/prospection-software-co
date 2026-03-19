@@ -31,6 +31,15 @@ EXTERNAL_HOST_BLOCKLIST = {
     "vimeo.com",
     "wikipedia.org",
 }
+GENERIC_DIRECTORY_ANCHOR_TEXT = {
+    "view site",
+    "visit site",
+    "visit website",
+    "website",
+    "website address",
+    "learn more",
+    "read more",
+}
 
 
 @dataclass
@@ -213,6 +222,28 @@ def _extract_official_website_from_block(anchor_block: Any, listing_url: str) ->
         return None
     candidates.sort(key=lambda item: (item[0], -len(item[1])), reverse=True)
     return candidates[0][1]
+
+
+def _company_label_from_external_url(company_url: str) -> str:
+    host = (urlparse(company_url).netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return ""
+    return host.split(".")[0].replace("-", " ").replace("_", " ").strip().title()
+
+
+def _normalize_generic_directory_company_name(anchor_text: str, company_url: str) -> str:
+    normalized = _clean_text(anchor_text)
+    if normalized.lower() in GENERIC_DIRECTORY_ANCHOR_TEXT:
+        normalized = ""
+    if normalized.startswith(("http://", "https://")):
+        normalized = ""
+    if "." in normalized and " " not in normalized and len(normalized) <= 80:
+        normalized = ""
+    if normalized:
+        return normalized[:300]
+    return _company_label_from_external_url(company_url)[:300]
 
 
 def parse_wealth_mosaic_listing(html: str, listing_url: str) -> List[Dict[str, Any]]:
@@ -431,7 +462,9 @@ def _parse_generic_external_directory(
             if len(anchor_text.split()) < 2 and len(anchor_text) < 8:
                 continue
 
-        company_name = anchor_text or host.split(".")[0].replace("-", " ").title()
+        company_name = _normalize_generic_directory_company_name(anchor_text, company_url)
+        if not company_name:
+            continue
         key = (company_name.lower(), company_url.lower())
         if key in seen:
             continue
@@ -481,6 +514,14 @@ def parse_conference_exhibitor_listing(html: str, listing_url: str) -> List[Dict
     )
 
 
+def parse_healthcare_vendor_showcase_listing(html: str, listing_url: str) -> List[Dict[str, Any]]:
+    return _parse_generic_external_directory(
+        html,
+        listing_url,
+        source_name="healthcare_vendor_showcase_seed",
+    )
+
+
 def _mention_quality_score(mention: Dict[str, Any], base_host: Optional[str]) -> int:
     score = 0
     company_name = _clean_text(str(mention.get("company_name") or ""))
@@ -523,6 +564,12 @@ SOURCE_REGISTRY: Dict[str, SourceConfig] = {
         source_name="conference_exhibitors_seed",
         seed_url="https://europe.money2020.com/exhibitors",
         parser=parse_conference_exhibitor_listing,
+        default_max_pages=1,
+    ),
+    "healthcare_vendor_showcase_seed": SourceConfig(
+        source_name="healthcare_vendor_showcase_seed",
+        seed_url="https://mhca.com/vendors/vendor-showcase",
+        parser=parse_healthcare_vendor_showcase_listing,
         default_max_pages=1,
     ),
 }
