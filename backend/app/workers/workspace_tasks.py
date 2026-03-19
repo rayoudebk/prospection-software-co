@@ -9011,6 +9011,11 @@ def _run_discovery_universe_monolith(job_id: int):
     """Run discovery to find candidate universe."""
 
     db = SessionLocal()
+    # This monolith mixes DB persistence with long-running network stages.
+    # Keep loaded ORM state stable across commits so later attribute access
+    # does not open a fresh lazy-load transaction and leave it idle while
+    # search/LLM work is running.
+    db.expire_on_commit = False
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
