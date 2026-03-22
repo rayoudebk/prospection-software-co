@@ -1641,6 +1641,22 @@ def test_fr_registry_secondary_lookup_specs_collects_commercial_and_observation_
     assert ("observation_counterparty_lookup", "MEDIKSTAFF") in pairs
 
 
+def test_fr_registry_extract_observation_entities_keeps_counterparties_only():
+    observations = [
+        "RADIATION PAR SUITE DE CESSATION COMPLETE D'ACTIVITE, DANS LE RESSORT DU TRIBUNAL OU LA SOCIETE EST IMMATRICULEE A TITRE SECONDAIRE, A COMPTER DU 28-09-2023",
+        "Opération de fusion à compter du 28/10/2020. Société ayant participée à l'opération : WHOOG, Société par actions simplifiée, 1090-1300 Route des Crêtes 06560 Valbonne (RCS Grasse 524 671 724)",
+        "Opération de fusion à compter du 14/12/2023. Société(s) ayant participé à l'opération : MEDIKSTAFF, Société par actions simplifiée, 86 Rue Voltaire 93100 Montreuil (RCS Bobigny 820 625 564)",
+    ]
+
+    entities = workspace_tasks._fr_registry_extract_observation_entities(observations)
+
+    assert "WHOOG" in entities
+    assert "MEDIKSTAFF" in entities
+    assert not any("RADIATION" in entity for entity in entities)
+    assert not any("COMPTER DU" in entity for entity in entities)
+    assert "RCS" not in entities
+
+
 def test_fr_registry_semantic_score_demotes_generic_infra_rows_without_mandate_signals():
     scope_pack = {
         "core": {"terms": ["healthcare", "staffing", "hospital"], "phrases": []},

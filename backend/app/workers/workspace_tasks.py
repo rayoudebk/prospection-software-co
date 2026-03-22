@@ -1076,23 +1076,43 @@ def _fr_registry_scope_phrases(phrases: list[str]) -> dict[str, Any]:
 
 def _fr_registry_extract_observation_entities(observations: list[str]) -> list[str]:
     names: list[str] = []
+    blocked_tokens = {
+        "RADIATION",
+        "COMPTER",
+        "OPERATION",
+        "OPÉRATION",
+        "FUSION",
+        "PARTICIPE",
+        "PARTICIPÉ",
+        "PARTICIPEE",
+        "PARTICIPEES",
+        "SOCIETE",
+        "SOCIÉTÉ",
+        "RCS",
+        "TRIBUNAL",
+        "ACTIVITE",
+        "ACTIVITÉ",
+    }
     for observation in observations or []:
         text = _normalize_html_text(observation)
         if not text:
             continue
         for match in re.finditer(
-            r"(?:particip(?:e|é|ee)s?\s+à\s+l[’']op[ée]ration\s*:\s*|fusion avec\s+|absorb(?:e|é|ee)\s+|apport partiel à\s+)([A-Z0-9][A-Z0-9&'’ .-]{2,})",
+            r"(?:particip(?:e|é|ee|ée|ees|ées)s?\s+à\s+l[’']op[ée]ration\s*:\s*|fusion avec\s+|absorb(?:e|é|ee)\s+|apport partiel à\s+)([^.;:()]+)",
             text,
             flags=re.IGNORECASE,
         ):
             candidate = re.split(r"\s+(?:soci[eé]t[eé]|sas|sarl|sa|scop|rcs)\b", match.group(1), maxsplit=1, flags=re.IGNORECASE)[0]
             candidate = re.sub(r"\s+", " ", candidate).strip(" ,.;:-")
-            if len(candidate) >= 3:
+            candidate_upper = candidate.upper()
+            candidate_tokens = [token for token in re.split(r"[\s,/()-]+", candidate_upper) if token]
+            if (
+                len(candidate) >= 3
+                and candidate_tokens
+                and not any(token in blocked_tokens for token in candidate_tokens)
+                and not re.search(r"\b\d{2}[-/]\d{2}[-/]\d{2,4}\b", candidate_upper)
+            ):
                 names.append(candidate.upper())
-        for match in re.findall(r"\b[A-Z][A-Z0-9&'’.-]{2,}(?:\s+[A-Z0-9&'’.-]{2,})*\b", text):
-            normalized = re.sub(r"\s+", " ", match).strip(" ,.;:-")
-            if len(normalized) >= 3:
-                names.append(normalized)
     return _dedupe_strings(names)[:16]
 
 
@@ -1267,19 +1287,19 @@ def _fr_registry_seed_query_specs(
         seen.add(key)
         specs.append({"query": text, "query_type": query_type, "only_active": bool(only_active)})
 
-    for seed in normalized_scope.get("company_seeds") or []:
-        if not isinstance(seed, dict):
-            continue
-        name = str(seed.get("name") or "").strip()
-        if _looks_like_registry_company_seed(name):
-            _add(name, query_type="company_seed")
-
     if isinstance(source_record, dict):
         for alias in _fr_registry_extract_observation_entities(
             list(((source_record.get("registry_fields") or {}).get("observations") or []))
         ):
             if _looks_like_registry_company_seed(alias):
                 _add(alias, query_type="source_observation_alias", only_active=False)
+
+    for seed in normalized_scope.get("company_seeds") or []:
+        if not isinstance(seed, dict):
+            continue
+        name = str(seed.get("name") or "").strip()
+        if _looks_like_registry_company_seed(name):
+            _add(name, query_type="company_seed")
 
     for raw in normalized_scope.get("named_account_anchors") or []:
         if _looks_like_registry_company_seed(raw):
