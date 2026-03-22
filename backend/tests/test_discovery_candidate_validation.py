@@ -1148,6 +1148,7 @@ def test_fr_registry_code_neighborhood_expands_beyond_source_code():
     codes = {entry["code"] for entry in neighborhood}
     assert "63.11Z" in codes
     assert "62.01Z" in codes
+    assert "63.12Z" in codes
     assert "78.10Z" in codes
 
 
@@ -1426,6 +1427,64 @@ def test_fr_registry_seed_queries_skip_source_identity_and_generic_customer_term
     assert "Hospitals" not in queries
     assert "MEDIKSTAFF" in queries
     assert "source_brand" not in query_types
+
+
+def test_fr_registry_seed_queries_use_only_high_confidence_company_names():
+    profile = SimpleNamespace(
+        buyer_company_url="https://hublo.com",
+        context_pack_json={"sites": [{"company_name": "Hublo", "summary": "Healthcare staffing platform."}]},
+    )
+    normalized_scope = {
+        "source_capabilities": ["Healthcare staffing"],
+        "source_workflows": ["Shift replacement"],
+        "source_customer_segments": ["Hospitals"],
+        "adjacency_boxes": [
+            {
+                "label": "Workforce planning",
+                "retrieval_query_seeds": ["hospital workforce planning software"],
+                "likely_customer_segments": ["Hospitals"],
+                "likely_workflows": ["Shift planning"],
+            }
+        ],
+        "adjacency_box_labels": ["Workforce planning"],
+        "company_seeds": [
+            {
+                "name": "PlannerCo",
+                "website": "https://plannerco.example.com",
+                "status": "hypothesis",
+                "confidence": 0.4,
+                "evidence": [{"url": "https://plannerco.example.com/about"}],
+            },
+            {
+                "name": "HealthRota",
+                "website": "https://healthrota.co.uk",
+                "status": "confirmed",
+                "confidence": 0.92,
+                "evidence": [{"url": "https://www.healthrota.co.uk/about"}],
+            },
+        ],
+        "named_account_anchors": [],
+        "geography_expansions": [],
+    }
+
+    scope_pack = workspace_tasks._fr_registry_scope_pack(profile, normalized_scope)
+    specs = workspace_tasks._fr_registry_seed_query_specs(
+        profile,
+        normalized_scope,
+        scope_pack,
+        source_record=None,
+    )
+
+    queries = {spec["query"] for spec in specs}
+    query_types = {spec["query_type"] for spec in specs}
+
+    assert "HealthRota" in queries
+    assert "PlannerCo" not in queries
+    assert "Workforce planning" not in queries
+    assert "hospital workforce planning software" not in queries
+    assert "company_seed" in query_types
+    assert "adjacency_label" not in query_types
+    assert "adjacency_vendor_phrase" not in query_types
 
 
 def test_fr_registry_semantic_score_ignores_low_signal_management_terms_for_core_fit():
@@ -1852,7 +1911,15 @@ def test_build_france_registry_universe_candidates_recovers_seed_lookup_entity_a
         "source_capabilities": ["Healthcare staffing"],
         "source_customer_segments": ["Hospitals"],
         "source_workflows": ["replacement"],
-        "company_seeds": [{"name": "Brigad"}],
+        "company_seeds": [
+            {
+                "name": "Brigad",
+                "website": "https://www.brigad.co",
+                "status": "confirmed",
+                "confidence": 0.92,
+                "evidence": [{"url": "https://www.brigad.co/about"}],
+            }
+        ],
         "adjacency_boxes": [],
         "named_account_anchors": [],
         "geography_expansions": [],
@@ -2225,6 +2292,85 @@ def test_build_france_registry_universe_candidates_respects_global_query_budget(
     assert len(query_calls) == 2
 
 
+def test_build_france_registry_universe_candidates_round_robins_code_pages_under_tight_budget(monkeypatch):
+    profile = SimpleNamespace(
+        buyer_company_url="https://hublo.com",
+        geo_scope={"include_countries": ["France"]},
+        context_pack_json={"sites": [{"company_name": "Hublo", "summary": "Healthcare staffing software.", "url": "https://hublo.com"}]},
+    )
+    normalized_scope = {
+        "source_capabilities": ["Healthcare staffing"],
+        "source_workflows": ["replacement"],
+        "source_customer_segments": ["Hospitals"],
+        "company_seeds": [],
+        "adjacency_boxes": [],
+        "named_account_anchors": [],
+        "geography_expansions": [],
+    }
+    source_record = {
+        "display_name": "Hublo",
+        "legal_name": "HUBLO",
+        "registry_id": "822276986",
+        "activity_code": "63.11Z",
+        "activity_code_naf25": "58.29Y",
+        "registry_fields": {"observations": []},
+    }
+
+    monkeypatch.setattr(
+        workspace_tasks,
+        "_resolve_fr_source_registry_record",
+        lambda profile, normalized_scope: (source_record, {"source_company_name": "Hublo"}),
+    )
+    monkeypatch.setattr(workspace_tasks, "_fetch_fr_registry_detail_record", lambda record: record)
+
+    query_calls: list[dict[str, object]] = []
+
+    def fake_fr_search(*, query=None, activite_principale=None, page=1, per_page=25, only_active=True, timeout_seconds=6):
+        query_calls.append({"query": query, "code": activite_principale, "page": page})
+        if activite_principale:
+            return [
+                {
+                    "nom_complet": f"Candidate {activite_principale} {page}",
+                    "nom_raison_sociale": f"Candidate {activite_principale} {page}",
+                    "siren": f"{len(query_calls):09d}",
+                    "activite_principale": activite_principale,
+                    "activite_principale_naf25": activite_principale,
+                    "libelle_activite_principale": "Programmation informatique",
+                    "etat_administratif": "A",
+                    "siege": {"caractere_employeur": "O"},
+                    "complements": {},
+                }
+            ], None
+        return [], None
+
+    monkeypatch.setattr(workspace_tasks, "_fr_registry_search", fake_fr_search)
+
+    _candidates, diagnostics = workspace_tasks._build_france_registry_universe_candidates(
+        profile,
+        normalized_scope,
+        budget_overrides={
+            "pages_per_code": 3,
+            "max_pages_per_code": 3,
+            "candidate_cap": 200,
+            "detail_cap": 0,
+            "max_total_queries": 4,
+            "seed_query_cap": 0,
+            "seed_query_reserve": 0,
+            "secondary_query_cap": 0,
+            "secondary_query_reserve": 0,
+        },
+    )
+
+    queried_codes = [str(item["code"]) for item in query_calls if item.get("code")]
+    fetched_codes = {item["code"] for item in diagnostics["code_fetch_stats"] if int(item["pages_fetched"] or 0) > 0}
+
+    assert diagnostics["registry_code_query_count"] == 4
+    assert len(queried_codes) == 4
+    assert len(set(queried_codes)) == 4
+    assert fetched_codes == set(queried_codes)
+    assert all(call["page"] == 1 for call in query_calls)
+
+
 def test_build_france_registry_universe_candidates_reserves_seed_budget_before_code_crawl(monkeypatch):
     profile = SimpleNamespace(
         buyer_company_url="https://hublo.com",
@@ -2235,7 +2381,15 @@ def test_build_france_registry_universe_candidates_reserves_seed_budget_before_c
         "source_capabilities": ["Healthcare staffing"],
         "source_workflows": ["replacement"],
         "source_customer_segments": ["Hospitals"],
-        "company_seeds": [{"name": "Mediflash"}],
+        "company_seeds": [
+            {
+                "name": "Mediflash",
+                "website": "https://mediflash.fr",
+                "status": "confirmed",
+                "confidence": 0.92,
+                "evidence": [{"url": "https://mediflash.fr/mentions-legales/"}],
+            }
+        ],
         "adjacency_boxes": [],
         "named_account_anchors": [],
         "geography_expansions": [],

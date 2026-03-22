@@ -59,6 +59,44 @@ def _available_retrieval_providers() -> List[str]:
     return [provider for provider in configured if _provider_key_available(provider)]
 
 
+def _fr_registry_credentials_available() -> bool:
+    settings = get_settings()
+    token = str(getattr(settings, "inpi_token", "") or "").strip()
+    username = str(getattr(settings, "inpi_username", "") or "").strip()
+    password = str(getattr(settings, "inpi_password", "") or "").strip()
+    return bool(token or (username and password))
+
+
+def _normalize_country(value: Any) -> str:
+    normalized = str(value or "").strip().upper()
+    if normalized in {"FR", "FRA", "FRANCE"}:
+        return "FR"
+    return normalized
+
+
+def _france_registry_first_requested(
+    *,
+    geo_scope: Optional[Dict[str, Any]] = None,
+    buyer_company_url: Optional[str] = None,
+    context_pack_json: Optional[Dict[str, Any]] = None,
+) -> bool:
+    scope = geo_scope if isinstance(geo_scope, dict) else {}
+    include_countries = {
+        _normalize_country(country)
+        for country in (scope.get("include_countries") or [])
+        if _normalize_country(country)
+    }
+    if "FR" in include_countries:
+        return True
+    buyer_url = str(buyer_company_url or "").strip().lower()
+    if buyer_url and ".fr" in buyer_url:
+        return True
+    context_json = context_pack_json if isinstance(context_pack_json, dict) else {}
+    sites = context_json.get("sites") if isinstance(context_json.get("sites"), list) else []
+    primary_site = str(((sites[0] if sites else {}) or {}).get("url") or "").strip().lower()
+    return bool(primary_site and ".fr" in primary_site)
+
+
 def _available_model_providers() -> List[str]:
     settings = get_settings()
     providers: List[str] = []
@@ -147,6 +185,7 @@ def compute_runtime_discovery_readiness(
     database_url_sync: Optional[str] = None,
     connection: Optional[Connection] = None,
     check_worker: bool = True,
+    allow_registry_only_retrieval: bool = False,
 ) -> Dict[str, Any]:
     settings = get_settings()
     execution_mode = str(getattr(settings, "discovery_execution_mode", "live") or "live").strip().lower() or "live"
@@ -166,6 +205,7 @@ def compute_runtime_discovery_readiness(
 
     redis_available = _redis_available()
     available_retrieval_providers = _available_retrieval_providers()
+    registry_retrieval_available = allow_registry_only_retrieval and _fr_registry_credentials_available()
     available_model_providers = _available_model_providers()
     worker_available = _worker_available() if check_worker else True
 
@@ -176,7 +216,7 @@ def compute_runtime_discovery_readiness(
         reasons_blocked.append("redis_unavailable")
     if check_worker and not worker_available:
         reasons_blocked.append("worker_unavailable")
-    if execution_mode == "live" and not available_retrieval_providers:
+    if execution_mode == "live" and not (available_retrieval_providers or registry_retrieval_available):
         reasons_blocked.append("retrieval_provider_unavailable")
     if execution_mode == "live" and not available_model_providers:
         reasons_blocked.append("model_provider_unavailable")
@@ -187,10 +227,14 @@ def compute_runtime_discovery_readiness(
         "db_schema_ok": db_schema_ok,
         "redis_available": redis_available,
         "worker_available": worker_available,
-        "retrieval_provider_available": bool(available_retrieval_providers),
+        "retrieval_provider_available": bool(available_retrieval_providers or registry_retrieval_available),
+        "registry_retrieval_available": registry_retrieval_available,
         "model_available": bool(available_model_providers),
         "reasons_blocked": reasons_blocked,
-        "available_retrieval_providers": available_retrieval_providers,
+        "available_retrieval_providers": [
+            *available_retrieval_providers,
+            *(["inpi_registry"] if registry_retrieval_available else []),
+        ],
         "available_model_providers": available_model_providers,
         "schema_missing_columns": schema_missing_columns,
     }
@@ -202,11 +246,20 @@ def build_workspace_discovery_readiness(
     database_url_sync: Optional[str] = None,
     connection: Optional[Connection] = None,
     check_worker: bool = True,
+    geo_scope: Optional[Dict[str, Any]] = None,
+    buyer_company_url: Optional[str] = None,
+    context_pack_json: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    allow_registry_only_retrieval = _france_registry_first_requested(
+        geo_scope=geo_scope,
+        buyer_company_url=buyer_company_url,
+        context_pack_json=context_pack_json,
+    )
     payload = compute_runtime_discovery_readiness(
         database_url_sync=database_url_sync,
         connection=connection,
         check_worker=check_worker,
+        allow_registry_only_retrieval=allow_registry_only_retrieval,
     )
     reasons_blocked = list(payload.get("reasons_blocked") or [])
     if not expansion_confirmed:

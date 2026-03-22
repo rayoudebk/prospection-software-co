@@ -1255,6 +1255,11 @@ def _fr_registry_seed_query_specs(
 ) -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = []
     seen: set[tuple[str, str, bool]] = set()
+    trusted_company_seed_names = set(
+        _high_confidence_company_seed_names(
+            [seed for seed in (normalized_scope.get("company_seeds") or []) if isinstance(seed, dict)]
+        )
+    )
     source_name = _source_company_name_from_profile(profile)
     source_identity_norms = {
         value
@@ -1298,23 +1303,12 @@ def _fr_registry_seed_query_specs(
         if not isinstance(seed, dict):
             continue
         name = str(seed.get("name") or "").strip()
-        if _looks_like_registry_company_seed(name):
+        if name and name in trusted_company_seed_names and _looks_like_registry_company_seed(name):
             _add(name, query_type="company_seed")
 
     for raw in normalized_scope.get("named_account_anchors") or []:
         if _looks_like_registry_company_seed(raw):
             _add(raw, query_type="named_account")
-
-    customer_segments = [str(item).strip() for item in (normalized_scope.get("source_customer_segments") or []) if str(item).strip()]
-    for box in normalized_scope.get("adjacency_boxes") or []:
-        if not isinstance(box, dict):
-            continue
-        label = str(box.get("label") or "").strip()
-        if _looks_like_vendor_category_phrase(label):
-            _add(label, query_type="adjacency_label")
-        for seed in box.get("retrieval_query_seeds") or []:
-            if _looks_like_vendor_category_phrase(seed):
-                _add(seed, query_type="adjacency_vendor_phrase")
 
     return specs[:24]
 
@@ -1721,29 +1715,42 @@ def _fr_registry_code_neighborhood(
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
+    exact_codes: list[str] = []
+    recruitment_codes: list[str] = []
+    digital_codes: list[str] = []
 
-    def _add(code: Any, distance: int, reason: str) -> None:
+    def _add(code: Any, distance: int, reason: str, bucket: Optional[list[str]] = None) -> None:
         normalized = _normalize_fr_registry_code(code)
         if not normalized or normalized in seen:
             return
         seen.add(normalized)
-        candidates.append({"code": normalized, "distance": int(distance), "reason": reason})
+        if bucket is not None:
+            bucket.append(normalized)
+        else:
+            candidates.append({"code": normalized, "distance": int(distance), "reason": reason})
 
     for code in [
         source_record.get("activity_code"),
         source_record.get("activity_code_naf25"),
     ]:
-        _add(code, 0, "source_company_code")
+        _add(code, 0, "source_company_code", exact_codes)
 
-    source_codes = {str(item.get("code") or "") for item in candidates}
+    source_codes = set(exact_codes)
     if any(term in set(semantic_terms.get("terms") or []) for term in ("staffing", "recruitment", "interim", "intérim", "replacement")):
         for code in FR_REGISTRY_RECRUITMENT_APE_CODES:
-            _add(code, 1, "recruitment_family")
+            _add(code, 1, "recruitment_family", recruitment_codes)
     if any(code.startswith(("58.", "62.", "63.")) for code in source_codes):
         for code in FR_REGISTRY_DIGITAL_APE_CODES:
-            _add(code, 2, "digital_family")
+            _add(code, 2, "digital_family", digital_codes)
 
-    return candidates[:10]
+    for code in exact_codes:
+        candidates.append({"code": code, "distance": 0, "reason": "source_company_code"})
+    for code in digital_codes[: len(FR_REGISTRY_DIGITAL_APE_CODES)]:
+        candidates.append({"code": code, "distance": 2, "reason": "digital_family"})
+    for code in recruitment_codes[: len(FR_REGISTRY_RECRUITMENT_APE_CODES)]:
+        candidates.append({"code": code, "distance": 1, "reason": "recruitment_family"})
+
+    return candidates[: max(2, len(exact_codes)) + len(FR_REGISTRY_DIGITAL_APE_CODES) + len(FR_REGISTRY_RECRUITMENT_APE_CODES)]
 
 
 def _source_company_name_from_profile(profile: CompanyProfile) -> str:
@@ -2590,13 +2597,21 @@ def _build_france_registry_universe_candidates(
     _execute_lookup_specs(seed_queries, phase="seed", per_query=seed_per_query)
     _execute_lookup_specs(initial_secondary_seed_queries, phase="secondary", per_query=secondary_seed_per_query)
 
+    code_states: list[dict[str, Any]] = []
     for code_entry in code_neighborhood:
-        if query_budget_exhausted or elapsed_budget_exhausted:
-            break
         code = str(code_entry.get("code") or "").strip()
         if not code:
             continue
-        fetch_stats = code_fetch_stats.setdefault(
+        code_states.append(
+            {
+                "entry": code_entry,
+                "next_page": 1,
+                "current_limit": pages_per_code,
+                "consecutive_no_signal_pages": 0,
+                "done": False,
+            }
+        )
+        code_fetch_stats.setdefault(
             code,
             {
                 "code": code,
@@ -2609,10 +2624,24 @@ def _build_france_registry_universe_candidates(
                 "stopped_early": False,
             },
         )
-        current_limit = pages_per_code
-        consecutive_no_signal_pages = 0
-        page = 1
-        while page <= current_limit and page <= max_pages_per_code:
+
+    while code_states and not query_budget_exhausted and not elapsed_budget_exhausted and len(raw_rows) < candidate_cap:
+        progressed = False
+        for state in code_states:
+            if query_budget_exhausted or elapsed_budget_exhausted or len(raw_rows) >= candidate_cap:
+                break
+            if state.get("done"):
+                continue
+            code_entry = state.get("entry") if isinstance(state.get("entry"), dict) else {}
+            code = str(code_entry.get("code") or "").strip()
+            if not code:
+                state["done"] = True
+                continue
+            page = int(state.get("next_page") or 1)
+            current_limit = int(state.get("current_limit") or pages_per_code)
+            if page > current_limit or page > max_pages_per_code:
+                state["done"] = True
+                continue
             if _elapsed_exhausted():
                 break
             rows, _error = _budgeted_registry_search(
@@ -2627,9 +2656,13 @@ def _build_france_registry_universe_candidates(
                 "fr_registry_elapsed_budget_exhausted",
                 "fr_registry_code_budget_exhausted",
             }:
-                break
+                state["done"] = True
+                continue
             if not rows:
-                break
+                state["done"] = True
+                continue
+            progressed = True
+            fetch_stats = code_fetch_stats[code]
             fetch_stats["pages_fetched"] = int(fetch_stats.get("pages_fetched") or 0) + 1
             fetch_stats["rows_fetched"] = int(fetch_stats.get("rows_fetched") or 0) + len(rows)
             page_signal_hits = 0
@@ -2651,19 +2684,20 @@ def _build_france_registry_universe_candidates(
                 )
             fetch_stats["signal_rows"] = int(fetch_stats.get("signal_rows") or 0) + int(page_signal_hits)
             if page_signal_hits > 0:
-                consecutive_no_signal_pages = 0
+                state["consecutive_no_signal_pages"] = 0
             else:
-                consecutive_no_signal_pages += 1
+                state["consecutive_no_signal_pages"] = int(state.get("consecutive_no_signal_pages") or 0) + 1
             if page_signal_hits >= page_extension_min_hits and current_limit < max_pages_per_code:
                 current_limit += 1
+                state["current_limit"] = current_limit
                 fetch_stats["extended_pages"] = int(fetch_stats.get("extended_pages") or 0) + 1
-            if page >= pages_per_code and consecutive_no_signal_pages >= page_stop_after_no_signal:
+            if page >= pages_per_code and int(state.get("consecutive_no_signal_pages") or 0) >= page_stop_after_no_signal:
                 fetch_stats["stopped_early"] = True
-                break
-            if len(raw_rows) >= candidate_cap:
-                break
-            page += 1
-        if len(raw_rows) >= candidate_cap or query_budget_exhausted or elapsed_budget_exhausted:
+                state["done"] = True
+            state["next_page"] = page + 1
+            if int(state.get("next_page") or 0) > int(state.get("current_limit") or current_limit) or int(state.get("next_page") or 0) > max_pages_per_code:
+                state["done"] = True
+        if not progressed:
             break
 
     scored_rows, activity_code_counts = _score_rows()
@@ -14940,6 +14974,9 @@ def stage_seed_ingest(self, job_id: int):
             # worker availability via inspect() is circular and can fail on a
             # healthy solo worker before it reports itself.
             check_worker=False,
+            geo_scope=profile.geo_scope or {},
+            buyer_company_url=profile.buyer_company_url,
+            context_pack_json=profile.context_pack_json or {},
         )
         if not discovery_readiness.get("runnable"):
             _save_stage_checkpoint(
