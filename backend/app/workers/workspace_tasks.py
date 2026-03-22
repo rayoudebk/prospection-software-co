@@ -1,5 +1,6 @@
 """Celery tasks for workspace-based workflow."""
 import asyncio
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime, timedelta
@@ -73,7 +74,12 @@ from app.services.discovery_candidate_graph import (
 from app.services.discovery_readiness import build_workspace_discovery_readiness
 from app.services.discovery_validation import (
     VALIDATION_STATUS_PROMOTED,
+    build_candidate_discovery_context,
     build_diversified_validation_queue,
+    compute_discovery_score,
+    discovery_source_role,
+    normalize_discovery_query_family,
+    normalize_discovery_source_family,
     VALIDATION_STATUS_QUEUED,
     VALIDATION_STATUS_KEEP,
     VALIDATION_STATUS_REJECT,
@@ -102,6 +108,8 @@ from app.services.quality_audit import (
 )
 
 logger = logging.getLogger(__name__)
+
+_FR_INPI_LOGIN_CACHE: dict[str, Any] = {"token": None, "expires_at": 0.0}
 
 MIN_PUBLIC_PRICE_USD = 250.0
 MIN_SOFTWARE_HEAVINESS = 3
@@ -758,6 +766,2244 @@ def _looks_active_status(status: Optional[str]) -> bool:
     return normalized in {"active", "a", "open", "registered", "aktuell", "bestehend"}
 
 
+def _normalize_fr_registry_code(value: Any) -> Optional[str]:
+    token = str(value or "").strip().upper()
+    if not token:
+        return None
+    if re.match(r"^\d{2}\.\d{2}[A-Z]$", token):
+        return token
+    return None
+
+
+def _fr_registry_search(
+    *,
+    query: Optional[str] = None,
+    activite_principale: Optional[str] = None,
+    page: int = 1,
+    per_page: int = REGISTRY_MAX_RAW_HITS_PER_QUERY,
+    only_active: bool = True,
+    timeout_seconds: Optional[int] = None,
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    url = "https://recherche-entreprises.api.gouv.fr/search"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; MA-BuySide-Radar/1.0)",
+        "Accept": "application/json",
+    }
+    params: dict[str, Any] = {
+        "page": max(1, int(page)),
+        "per_page": max(1, int(per_page)),
+    }
+    if query and str(query).strip():
+        params["q"] = str(query).strip()
+    if activite_principale and str(activite_principale).strip():
+        params["activite_principale"] = str(activite_principale).strip().upper()
+    if only_active:
+        params["etat_administratif"] = "A"
+    effective_timeout = max(1, int(timeout_seconds or getattr(settings, "discovery_fr_registry_search_timeout_seconds", 3)))
+    try:
+        with httpx.Client(timeout=effective_timeout, headers=headers) as client:
+            response = client.get(url, params=params)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        return [], f"fr_registry_search_failed:{exc}"
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return [], None
+    return [row for row in results if isinstance(row, dict)], None
+
+
+def _clean_legal_name_from_nom_complet(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    match = re.match(r"^(.*?)\s+\(([^)]+)\)\s*$", raw)
+    if match:
+        prefix = str(match.group(1) or "").strip()
+        if prefix:
+            return prefix
+    return raw
+
+
+def _fr_registry_brand_names(row: dict[str, Any]) -> list[str]:
+    brands: list[str] = []
+
+    def _add(value: Any) -> None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return
+        brands.append(normalized)
+
+    nom_complet = str(row.get("nom_complet") or "").strip()
+    parenthetical = re.findall(r"\(([^)]+)\)", nom_complet)
+    for item in parenthetical:
+        _add(item)
+    _add(row.get("nom_commercial"))
+    siege = row.get("siege") if isinstance(row.get("siege"), dict) else {}
+    _add(siege.get("nom_commercial"))
+    for item in (siege.get("liste_enseignes") or []):
+        _add(item)
+    for etab in row.get("matching_etablissements") or []:
+        if not isinstance(etab, dict):
+            continue
+        _add(etab.get("nom_commercial"))
+        for item in (etab.get("liste_enseignes") or []):
+            _add(item)
+    legal_name = _fr_registry_legal_name(row)
+    return [
+        item
+        for item in _dedupe_strings(brands)
+        if item and item.lower() != str(legal_name or "").strip().lower()
+    ]
+
+
+def _fr_registry_legal_name(row: dict[str, Any]) -> Optional[str]:
+    return _first_non_empty(
+        row.get("nom_raison_sociale"),
+        _clean_legal_name_from_nom_complet(row.get("nom_complet")),
+        row.get("nom"),
+    )
+
+
+def _fr_registry_display_name(row: dict[str, Any]) -> Optional[str]:
+    brands = _fr_registry_brand_names(row)
+    if brands:
+        return brands[0]
+    return _fr_registry_legal_name(row)
+
+
+def _fr_registry_website(row: dict[str, Any]) -> Optional[str]:
+    website = row.get("site_internet") or row.get("site_web")
+    if isinstance(website, list):
+        website = website[0] if website else None
+    if not website:
+        siege = row.get("siege") if isinstance(row.get("siege"), dict) else {}
+        website = siege.get("site_internet") or siege.get("site_web")
+        if isinstance(website, list):
+            website = website[0] if website else None
+    normalized = str(website or "").strip()
+    if normalized and not normalized.startswith(("http://", "https://")):
+        normalized = f"https://{normalized}"
+    return normalized or None
+
+
+def _fr_registry_context_text(row: dict[str, Any]) -> str:
+    siege = row.get("siege") if isinstance(row.get("siege"), dict) else {}
+    complements = row.get("complements") if isinstance(row.get("complements"), dict) else {}
+    complement_tokens = [
+        key.replace("est_", "").replace("_", " ")
+        for key, value in complements.items()
+        if value is True and str(key).startswith("est_")
+    ]
+    text_parts: list[str] = [
+        str(_fr_registry_legal_name(row) or ""),
+        str(_fr_registry_display_name(row) or ""),
+        " ".join(_fr_registry_brand_names(row)),
+        str(row.get("libelle_activite_principale") or ""),
+        str(row.get("activite_principale") or ""),
+        str(row.get("activite_principale_naf25") or ""),
+        str(row.get("section_activite_principale") or ""),
+        str(row.get("libelle_nature_juridique") or row.get("nature_juridique") or ""),
+        str(row.get("categorie_entreprise") or ""),
+        str(siege.get("libelle_commune") or ""),
+        str(siege.get("departement") or ""),
+        str(siege.get("region") or ""),
+        " ".join(complement_tokens),
+    ]
+    return " ".join(part for part in text_parts if str(part).strip()).strip()
+
+
+def _normalize_html_text(value: Any) -> str:
+    text = unescape(str(value or ""))
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _looks_like_natural_person_name(value: Any) -> bool:
+    text = _normalize_html_text(value)
+    if not text:
+        return False
+    if any(ch.isdigit() for ch in text):
+        return False
+    lowered = text.lower()
+    company_markers = (
+        "sas",
+        "sasu",
+        "sarl",
+        "eurl",
+        "holding",
+        "groupe",
+        "solutions",
+        "software",
+        "technologies",
+        "technology",
+        "systems",
+        "services",
+        "plateforme",
+        "platform",
+    )
+    if any(marker in lowered for marker in company_markers):
+        return False
+    tokens = [token for token in re.split(r"[\s'-]+", text) if token]
+    if len(tokens) < 2 or len(tokens) > 4:
+        return False
+    return all(re.fullmatch(r"[A-Za-zÀ-ÿ]+", token) for token in tokens)
+
+
+def _fr_registry_source_record(row: dict[str, Any], *, query_hint: Optional[str] = None) -> dict[str, Any]:
+    legal_name = _fr_registry_legal_name(row)
+    display_name = _fr_registry_display_name(row)
+    siren = str(row.get("siren") or "").strip()
+    website = _fr_registry_website(row)
+    complements = row.get("complements") if isinstance(row.get("complements"), dict) else {}
+    activity_code = _first_non_empty(
+        row.get("activite_principale"),
+        row.get("activite_principale_naf25"),
+    )
+    section_code = _first_non_empty(row.get("section_activite_principale"))
+    activity_label = _first_non_empty(row.get("libelle_activite_principale"), activity_code)
+    status = _first_non_empty(row.get("etat_administratif"), "A")
+    registry_url = f"https://annuaire-entreprises.data.gouv.fr/entreprise/{siren}" if siren else None
+    industry_codes = _dedupe_strings(
+        [
+            str(code).upper()
+            for code in [
+                _normalize_fr_registry_code(activity_code),
+                _normalize_fr_registry_code(row.get("activite_principale_naf25")),
+                str(section_code or "").strip().upper(),
+            ]
+            if str(code or "").strip()
+        ]
+    )
+    record = {
+        "name": display_name or legal_name or "",
+        "display_name": display_name or legal_name or "",
+        "legal_name": legal_name,
+        "brand_names": _fr_registry_brand_names(row),
+        "website": website,
+        "country": "FR",
+        "registry_id": siren or None,
+        "registry_source": "fr_recherche_entreprises",
+        "registry_url": registry_url or f"https://recherche-entreprises.api.gouv.fr/search?q={quote_plus(str(query_hint or display_name or legal_name or '').strip())}",
+        "status": status,
+        "is_active": _looks_active_status(status),
+        "context_text": _fr_registry_context_text(row),
+        "industry_codes": industry_codes,
+        "activity_code": _normalize_fr_registry_code(activity_code),
+        "activity_code_naf25": _normalize_fr_registry_code(row.get("activite_principale_naf25")),
+        "activity_label": activity_label,
+        "section_code": str(section_code or "").strip().upper() or None,
+        "employee_band": _first_non_empty(row.get("tranche_effectif_salarie"), (row.get("siege") or {}).get("tranche_effectif_salarie")),
+        "is_employer": str((row.get("siege") or {}).get("caractere_employeur") or row.get("caractere_employeur") or "").strip().upper() == "O",
+        "registry_fields": {
+            "ape_code": _normalize_fr_registry_code(activity_code),
+            "naf25_code": _normalize_fr_registry_code(row.get("activite_principale_naf25")),
+            "section_code": str(section_code or "").strip().upper() or None,
+            "active_status": status,
+            "commercial_names": _fr_registry_brand_names(row),
+            "object_text_present": bool(str(_fr_registry_context_text(row) or "").strip()),
+            "observation_count": 0,
+            "employee_band": _first_non_empty(row.get("tranche_effectif_salarie"), (row.get("siege") or {}).get("tranche_effectif_salarie")),
+            "is_employer": str((row.get("siege") or {}).get("caractere_employeur") or row.get("caractere_employeur") or "").strip().upper() == "O",
+            "is_service_public": bool(complements.get("est_service_public")),
+        },
+    }
+    record["industry_keywords"] = _industry_keywords_from_record(record)
+    return record
+
+
+def _fr_registry_semantic_terms(profile: CompanyProfile, normalized_scope: dict[str, Any]) -> dict[str, Any]:
+    context_pack_json = profile.context_pack_json if isinstance(profile.context_pack_json, dict) else {}
+    primary_site = ((context_pack_json.get("sites") or [{}])[0] if isinstance(context_pack_json.get("sites"), list) else {}) or {}
+    phrases: list[str] = []
+    phrases.extend(normalized_scope.get("source_capabilities") or [])
+    phrases.extend(normalized_scope.get("source_customer_segments") or [])
+    phrases.extend(normalized_scope.get("adjacency_box_labels") or [])
+    for box in (normalized_scope.get("adjacency_boxes") or []):
+        if not isinstance(box, dict):
+            continue
+        phrases.append(str(box.get("label") or "").strip())
+        phrases.extend(box.get("likely_customer_segments") or [])
+        phrases.extend(box.get("likely_workflows") or [])
+        phrases.extend(box.get("retrieval_query_seeds") or [])
+    phrases.extend(normalized_scope.get("named_account_anchors") or [])
+    phrases.extend(normalized_scope.get("geography_expansions") or [])
+    phrases.append(str(primary_site.get("summary") or "").strip())
+    phrases.append(str(primary_site.get("company_name") or "").strip())
+    phrases = [phrase for phrase in phrases if str(phrase or "").strip()]
+
+    terms: list[str] = []
+    for phrase in phrases:
+        lowered = unicodedata.normalize("NFKD", str(phrase).lower())
+        lowered = "".join(ch for ch in lowered if not unicodedata.combining(ch))
+        for token in re.findall(r"[a-z0-9]{3,}", lowered):
+            normalized = TOKEN_SYNONYMS.get(token, token)
+            if len(normalized) < 3:
+                continue
+            terms.append(normalized)
+            for expanded in FR_REGISTRY_SEMANTIC_EXPANSIONS.get(normalized, []):
+                terms.append(expanded)
+    return {
+        "phrases": _dedupe_strings(phrases)[:80],
+        "terms": _dedupe_strings(terms)[:160],
+    }
+
+
+def _fr_registry_scope_phrases(phrases: list[str]) -> dict[str, Any]:
+    clean_phrases = [str(phrase or "").strip() for phrase in phrases if str(phrase or "").strip()]
+    terms: list[str] = []
+    for phrase in clean_phrases:
+        lowered = unicodedata.normalize("NFKD", str(phrase).lower())
+        lowered = "".join(ch for ch in lowered if not unicodedata.combining(ch))
+        for token in re.findall(r"[a-z0-9]{3,}", lowered):
+            normalized = TOKEN_SYNONYMS.get(token, token)
+            if (
+                len(normalized) < 3
+                or normalized in NAME_STOPWORDS
+                or normalized in FR_REGISTRY_SCOPE_LOW_SIGNAL_TERMS
+            ):
+                continue
+            terms.append(normalized)
+            for expanded in FR_REGISTRY_SEMANTIC_EXPANSIONS.get(normalized, []):
+                if expanded in NAME_STOPWORDS or expanded in FR_REGISTRY_SCOPE_LOW_SIGNAL_TERMS:
+                    continue
+                terms.append(expanded)
+    return {
+        "phrases": _dedupe_strings(clean_phrases)[:80],
+        "terms": _dedupe_strings(terms)[:160],
+    }
+
+
+def _fr_registry_extract_observation_entities(observations: list[str]) -> list[str]:
+    names: list[str] = []
+    for observation in observations or []:
+        text = _normalize_html_text(observation)
+        if not text:
+            continue
+        for match in re.finditer(
+            r"(?:particip(?:e|é|ee)s?\s+à\s+l[’']op[ée]ration\s*:\s*|fusion avec\s+|absorb(?:e|é|ee)\s+|apport partiel à\s+)([A-Z0-9][A-Z0-9&'’ .-]{2,})",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            candidate = re.split(r"\s+(?:soci[eé]t[eé]|sas|sarl|sa|scop|rcs)\b", match.group(1), maxsplit=1, flags=re.IGNORECASE)[0]
+            candidate = re.sub(r"\s+", " ", candidate).strip(" ,.;:-")
+            if len(candidate) >= 3:
+                names.append(candidate.upper())
+        for match in re.findall(r"\b[A-Z][A-Z0-9&'’.-]{2,}(?:\s+[A-Z0-9&'’.-]{2,})*\b", text):
+            normalized = re.sub(r"\s+", " ", match).strip(" ,.;:-")
+            if len(normalized) >= 3:
+                names.append(normalized)
+    return _dedupe_strings(names)[:16]
+
+
+def _fr_registry_scope_pack(
+    profile: CompanyProfile,
+    normalized_scope: dict[str, Any],
+    *,
+    source_record: dict[str, Any] | None = None,
+    include_source_identity: bool = True,
+) -> dict[str, Any]:
+    context_pack_json = profile.context_pack_json if isinstance(profile.context_pack_json, dict) else {}
+    primary_site = ((context_pack_json.get("sites") or [{}])[0] if isinstance(context_pack_json.get("sites"), list) else {}) or {}
+    core_phrases: list[str] = []
+    core_phrases.extend(normalized_scope.get("source_capabilities") or [])
+    core_phrases.extend(normalized_scope.get("source_workflows") or [])
+    core_phrases.extend(normalized_scope.get("source_customer_segments") or [])
+    core_phrases.append(str(primary_site.get("summary") or "").strip())
+
+    adjacency_phrases: list[str] = []
+    adjacency_phrases.extend(normalized_scope.get("adjacency_box_labels") or [])
+    for box in (normalized_scope.get("adjacency_boxes") or []):
+        if not isinstance(box, dict):
+            continue
+        adjacency_phrases.append(str(box.get("label") or "").strip())
+        adjacency_phrases.extend(box.get("likely_customer_segments") or [])
+        adjacency_phrases.extend(box.get("likely_workflows") or [])
+        adjacency_phrases.extend(box.get("retrieval_query_seeds") or [])
+
+    entity_seed_phrases: list[str] = []
+    for seed in (normalized_scope.get("company_seeds") or []):
+        if isinstance(seed, dict):
+            entity_seed_phrases.append(str(seed.get("name") or "").strip())
+    entity_seed_phrases.extend(normalized_scope.get("named_account_anchors") or [])
+    entity_seed_phrases.extend(normalized_scope.get("geography_expansions") or [])
+    if include_source_identity:
+        entity_seed_phrases.append(str(primary_site.get("company_name") or "").strip())
+    if include_source_identity and isinstance(source_record, dict):
+        entity_seed_phrases.extend(source_record.get("brand_names") or [])
+        entity_seed_phrases.extend(
+            _fr_registry_extract_observation_entities(
+                list(((source_record.get("registry_fields") or {}).get("observations") or []))
+            )
+        )
+
+    return {
+        "core": _fr_registry_scope_phrases(core_phrases),
+        "adjacent": _fr_registry_scope_phrases(adjacency_phrases),
+        "entity_seed": _fr_registry_scope_phrases(entity_seed_phrases),
+        "geography_terms": _dedupe_strings(normalized_scope.get("geography_expansions") or [])[:12],
+    }
+
+
+def _looks_like_registry_company_seed(value: Any) -> bool:
+    text = _normalize_html_text(value)
+    if not text:
+        return False
+    lowered = text.lower()
+    if _looks_like_natural_person_name(text):
+        return False
+    blocked = (
+        "ap-hp",
+        "aphp",
+        "assistance publique",
+        "centre hospitalier",
+        "hopital",
+        "hôpital",
+        "chu",
+        "cpts",
+        "mairie",
+        "commune",
+        "universit",
+        "minister",
+        "minist",
+        "prefecture",
+        "préfecture",
+    )
+    if any(token in lowered for token in blocked):
+        return False
+    tokens = [token for token in re.split(r"[\s,/()-]+", text) if token]
+    return 1 <= len(tokens) <= 8
+
+
+def _looks_like_vendor_category_phrase(value: Any) -> bool:
+    text = _normalize_html_text(value).lower()
+    if not text:
+        return False
+    vendorish = (
+        "software",
+        "logiciel",
+        "plateforme",
+        "platform",
+        "solution",
+        "solutions",
+        "marketplace",
+        "place de marche",
+        "place de marché",
+        "outil",
+        "application",
+        "applications",
+        "vendor",
+        "vms",
+    )
+    return any(token in text for token in vendorish)
+
+
+def _fr_registry_seed_query_matches_record(record: dict[str, Any], query: str) -> bool:
+    query_norm = _normalize_name_for_matching(query)
+    if not query_norm:
+        return False
+    query_tokens = {token for token in query_norm.split() if len(token) >= 3 and token not in NAME_STOPWORDS}
+    candidate_names = _dedupe_strings(
+        [
+            str(record.get("display_name") or "").strip(),
+            str(record.get("legal_name") or "").strip(),
+            *list(record.get("brand_names") or []),
+            *list(((record.get("registry_fields") or {}).get("commercial_names") or [])),
+        ]
+    )
+    for raw_name in candidate_names:
+        name_norm = _normalize_name_for_matching(raw_name)
+        if not name_norm:
+            continue
+        if query_norm == name_norm or query_norm in name_norm or name_norm in query_norm:
+            return True
+        if query_tokens:
+            name_tokens = set(name_norm.split())
+            if query_tokens.issubset(name_tokens):
+                return True
+        if _name_similarity(query_norm, name_norm) >= 0.86:
+            return True
+    return False
+
+
+def _fr_registry_seed_query_specs(
+    profile: CompanyProfile,
+    normalized_scope: dict[str, Any],
+    scope_pack: dict[str, Any],
+    *,
+    source_record: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, bool]] = set()
+    source_name = _source_company_name_from_profile(profile)
+    source_identity_norms = {
+        value
+        for value in [
+            _normalize_name_for_matching(source_name),
+            _normalize_name_for_matching(_company_label_from_url(profile.buyer_company_url) or ""),
+        ]
+        if value
+    }
+    if isinstance(source_record, dict):
+        source_identity_norms.update(
+            value
+            for value in (
+                _normalize_name_for_matching(str(source_record.get("display_name") or "").strip()),
+                _normalize_name_for_matching(str(source_record.get("legal_name") or "").strip()),
+            )
+            if value
+        )
+
+    def _add(query: Any, *, query_type: str, only_active: bool = True) -> None:
+        text = _normalize_html_text(query)
+        if not text:
+            return
+        normalized = _normalize_name_for_matching(text)
+        if normalized in source_identity_norms:
+            return
+        key = (text.lower(), query_type, bool(only_active))
+        if key in seen:
+            return
+        seen.add(key)
+        specs.append({"query": text, "query_type": query_type, "only_active": bool(only_active)})
+
+    for seed in normalized_scope.get("company_seeds") or []:
+        if not isinstance(seed, dict):
+            continue
+        name = str(seed.get("name") or "").strip()
+        if _looks_like_registry_company_seed(name):
+            _add(name, query_type="company_seed")
+
+    if isinstance(source_record, dict):
+        for alias in _fr_registry_extract_observation_entities(
+            list(((source_record.get("registry_fields") or {}).get("observations") or []))
+        ):
+            if _looks_like_registry_company_seed(alias):
+                _add(alias, query_type="source_observation_alias", only_active=False)
+
+    for raw in normalized_scope.get("named_account_anchors") or []:
+        if _looks_like_registry_company_seed(raw):
+            _add(raw, query_type="named_account")
+
+    customer_segments = [str(item).strip() for item in (normalized_scope.get("source_customer_segments") or []) if str(item).strip()]
+    for box in normalized_scope.get("adjacency_boxes") or []:
+        if not isinstance(box, dict):
+            continue
+        label = str(box.get("label") or "").strip()
+        if _looks_like_vendor_category_phrase(label):
+            _add(label, query_type="adjacency_label")
+        for seed in box.get("retrieval_query_seeds") or []:
+            if _looks_like_vendor_category_phrase(seed):
+                _add(seed, query_type="adjacency_vendor_phrase")
+
+    return specs[:24]
+
+
+def _fr_registry_query_type_to_source_path(query_type: str) -> str:
+    normalized = str(query_type or "").strip().lower()
+    if normalized in {"company_seed", "named_account", "adjacency_label", "adjacency_vendor_phrase"}:
+        return "seed_name_registry_lookup"
+    if normalized in {"commercial_name_lookup"}:
+        return "commercial_name_lookup"
+    if normalized in {"source_observation_alias", "observation_counterparty_lookup"}:
+        return "observation_counterparty_lookup"
+    if normalized in {"history_alias_lookup"}:
+        return "history_alias_lookup"
+    return "seed_name_registry_lookup"
+
+
+def _fr_registry_secondary_lookup_specs(
+    profile: CompanyProfile,
+    source_record: dict[str, Any],
+    detailed_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, bool]] = set()
+    source_name = _source_company_name_from_profile(profile)
+    source_identity_norms = {
+        value
+        for value in [
+            _normalize_name_for_matching(source_name),
+            _normalize_name_for_matching(_company_label_from_url(profile.buyer_company_url) or ""),
+            _normalize_name_for_matching(str(source_record.get("display_name") or "").strip()),
+            _normalize_name_for_matching(str(source_record.get("legal_name") or "").strip()),
+        ]
+        if value
+    }
+
+    def _add(query: Any, *, query_type: str, only_active: bool) -> None:
+        text = _normalize_html_text(query)
+        if not text:
+            return
+        normalized = _normalize_name_for_matching(text)
+        if not normalized or normalized in source_identity_norms:
+            return
+        key = (normalized, query_type, bool(only_active))
+        if key in seen:
+            return
+        seen.add(key)
+        specs.append({"query": text, "query_type": query_type, "only_active": bool(only_active)})
+
+    for record in [source_record, *list(detailed_records or [])]:
+        if not isinstance(record, dict):
+            continue
+        registry_fields = record.get("registry_fields") if isinstance(record.get("registry_fields"), dict) else {}
+        for name in registry_fields.get("commercial_names") or []:
+            if _looks_like_registry_company_seed(name):
+                _add(name, query_type="commercial_name_lookup", only_active=True)
+        for alias in _fr_registry_extract_observation_entities(list(registry_fields.get("observations") or [])):
+            if _looks_like_registry_company_seed(alias):
+                _add(alias, query_type="observation_counterparty_lookup", only_active=False)
+        for alias in _fr_registry_extract_history_aliases(list(registry_fields.get("history_labels") or [])):
+            if _looks_like_registry_company_seed(alias):
+                _add(alias, query_type="history_alias_lookup", only_active=False)
+
+    return specs[:48]
+
+
+def _fr_registry_lane_fit(
+    record: dict[str, Any],
+    normalized_scope: dict[str, Any],
+    scope_pack: dict[str, Any],
+) -> tuple[list[str], list[str], list[str], str, dict[str, Any]]:
+    context_text = str(record.get("context_text") or "").lower()
+    lane_ids: list[str] = []
+    lane_labels: list[str] = []
+    source_capability_matches: list[str] = []
+    core_terms = set(scope_pack.get("core", {}).get("terms") or [])
+    adjacent_terms = set(scope_pack.get("adjacent", {}).get("terms") or [])
+    matched_core_terms = [term for term in core_terms if term and term in context_text]
+    matched_adjacent_terms = [term for term in adjacent_terms if term and term in context_text and term not in matched_core_terms]
+    for capability in normalized_scope.get("source_capabilities") or []:
+        token = str(capability or "").strip()
+        if token and token.lower() in context_text:
+            source_capability_matches.append(token)
+    for box in (normalized_scope.get("adjacency_boxes") or []):
+        if not isinstance(box, dict):
+            continue
+        label = str(box.get("label") or "").strip()
+        if not label:
+            continue
+        lane_terms = [label.lower()]
+        lane_terms.extend(str(item).strip().lower() for item in (box.get("likely_customer_segments") or []) if str(item).strip())
+        lane_terms.extend(str(item).strip().lower() for item in (box.get("likely_workflows") or []) if str(item).strip())
+        if any(term and term in context_text for term in lane_terms):
+            if str(box.get("id") or "").strip():
+                lane_ids.append(str(box.get("id") or "").strip())
+            lane_labels.append(label)
+    core_match_count = len(_dedupe_strings(source_capability_matches)) + len(_dedupe_strings(matched_core_terms))
+    adjacent_match_count = len(_dedupe_strings(lane_labels)) + len(_dedupe_strings(matched_adjacent_terms))
+    if core_match_count > 0:
+        scope_bucket = "core"
+    elif adjacent_match_count > 0:
+        scope_bucket = "adjacent"
+    else:
+        scope_bucket = "broad_market"
+    matched_core_labels = _dedupe_strings(
+        list(source_capability_matches)
+        + ([str(item).strip() for item in (normalized_scope.get("source_capabilities") or []) if str(item).strip()] if matched_core_terms else [])
+    )
+    return (
+        _dedupe_strings(lane_ids),
+        _dedupe_strings(lane_labels),
+        _dedupe_strings(source_capability_matches),
+        scope_bucket,
+        {
+            "matched_node_ids": _dedupe_strings(lane_ids),
+            "matched_node_labels": _dedupe_strings(matched_core_labels + lane_labels),
+            "core_match_count": core_match_count,
+            "adjacent_match_count": adjacent_match_count,
+            "matched_core_terms": _dedupe_strings(matched_core_terms)[:16],
+            "matched_adjacent_terms": _dedupe_strings(matched_adjacent_terms)[:16],
+        },
+    )
+
+
+def _directness_from_node_fit_summary(
+    summary: dict[str, Any] | None,
+    *,
+    fallback: Optional[str] = None,
+) -> str:
+    payload = summary if isinstance(summary, dict) else {}
+    core = int(payload.get("core_match_count") or 0)
+    adjacent = int(payload.get("adjacent_match_count") or 0)
+    if core > 0:
+        return "direct"
+    if adjacent > 0:
+        return "adjacent"
+    normalized_fallback = str(fallback or "").strip().lower()
+    if normalized_fallback in {"broad_market", "out_of_scope"}:
+        return normalized_fallback
+    return "broad_market"
+
+
+def _merge_node_fit_summary(existing: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any]:
+    left = existing if isinstance(existing, dict) else {}
+    right = incoming if isinstance(incoming, dict) else {}
+    return {
+        "matched_node_ids": _dedupe_strings(list(left.get("matched_node_ids") or []) + list(right.get("matched_node_ids") or [])),
+        "matched_node_labels": _dedupe_strings(list(left.get("matched_node_labels") or []) + list(right.get("matched_node_labels") or [])),
+        "core_match_count": max(int(left.get("core_match_count") or 0), int(right.get("core_match_count") or 0)),
+        "adjacent_match_count": max(int(left.get("adjacent_match_count") or 0), int(right.get("adjacent_match_count") or 0)),
+        "matched_core_terms": _dedupe_strings(list(left.get("matched_core_terms") or []) + list(right.get("matched_core_terms") or []))[:16],
+        "matched_adjacent_terms": _dedupe_strings(list(left.get("matched_adjacent_terms") or []) + list(right.get("matched_adjacent_terms") or []))[:16],
+        "node_fit_score": max(float(left.get("node_fit_score") or 0.0), float(right.get("node_fit_score") or 0.0)),
+    }
+
+
+def _summary_sentence(text: Any, limit: int = 240) -> Optional[str]:
+    normalized = _normalize_html_text(text)
+    if not normalized:
+        return None
+    sentence = re.split(r"(?<=[.!?])\s+", normalized, maxsplit=1)[0].strip()
+    compact = sentence or normalized
+    return compact[:limit] if compact else None
+
+
+def _fr_registry_candidate_short_description(
+    record: dict[str, Any],
+    semantic_meta: dict[str, Any],
+) -> Optional[str]:
+    registry_fields = record.get("registry_fields") if isinstance(record.get("registry_fields"), dict) else {}
+    object_text = _summary_sentence(registry_fields.get("object_text"))
+    if object_text:
+        return object_text
+    activity_description = _summary_sentence(registry_fields.get("activity_description"))
+    if activity_description:
+        return activity_description
+    observations = registry_fields.get("observations") if isinstance(registry_fields.get("observations"), list) else []
+    for observation in observations:
+        snippet = _summary_sentence(observation)
+        if snippet:
+            return snippet
+    matched_nodes = [
+        str(label).strip()
+        for label in (((semantic_meta.get("node_fit_summary") or {}).get("matched_node_labels")) or [])
+        if str(label).strip()
+    ]
+    activity_label = str(record.get("activity_label") or "").strip()
+    if activity_label and matched_nodes:
+        return f"{activity_label} aligned with {', '.join(matched_nodes[:2])}."[:240]
+    if activity_label:
+        return activity_label[:240]
+    ape_code = str((registry_fields or {}).get("ape_code") or record.get("activity_code") or "").strip()
+    return ape_code[:240] if ape_code else None
+
+
+def _fr_registry_recall_signal(
+    record: dict[str, Any],
+    *,
+    scope_pack: dict[str, Any],
+    normalized_scope: dict[str, Any],
+    code_distance: int,
+) -> dict[str, Any]:
+    score, semantic_meta = _fr_registry_semantic_score(
+        record,
+        scope_pack=scope_pack,
+        normalized_scope=normalized_scope,
+        code_distance=code_distance,
+    )
+    node_fit_summary = semantic_meta.get("node_fit_summary") if isinstance(semantic_meta.get("node_fit_summary"), dict) else {}
+    node_fit_score = float(node_fit_summary.get("node_fit_score") or 0.0)
+    matched_terms = list(semantic_meta.get("matched_terms") or [])
+    has_signal = bool(
+        node_fit_score > 0.0
+        or semantic_meta.get("seed_lookup_match")
+        or semantic_meta.get("seed_name_match")
+        or semantic_meta.get("commercial_name_match")
+        or matched_terms
+        or list((record.get("registry_fields") or {}).get("commercial_names") or [])
+    )
+    return {
+        "score": score,
+        "semantic_meta": semantic_meta,
+        "node_fit_score": node_fit_score,
+        "matched_terms_count": len(matched_terms),
+        "has_signal": has_signal,
+    }
+
+
+def _fr_registry_detail_priority(item: dict[str, Any]) -> tuple[float, int, int, int, int, float]:
+    record = item.get("record") if isinstance(item.get("record"), dict) else {}
+    semantic_meta = item.get("semantic_meta") if isinstance(item.get("semantic_meta"), dict) else {}
+    registry_fields = record.get("registry_fields") if isinstance(record.get("registry_fields"), dict) else {}
+    node_fit_summary = semantic_meta.get("node_fit_summary") if isinstance(semantic_meta.get("node_fit_summary"), dict) else {}
+    node_fit_score = float(node_fit_summary.get("node_fit_score") or 0.0)
+    source_paths = set(record.get("lookup_source_paths") or [])
+    non_code_lookup = int(bool(source_paths - {"code_neighborhood_crawl"}))
+    seed_lookup = int(bool(record.get("seed_lookup_match")))
+    commercial_name_count = len(registry_fields.get("commercial_names") or [])
+    matched_terms_count = len(semantic_meta.get("matched_terms") or [])
+    score = float(item.get("score") or 0.0)
+    return (
+        node_fit_score,
+        seed_lookup,
+        non_code_lookup,
+        commercial_name_count,
+        matched_terms_count,
+        score,
+    )
+
+
+def _fr_registry_semantic_score(
+    record: dict[str, Any],
+    *,
+    scope_pack: dict[str, Any],
+    normalized_scope: dict[str, Any],
+    code_distance: int,
+) -> tuple[float, dict[str, Any]]:
+    context_text = unicodedata.normalize("NFKD", str(record.get("context_text") or "").lower())
+    context_text = "".join(ch for ch in context_text if not unicodedata.combining(ch))
+    registry_fields = record.get("registry_fields") if isinstance(record.get("registry_fields"), dict) else {}
+    terms = _dedupe_strings(
+        list(scope_pack.get("core", {}).get("terms") or [])
+        + list(scope_pack.get("adjacent", {}).get("terms") or [])
+        + list(scope_pack.get("entity_seed", {}).get("terms") or [])
+    )
+    matched_terms = [term for term in terms if term and term in context_text]
+    matched_terms = _dedupe_strings(matched_terms)
+    lane_ids, lane_labels, source_capability_matches, scope_bucket, node_fit_summary = _fr_registry_lane_fit(
+        record,
+        normalized_scope,
+        scope_pack,
+    )
+    software_relevance = max(
+        _software_signal_score_from_codes(record.get("industry_codes") or []),
+        1.0 if any(token in context_text for token in ("logiciel", "plateforme", "platform", "saas", "application")) else 0.0,
+    )
+    observations = registry_fields.get("observations") if isinstance(registry_fields.get("observations"), list) else []
+    object_text = str(registry_fields.get("object_text") or "").strip()
+    activity_description = str(registry_fields.get("activity_description") or "").strip()
+    has_registry_text = bool(object_text or activity_description or observations)
+    commercial_names = registry_fields.get("commercial_names") if isinstance(registry_fields.get("commercial_names"), list) else []
+    broad_infra_hits = [
+        token for token in FR_REGISTRY_GENERIC_INFRA_TOKENS
+        if token and token in context_text
+    ]
+    healthcare_staffing_hits = [
+        token for token in (
+            "sante",
+            "santé",
+            "professionnels de santé",
+            "etablissements de santé",
+            "établissements de santé",
+            "recrutement",
+            "mise en relation",
+            "remplacement",
+            "vacation",
+            "vacataire",
+            "planning",
+            "pool",
+            "interim",
+            "intérim",
+        )
+        if token in context_text
+    ]
+    object_observation_relevance = min(
+        1.0,
+        (
+            (0.6 if object_text else 0.0)
+            + (0.35 if activity_description else 0.0)
+            + min(0.4, 0.08 * len(observations))
+            + min(0.6, 0.06 * len(healthcare_staffing_hits))
+        ),
+    )
+    commercial_name_match = 1.0 if any(
+        term and any(term in str(name or "").lower() for name in commercial_names)
+        for term in terms
+    ) else 0.0
+    seed_name_match = 1.0 if any(
+        phrase and (
+            phrase.lower() in context_text
+            or any(phrase.lower() in str(name or "").lower() for name in commercial_names)
+            or phrase.lower() in str(record.get("display_name") or "").lower()
+            or phrase.lower() in str(record.get("legal_name") or "").lower()
+        )
+        for phrase in (scope_pack.get("entity_seed", {}).get("phrases") or [])
+    ) else 0.0
+    seed_lookup_match = bool(record.get("seed_lookup_match"))
+    natural_person_penalty = (
+        1.0
+        if _looks_like_natural_person_name(record.get("legal_name") or record.get("display_name") or record.get("name"))
+        and not commercial_names
+        and not record.get("website")
+        else 0.0
+    )
+    node_fit_score = float(node_fit_summary.get("core_match_count") or 0) * 10.0 + float(node_fit_summary.get("adjacent_match_count") or 0) * 5.0
+    score = 12.0
+    score += node_fit_score
+    score += commercial_name_match * 8.0
+    score += seed_name_match * 8.0
+    if seed_lookup_match:
+        score += 12.0
+    score += object_observation_relevance * 12.0
+    score += min(20.0, float(len(matched_terms)) * 2.0)
+    score += max(0.0, 8.0 - (2.0 * float(code_distance)))
+    score += software_relevance * 8.0
+    if record.get("website"):
+        score += 3.0
+    if record.get("is_employer"):
+        score += 2.0
+    if str(record.get("employee_band") or "").strip():
+        score += 1.0
+    lowered_name = str(record.get("display_name") or record.get("name") or "").strip().lower()
+    if any(token in lowered_name for token in FR_REGISTRY_SOFT_BLOCKED_NAME_TOKENS):
+        score -= 20.0
+    if bool((record.get("registry_fields") or {}).get("is_service_public")):
+        score -= 20.0
+    if broad_infra_hits and not matched_terms and not healthcare_staffing_hits:
+        score -= min(18.0, 4.5 * len(broad_infra_hits))
+    if not has_registry_text and not matched_terms:
+        score -= 10.0
+    if scope_bucket == "broad_market" and len(matched_terms) <= 1 and not healthcare_staffing_hits:
+        score -= 8.0
+    if natural_person_penalty:
+        score -= 20.0
+    out_of_scope = bool(
+        node_fit_score <= 0.0
+        and (
+            bool((record.get("registry_fields") or {}).get("is_service_public"))
+            or natural_person_penalty
+            or (broad_infra_hits and not healthcare_staffing_hits)
+        )
+    )
+    if out_of_scope:
+        scope_bucket = "out_of_scope"
+        score -= 30.0
+    node_fit_summary["node_fit_score"] = round(float(node_fit_score), 3)
+    return (
+        round(score, 3),
+        {
+            "matched_terms": matched_terms[:24],
+            "lane_ids": lane_ids,
+            "lane_labels": lane_labels,
+            "source_capability_matches": source_capability_matches,
+            "scope_bucket": scope_bucket,
+            "node_fit_summary": node_fit_summary,
+            "software_relevance": round(float(software_relevance), 3),
+            "object_observation_relevance": round(float(object_observation_relevance), 3),
+            "commercial_name_match": round(float(commercial_name_match), 3),
+            "seed_name_match": round(float(seed_name_match), 3),
+            "seed_lookup_match": seed_lookup_match,
+            "generic_infra_hits": _dedupe_strings(broad_infra_hits)[:12],
+            "healthcare_staffing_hits": _dedupe_strings(healthcare_staffing_hits)[:16],
+            "natural_person_penalty": bool(natural_person_penalty),
+            "code_distance": int(code_distance),
+            "out_of_scope": out_of_scope,
+        },
+    )
+
+
+def _fr_registry_code_neighborhood(
+    source_record: dict[str, Any],
+    *,
+    semantic_terms: dict[str, Any],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add(code: Any, distance: int, reason: str) -> None:
+        normalized = _normalize_fr_registry_code(code)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append({"code": normalized, "distance": int(distance), "reason": reason})
+
+    for code in [
+        source_record.get("activity_code"),
+        source_record.get("activity_code_naf25"),
+    ]:
+        _add(code, 0, "source_company_code")
+
+    source_codes = {str(item.get("code") or "") for item in candidates}
+    if any(term in set(semantic_terms.get("terms") or []) for term in ("staffing", "recruitment", "interim", "intérim", "replacement")):
+        for code in FR_REGISTRY_RECRUITMENT_APE_CODES:
+            _add(code, 1, "recruitment_family")
+    if any(code.startswith(("58.", "62.", "63.")) for code in source_codes):
+        for code in FR_REGISTRY_DIGITAL_APE_CODES:
+            _add(code, 2, "digital_family")
+
+    return candidates[:10]
+
+
+def _source_company_name_from_profile(profile: CompanyProfile) -> str:
+    context_pack_json = profile.context_pack_json if isinstance(profile.context_pack_json, dict) else {}
+    sites = context_pack_json.get("sites") if isinstance(context_pack_json.get("sites"), list) else []
+    primary_site = sites[0] if sites else {}
+    return (
+        str((primary_site or {}).get("company_name") or "").strip()
+        or str(_company_label_from_url(profile.buyer_company_url) or "").strip()
+        or "Source Company"
+    )
+
+
+def _source_company_domain_from_profile(profile: CompanyProfile) -> Optional[str]:
+    context_pack_json = profile.context_pack_json if isinstance(profile.context_pack_json, dict) else {}
+    sites = context_pack_json.get("sites") if isinstance(context_pack_json.get("sites"), list) else []
+    primary_site = (sites[0] if sites else {}) or {}
+    for raw in (
+        (primary_site or {}).get("website"),
+        (primary_site or {}).get("url"),
+        profile.buyer_company_url,
+    ):
+        domain = normalize_domain(raw)
+        if domain:
+            return domain
+    return None
+
+
+def _strip_scope_identity_terms(scope_pack: dict[str, Any], identity_phrases: list[str]) -> dict[str, Any]:
+    identity_tokens = set((_fr_registry_scope_phrases(identity_phrases) or {}).get("terms") or [])
+    if not identity_tokens:
+        return scope_pack
+    sanitized = dict(scope_pack or {})
+    for bucket in ("core", "adjacent", "entity_seed"):
+        current = sanitized.get(bucket) if isinstance(sanitized.get(bucket), dict) else {}
+        terms = [
+            str(term).strip()
+            for term in (current.get("terms") or [])
+            if str(term).strip() and str(term).strip() not in identity_tokens
+        ]
+        phrases = [
+            str(phrase).strip()
+            for phrase in (current.get("phrases") or [])
+            if str(phrase).strip()
+            and not any(token in _fr_registry_scope_phrases([str(phrase).strip()]).get("terms", []) for token in identity_tokens)
+        ]
+        sanitized[bucket] = {
+            "terms": _dedupe_strings(terms)[:160],
+            "phrases": _dedupe_strings(phrases)[:80],
+        }
+    return sanitized
+
+
+def _should_use_france_registry_universe(profile: CompanyProfile) -> bool:
+    if not bool(getattr(settings, "discovery_fr_registry_first_enabled", True)):
+        return False
+    geo_scope = profile.geo_scope if isinstance(profile.geo_scope, dict) else {}
+    include_countries = {
+        normalize_country(country)
+        for country in (geo_scope.get("include_countries") or [])
+        if normalize_country(country)
+    }
+    if "FR" in include_countries:
+        return True
+    buyer_domain = normalize_domain(profile.buyer_company_url)
+    if buyer_domain and buyer_domain.endswith(".fr"):
+        return True
+    context_pack_json = profile.context_pack_json if isinstance(profile.context_pack_json, dict) else {}
+    sites = context_pack_json.get("sites") if isinstance(context_pack_json.get("sites"), list) else []
+    primary_url = str(((sites[0] if sites else {}) or {}).get("url") or "").strip()
+    return bool(normalize_domain(primary_url) and normalize_domain(primary_url).endswith(".fr"))
+
+
+def _resolve_fr_source_registry_record(
+    profile: CompanyProfile,
+    normalized_scope: dict[str, Any],
+) -> tuple[Optional[dict[str, Any]], dict[str, Any]]:
+    source_name = _source_company_name_from_profile(profile)
+    source_domain = _source_company_domain_from_profile(profile)
+    rows, error = _fr_registry_search(query=source_name, page=1, per_page=12, only_active=True)
+    diagnostics: dict[str, Any] = {
+        "source_company_name": source_name,
+        "source_company_domain": source_domain,
+        "query_error": error,
+        "query_hits": len(rows),
+    }
+    if error or not rows:
+        return None, diagnostics
+    scope_pack = _fr_registry_scope_pack(profile, normalized_scope, include_source_identity=False)
+    identity_phrases = [source_name]
+    if source_domain:
+        identity_phrases.extend(
+            [
+                source_domain,
+                source_domain.split(".")[0],
+                _company_label_from_url(profile.buyer_company_url) or "",
+            ]
+        )
+    scope_pack = _strip_scope_identity_terms(scope_pack, identity_phrases)
+    company_name_norm = _normalize_name_for_matching(source_name)
+    best: Optional[dict[str, Any]] = None
+    best_score = -1.0
+    for row in rows:
+        record = _fr_registry_source_record(row, query_hint=source_name)
+        display_norm = _normalize_name_for_matching(str(record.get("display_name") or record.get("name") or ""))
+        legal_norm = _normalize_name_for_matching(str(record.get("legal_name") or ""))
+        name_score = max(
+            _name_similarity(company_name_norm, display_norm),
+            _name_similarity(company_name_norm, legal_norm),
+        )
+        semantic_score, semantic_meta = _fr_registry_semantic_score(
+            record,
+            scope_pack=scope_pack,
+            normalized_scope=normalized_scope,
+            code_distance=0,
+        )
+        total_score = (name_score * 50.0) + semantic_score
+        record_domain = normalize_domain(record.get("website"))
+        if source_domain and record_domain and source_domain == record_domain:
+            total_score += 35.0
+        if record.get("website"):
+            total_score += 2.0
+        if total_score > best_score:
+            best_score = total_score
+            best = {
+                **record,
+                "semantic_meta": semantic_meta,
+                "resolution_score": round(total_score, 3),
+            }
+    diagnostics["best_score"] = round(best_score, 3) if best_score >= 0 else None
+    return best, diagnostics
+
+
+def _fr_inpi_public_url(siren: str) -> str:
+    return f"https://data.inpi.fr/entreprises/{str(siren or '').strip()}"
+
+
+def _fr_registry_extract_history_aliases(history_labels: list[str]) -> list[str]:
+    aliases: list[str] = []
+    for label in history_labels or []:
+        text = _normalize_html_text(label)
+        if not text:
+            continue
+        if _looks_like_registry_company_seed(text):
+            aliases.append(text)
+        for match in re.findall(r"\b[A-Z][A-Z0-9&'’.-]{2,}(?:\s+[A-Z0-9&'’.-]{2,})*\b", text):
+            normalized = re.sub(r"\s+", " ", match).strip(" ,.;:-")
+            if _looks_like_registry_company_seed(normalized):
+                aliases.append(normalized)
+    return _dedupe_strings(aliases)[:16]
+
+
+def _fr_registry_collect_commercial_names_from_inpi_company(company: dict[str, Any]) -> list[str]:
+    formality = company.get("formality") if isinstance(company.get("formality"), dict) else {}
+    content = formality.get("content") if isinstance(formality.get("content"), dict) else {}
+    personne_morale = content.get("personneMorale") if isinstance(content.get("personneMorale"), dict) else {}
+    names: list[str] = []
+
+    def _add(value: Any) -> None:
+        text = _normalize_html_text(value)
+        if text:
+            names.append(text)
+
+    principal = personne_morale.get("etablissementPrincipal") if isinstance(personne_morale.get("etablissementPrincipal"), dict) else {}
+    principal_desc = principal.get("descriptionEtablissement") if isinstance(principal.get("descriptionEtablissement"), dict) else {}
+    _add(principal_desc.get("nomCommercial"))
+    _add(principal_desc.get("enseigne"))
+
+    for etab in personne_morale.get("autresEtablissements") or []:
+        if not isinstance(etab, dict):
+            continue
+        desc = etab.get("descriptionEtablissement") if isinstance(etab.get("descriptionEtablissement"), dict) else {}
+        _add(desc.get("nomCommercial"))
+        _add(desc.get("enseigne"))
+
+    return _dedupe_strings(names)[:16]
+
+
+def _decode_jwt_without_verification(token: str) -> dict[str, Any]:
+    raw = str(token or "").strip()
+    if raw.count(".") < 2:
+        return {}
+    try:
+        payload = raw.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode()).decode()
+        parsed = json.loads(decoded)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _fr_inpi_token_expired(token: str, *, skew_seconds: int = 30) -> bool:
+    payload = _decode_jwt_without_verification(token)
+    exp = payload.get("exp")
+    try:
+        exp_ts = float(exp)
+    except (TypeError, ValueError):
+        return False
+    return exp_ts <= (time.time() + float(skew_seconds))
+
+
+def _fr_inpi_login(timeout_seconds: int, *, force_refresh: bool = False) -> tuple[Optional[str], Optional[str]]:
+    cached_token = str(_FR_INPI_LOGIN_CACHE.get("token") or "").strip()
+    cached_expires_at = float(_FR_INPI_LOGIN_CACHE.get("expires_at") or 0.0)
+    if not force_refresh and cached_token and cached_expires_at > (time.time() + 30):
+        return cached_token, None
+
+    username = str(getattr(settings, "inpi_username", "") or "").strip()
+    password = str(getattr(settings, "inpi_password", "") or "").strip()
+    if not username or not password:
+        return None, "inpi_credentials_missing"
+
+    url = "https://registre-national-entreprises.inpi.fr/api/sso/login"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; MA-BuySide-Radar/1.0)",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=True, headers=headers, http2=False) as client:
+            response = client.post(url, json={"username": username, "password": password})
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        return None, f"inpi_login_http_{exc.response.status_code}"
+    except Exception:
+        return None, "inpi_login_failed"
+
+    token = ""
+    if isinstance(payload, dict):
+        token = str(payload.get("token") or "").strip()
+    if not token:
+        return None, "inpi_login_missing_token"
+
+    exp_payload = _decode_jwt_without_verification(token)
+    exp = exp_payload.get("exp")
+    try:
+        expires_at = float(exp)
+    except (TypeError, ValueError):
+        expires_at = time.time() + 3600
+    _FR_INPI_LOGIN_CACHE["token"] = token
+    _FR_INPI_LOGIN_CACHE["expires_at"] = expires_at
+    return token, None
+
+
+def _fr_inpi_bearer_token(timeout_seconds: int, *, force_refresh: bool = False) -> tuple[Optional[str], Optional[str]]:
+    static_token = str(getattr(settings, "inpi_token", "") or "").strip()
+    if static_token and not force_refresh and not _fr_inpi_token_expired(static_token):
+        return static_token, None
+    if static_token and _fr_inpi_token_expired(static_token):
+        login_token, login_error = _fr_inpi_login(timeout_seconds, force_refresh=force_refresh)
+        return login_token, login_error or "inpi_token_expired"
+    if static_token and force_refresh:
+        login_token, login_error = _fr_inpi_login(timeout_seconds, force_refresh=True)
+        return login_token, login_error or "inpi_token_refresh_failed"
+    login_token, login_error = _fr_inpi_login(timeout_seconds, force_refresh=force_refresh)
+    if login_token:
+        return login_token, None
+    return None, login_error or "inpi_token_missing"
+
+
+def _fetch_fr_inpi_detail_fields(siren: str, timeout_seconds: Optional[int] = None) -> dict[str, Any]:
+    normalized_siren = str(siren or "").strip()
+    if not normalized_siren:
+        return {}
+    url = "https://registre-national-entreprises.inpi.fr/api/companies"
+    effective_timeout = max(1, int(timeout_seconds or getattr(settings, "discovery_fr_registry_detail_timeout_seconds", 4)))
+    token, auth_error = _fr_inpi_bearer_token(effective_timeout)
+    if not token:
+        return {"auth_error": auth_error} if auth_error else {}
+
+    payload: Any = None
+    for attempt in range(2):
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; MA-BuySide-Radar/1.0)",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+        }
+        try:
+            with httpx.Client(timeout=effective_timeout, follow_redirects=True, headers=headers, http2=False) as client:
+                response = client.get(
+                    url,
+                    params={"page": 1, "pageSize": 1, "siren[]": normalized_siren},
+                )
+                if response.status_code == 401 and attempt == 0:
+                    token, refresh_error = _fr_inpi_bearer_token(effective_timeout, force_refresh=True)
+                    if token:
+                        continue
+                    return {"auth_error": refresh_error or "inpi_unauthorized"}
+                response.raise_for_status()
+                payload = response.json()
+                break
+        except httpx.HTTPStatusError as exc:
+            return {"auth_error": f"inpi_http_{exc.response.status_code}"}
+        except Exception:
+            return {"auth_error": "inpi_request_failed"}
+    if not isinstance(payload, list) or not payload:
+        return {}
+    company = next(
+        (
+            row
+            for row in payload
+            if isinstance(row, dict) and str(row.get("siren") or "").strip() == normalized_siren
+        ),
+        payload[0] if isinstance(payload[0], dict) else None,
+    )
+    if not isinstance(company, dict):
+        return {}
+
+    formality = company.get("formality") if isinstance(company.get("formality"), dict) else {}
+    content = formality.get("content") if isinstance(formality.get("content"), dict) else {}
+    personne_morale = content.get("personneMorale") if isinstance(content.get("personneMorale"), dict) else {}
+    identite = personne_morale.get("identite") if isinstance(personne_morale.get("identite"), dict) else {}
+    description = identite.get("description") if isinstance(identite.get("description"), dict) else {}
+    principal = personne_morale.get("etablissementPrincipal") if isinstance(personne_morale.get("etablissementPrincipal"), dict) else {}
+    principal_activities = principal.get("activites") if isinstance(principal.get("activites"), list) else []
+    principal_domains = principal.get("nomsDeDomaine") if isinstance(principal.get("nomsDeDomaine"), list) else []
+    observations_payload = personne_morale.get("observations") if isinstance(personne_morale.get("observations"), dict) else {}
+    observations: list[str] = []
+    for bucket in ("rcs", "rnm"):
+        entries = observations_payload.get(bucket) if isinstance(observations_payload.get(bucket), list) else []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            text = _normalize_html_text(entry.get("texte"))
+            if text:
+                observations.append(text)
+
+    domains = _dedupe_strings(
+        [
+            str(item.get("nomDomaine") or "").strip().lower()
+            for item in principal_domains
+            if isinstance(item, dict) and str(item.get("nomDomaine") or "").strip()
+        ]
+    )
+    activity_description = _first_non_empty(
+        *[
+            _normalize_html_text(activity.get("descriptionDetaillee"))
+            for activity in principal_activities
+            if isinstance(activity, dict)
+        ]
+    )
+    history = formality.get("historique") if isinstance(formality.get("historique"), list) else []
+    history_labels = _dedupe_strings(
+        [
+            _normalize_html_text(entry.get("libelleEvenement"))
+            for entry in history
+            if isinstance(entry, dict) and _normalize_html_text(entry.get("libelleEvenement"))
+        ]
+    )[:16]
+    commercial_names = _fr_registry_collect_commercial_names_from_inpi_company(company)
+    object_text = _normalize_html_text(description.get("objet"))
+
+    return {
+        "inpi_company_id": str(company.get("id") or "").strip() or None,
+        "inpi_url": _fr_inpi_public_url(normalized_siren),
+        "object_text": object_text or None,
+        "activity_description": activity_description or None,
+        "commercial_names": commercial_names,
+        "domains": domains[:8],
+        "observations": _dedupe_strings(observations)[:8],
+        "history_labels": history_labels,
+        "auth_error": None,
+    }
+
+
+def _merge_fr_registry_record_detail(base_record: dict[str, Any], detail_record: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base_record or {})
+    detail = dict(detail_record or {})
+    for key in (
+        "name",
+        "display_name",
+        "legal_name",
+        "website",
+        "country",
+        "registry_id",
+        "registry_source",
+        "registry_url",
+        "status",
+        "activity_code",
+        "activity_code_naf25",
+        "activity_label",
+        "context_text",
+    ):
+        detail_value = detail.get(key)
+        if isinstance(detail_value, str):
+            detail_value = detail_value.strip()
+        if detail_value:
+            merged[key] = detail_value
+
+    merged["brand_names"] = _dedupe_strings(
+        list(base_record.get("brand_names") or []) + list(detail.get("brand_names") or [])
+    )
+    merged["industry_codes"] = _dedupe_strings(
+        list(base_record.get("industry_codes") or []) + list(detail.get("industry_codes") or [])
+    )
+    merged["industry_keywords"] = _dedupe_strings(
+        list(base_record.get("industry_keywords") or []) + list(detail.get("industry_keywords") or [])
+    )
+    base_registry_fields = base_record.get("registry_fields") if isinstance(base_record.get("registry_fields"), dict) else {}
+    detail_registry_fields = detail.get("registry_fields") if isinstance(detail.get("registry_fields"), dict) else {}
+    merged_registry_fields = {**base_registry_fields, **detail_registry_fields}
+    if isinstance(base_registry_fields.get("commercial_names"), list) or isinstance(detail_registry_fields.get("commercial_names"), list):
+        merged_registry_fields["commercial_names"] = _dedupe_strings(
+            list(base_registry_fields.get("commercial_names") or []) + list(detail_registry_fields.get("commercial_names") or [])
+        )
+    if isinstance(base_registry_fields.get("observations"), list) or isinstance(detail_registry_fields.get("observations"), list):
+        merged_registry_fields["observations"] = _dedupe_strings(
+            list(base_registry_fields.get("observations") or []) + list(detail_registry_fields.get("observations") or [])
+        )[:8]
+        merged_registry_fields["observation_count"] = len(merged_registry_fields["observations"])
+    if isinstance(base_registry_fields.get("history_labels"), list) or isinstance(detail_registry_fields.get("history_labels"), list):
+        merged_registry_fields["history_labels"] = _dedupe_strings(
+            list(base_registry_fields.get("history_labels") or []) + list(detail_registry_fields.get("history_labels") or [])
+        )[:16]
+    if isinstance(base_registry_fields.get("domains"), list) or isinstance(detail_registry_fields.get("domains"), list):
+        merged_registry_fields["domains"] = _dedupe_strings(
+            list(base_registry_fields.get("domains") or []) + list(detail_registry_fields.get("domains") or [])
+        )[:8]
+    merged["registry_fields"] = merged_registry_fields
+    return merged
+
+
+def _fetch_fr_registry_detail_record(
+    record: dict[str, Any],
+    *,
+    search_timeout_seconds: Optional[int] = None,
+    detail_timeout_seconds: Optional[int] = None,
+) -> dict[str, Any]:
+    siren = str(record.get("registry_id") or "").strip()
+    legal_name = str(record.get("legal_name") or record.get("display_name") or record.get("name") or "").strip()
+    merged_row: dict[str, Any] = {}
+    for query in [siren, legal_name]:
+        if not query:
+            continue
+        rows, _error = _fr_registry_search(
+            query=query,
+            page=1,
+            per_page=4,
+            only_active=True,
+            timeout_seconds=search_timeout_seconds,
+        )
+        for row in rows:
+            row_siren = str(row.get("siren") or "").strip()
+            if siren and row_siren and row_siren != siren:
+                continue
+            merged_row = {**merged_row, **row}
+            existing_matching = merged_row.get("matching_etablissements") if isinstance(merged_row.get("matching_etablissements"), list) else []
+            new_matching = row.get("matching_etablissements") if isinstance(row.get("matching_etablissements"), list) else []
+            merged_row["matching_etablissements"] = existing_matching + [item for item in new_matching if isinstance(item, dict)]
+            if row.get("siege") and not merged_row.get("siege"):
+                merged_row["siege"] = row.get("siege")
+            if row.get("complements") and not merged_row.get("complements"):
+                merged_row["complements"] = row.get("complements")
+    detailed_record = _fr_registry_source_record(merged_row, query_hint=siren or legal_name) if merged_row else dict(record)
+    merged = _merge_fr_registry_record_detail(record, detailed_record)
+
+    inpi_fields = _fetch_fr_inpi_detail_fields(siren, timeout_seconds=detail_timeout_seconds)
+    auth_error = str(inpi_fields.get("auth_error") or "").strip() if isinstance(inpi_fields, dict) else ""
+    if auth_error:
+        registry_fields = merged.get("registry_fields") if isinstance(merged.get("registry_fields"), dict) else {}
+        registry_fields["inpi_auth_error"] = auth_error
+        merged["registry_fields"] = registry_fields
+    if inpi_fields:
+        object_text = str(inpi_fields.get("object_text") or "").strip()
+        activity_description = str(inpi_fields.get("activity_description") or "").strip()
+        observations = inpi_fields.get("observations") if isinstance(inpi_fields.get("observations"), list) else []
+        commercial_names = inpi_fields.get("commercial_names") if isinstance(inpi_fields.get("commercial_names"), list) else []
+        domains = inpi_fields.get("domains") if isinstance(inpi_fields.get("domains"), list) else []
+        history_labels = inpi_fields.get("history_labels") if isinstance(inpi_fields.get("history_labels"), list) else []
+        domain = str(domains[0] or "").strip() if domains else ""
+        if domain and not str(merged.get("website") or "").strip():
+            merged["website"] = _fr_registry_website({"site_internet": domain}) or f"https://{domain}"
+        merged["brand_names"] = _dedupe_strings(list(merged.get("brand_names") or []) + commercial_names)
+        extra_context = " ".join([object_text, activity_description] + observations + history_labels + commercial_names).strip()
+        if extra_context:
+            merged["context_text"] = " ".join(
+                part for part in [str(merged.get("context_text") or "").strip(), extra_context] if part
+            ).strip()
+        registry_fields = merged.get("registry_fields") if isinstance(merged.get("registry_fields"), dict) else {}
+        registry_fields["object_text_present"] = bool(object_text)
+        if object_text:
+            registry_fields["object_text"] = object_text[:1600]
+        if activity_description:
+            registry_fields["activity_description"] = activity_description[:1200]
+            registry_fields["activity_description_present"] = True
+        if observations:
+            registry_fields["observations"] = observations[:8]
+            registry_fields["observation_count"] = len(observations[:8])
+        if commercial_names:
+            registry_fields["commercial_names"] = _dedupe_strings(
+                list(registry_fields.get("commercial_names") or []) + commercial_names
+            )[:16]
+        if history_labels:
+            registry_fields["history_labels"] = history_labels[:16]
+            registry_fields["history_count"] = len(history_labels[:16])
+        if domain:
+            registry_fields["domain"] = domain
+        if domains:
+            registry_fields["domains"] = domains[:8]
+        if inpi_fields.get("inpi_company_id"):
+            registry_fields["inpi_company_id"] = inpi_fields.get("inpi_company_id")
+        registry_fields["inpi_url"] = inpi_fields.get("inpi_url")
+        merged["registry_fields"] = registry_fields
+    return merged
+
+
+def _build_france_registry_universe_candidates(
+    profile: CompanyProfile,
+    normalized_scope: dict[str, Any],
+    *,
+    budget_overrides: dict[str, int] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    source_record, source_diagnostics = _resolve_fr_source_registry_record(profile, normalized_scope)
+    if source_record is None:
+        return [], {"source_resolution": source_diagnostics, "errors": ["fr_registry_source_unresolved"]}
+
+    budget = budget_overrides if isinstance(budget_overrides, dict) else {}
+    per_page = max(5, int(getattr(settings, "discovery_fr_registry_per_page", 25)))
+    pages_per_code = max(1, int(budget.get("pages_per_code", getattr(settings, "discovery_fr_registry_pages_per_code", 4))))
+    max_pages_per_code = max(
+        pages_per_code,
+        int(budget.get("max_pages_per_code", getattr(settings, "discovery_fr_registry_max_pages_per_code", pages_per_code))),
+    )
+    candidate_cap = max(50, int(budget.get("candidate_cap", getattr(settings, "discovery_fr_registry_candidate_cap", 800))))
+    detail_cap = max(0, int(budget.get("detail_cap", getattr(settings, "discovery_fr_registry_detail_cap", 80))))
+    search_timeout_seconds = max(
+        1,
+        int(budget.get("search_timeout_seconds", getattr(settings, "discovery_fr_registry_search_timeout_seconds", 3))),
+    )
+    detail_timeout_seconds = max(
+        1,
+        int(budget.get("detail_timeout_seconds", getattr(settings, "discovery_fr_registry_detail_timeout_seconds", 4))),
+    )
+    max_total_queries = max(
+        1,
+        int(budget.get("max_total_queries", getattr(settings, "discovery_fr_registry_max_total_queries", 200))),
+    )
+    max_elapsed_seconds = max(
+        1,
+        int(budget.get("max_elapsed_seconds", getattr(settings, "discovery_fr_registry_max_elapsed_seconds", 45))),
+    )
+    page_extension_min_hits = max(
+        1,
+        int(budget.get("page_extension_min_hits", getattr(settings, "discovery_fr_registry_page_extension_min_hits", 2))),
+    )
+    page_stop_after_no_signal = max(
+        1,
+        int(budget.get("page_stop_after_no_signal", getattr(settings, "discovery_fr_registry_page_stop_after_no_signal", 2))),
+    )
+
+    raw_rows: dict[str, tuple[dict[str, Any], int, str]] = {}
+    query_count = 0
+    query_budget_exhausted = False
+    elapsed_budget_exhausted = False
+    started_at = time.perf_counter()
+    code_fetch_stats: dict[str, dict[str, Any]] = {}
+    seed_per_query = max(
+        3,
+        int(budget.get("seed_per_query", getattr(settings, "discovery_fr_registry_seed_per_query", 8))),
+    )
+    seed_query_cap = max(
+        0,
+        int(budget.get("seed_query_cap", getattr(settings, "discovery_fr_registry_seed_query_cap", 24))),
+    )
+    seed_query_reserve = max(
+        0,
+        int(budget.get("seed_query_reserve", getattr(settings, "discovery_fr_registry_seed_query_reserve", 4))),
+    )
+    secondary_seed_per_query = max(
+        3,
+        int(budget.get("secondary_seed_per_query", getattr(settings, "discovery_fr_registry_secondary_seed_per_query", 6))),
+    )
+    secondary_query_cap = max(
+        0,
+        int(budget.get("secondary_query_cap", getattr(settings, "discovery_fr_registry_secondary_query_cap", 48))),
+    )
+    secondary_query_reserve = max(
+        0,
+        int(budget.get("secondary_query_reserve", getattr(settings, "discovery_fr_registry_secondary_query_reserve", 4))),
+    )
+    seed_query_budget = min(seed_query_cap, seed_query_reserve)
+    remaining_after_seed = max(0, max_total_queries - seed_query_budget)
+    secondary_query_budget = min(secondary_query_cap, secondary_query_reserve, remaining_after_seed)
+    code_query_budget = max(1, max_total_queries - seed_query_budget - secondary_query_budget)
+    query_phase_counts = {"code": 0, "seed": 0, "secondary": 0}
+    executed_lookup_keys: set[tuple[str, str, bool]] = set()
+    detail_stats = {
+        "detail_api_hits": 0,
+        "detail_api_errors": 0,
+        "object_text_count": 0,
+        "activity_description_count": 0,
+        "commercial_name_count": 0,
+        "domain_count": 0,
+        "observation_count": 0,
+        "history_count": 0,
+    }
+    detail_cache: dict[str, dict[str, Any]] = {}
+    executed_lookup_attempts: list[dict[str, Any]] = []
+
+    def _store_raw_record(
+        record: dict[str, Any],
+        *,
+        code_distance: int,
+        code_reason: str,
+        source_path: str,
+        seed_query: Optional[str] = None,
+        seed_query_type: Optional[str] = None,
+    ) -> None:
+        siren = str(record.get("registry_id") or "").strip()
+        if not siren or siren == str(source_record.get("registry_id") or "").strip():
+            return
+        payload = dict(record)
+        payload["lookup_source_paths"] = _dedupe_strings(list(payload.get("lookup_source_paths") or []) + [source_path])
+        if seed_query:
+            payload["seed_lookup_match"] = True
+            payload["seed_lookup_queries"] = _dedupe_strings(list(payload.get("seed_lookup_queries") or []) + [seed_query])
+            payload["seed_lookup_types"] = _dedupe_strings(list(payload.get("seed_lookup_types") or []) + ([seed_query_type] if seed_query_type else []))
+        existing = raw_rows.get(siren)
+        if existing:
+            existing_record, existing_distance, existing_reason = existing
+            merged = _merge_fr_registry_record_detail(existing_record, payload)
+            merged["lookup_source_paths"] = _dedupe_strings(
+                list(existing_record.get("lookup_source_paths") or []) + [source_path]
+            )
+            if seed_query:
+                merged["seed_lookup_match"] = True
+                merged["seed_lookup_queries"] = _dedupe_strings(list(existing_record.get("seed_lookup_queries") or []) + [seed_query])
+                merged["seed_lookup_types"] = _dedupe_strings(list(existing_record.get("seed_lookup_types") or []) + ([seed_query_type] if seed_query_type else []))
+            raw_rows[siren] = (
+                merged,
+                min(existing_distance, int(code_distance)),
+                code_reason if source_path != "code_neighborhood_crawl" else existing_reason,
+            )
+            return
+        raw_rows[siren] = (payload, int(code_distance), code_reason)
+
+    def _elapsed_exhausted() -> bool:
+        nonlocal elapsed_budget_exhausted
+        if elapsed_budget_exhausted:
+            return True
+        if (time.perf_counter() - started_at) >= float(max_elapsed_seconds):
+            elapsed_budget_exhausted = True
+            return True
+        return False
+
+    def _budgeted_registry_search(*, phase: str, **kwargs: Any) -> tuple[list[dict[str, Any]], Optional[str]]:
+        nonlocal query_count, query_budget_exhausted
+        if _elapsed_exhausted():
+            return [], "fr_registry_elapsed_budget_exhausted"
+        if query_count >= max_total_queries:
+            query_budget_exhausted = True
+            return [], "fr_registry_query_budget_exhausted"
+        normalized_phase = str(phase or "code").strip().lower()
+        phase_limit = code_query_budget
+        if normalized_phase == "seed":
+            phase_limit = seed_query_budget
+        elif normalized_phase == "secondary":
+            phase_limit = secondary_query_budget
+        if int(query_phase_counts.get(normalized_phase, 0) or 0) >= phase_limit:
+            return [], f"fr_registry_{normalized_phase}_budget_exhausted"
+        kwargs.setdefault("timeout_seconds", search_timeout_seconds)
+        rows, error = _fr_registry_search(**kwargs)
+        query_count += 1
+        query_phase_counts[normalized_phase] = int(query_phase_counts.get(normalized_phase, 0) or 0) + 1
+        if query_count >= max_total_queries:
+            query_budget_exhausted = True
+        return rows, error
+
+    def _detail_fetch_record(record: dict[str, Any]) -> dict[str, Any]:
+        if _elapsed_exhausted():
+            return record
+        try:
+            return _fetch_fr_registry_detail_record(
+                record,
+                search_timeout_seconds=search_timeout_seconds,
+                detail_timeout_seconds=detail_timeout_seconds,
+            )
+        except TypeError:
+            return _fetch_fr_registry_detail_record(record)
+
+    source_record = _detail_fetch_record(source_record)
+    scope_pack = _fr_registry_scope_pack(profile, normalized_scope, source_record=source_record)
+    semantic_terms = _fr_registry_semantic_terms(profile, normalized_scope)
+    code_neighborhood = _fr_registry_code_neighborhood(source_record, semantic_terms=semantic_terms)
+    seed_queries = _fr_registry_seed_query_specs(profile, normalized_scope, scope_pack, source_record=source_record)[:seed_query_cap]
+    initial_secondary_seed_queries = _fr_registry_secondary_lookup_specs(profile, source_record, [source_record])[:secondary_query_cap]
+
+    def _detail_enrich_record(record: dict[str, Any]) -> dict[str, Any]:
+        siren = str(record.get("registry_id") or "").strip()
+        if not siren:
+            return record
+        cached = detail_cache.get(siren)
+        if cached is not None:
+            return cached
+        enriched = _detail_fetch_record(record)
+        detail_cache[siren] = enriched
+        registry_fields = enriched.get("registry_fields") if isinstance(enriched.get("registry_fields"), dict) else {}
+        detail_stats["detail_api_hits"] += 1
+        if not any(
+            [
+                str(registry_fields.get("object_text") or "").strip(),
+                str(registry_fields.get("activity_description") or "").strip(),
+                list(registry_fields.get("commercial_names") or []),
+                list(registry_fields.get("domains") or []),
+                str(registry_fields.get("domain") or "").strip(),
+                list(registry_fields.get("observations") or []),
+                list(registry_fields.get("history_labels") or []),
+            ]
+        ):
+            detail_stats["detail_api_errors"] += 1
+        if registry_fields.get("object_text"):
+            detail_stats["object_text_count"] += 1
+        if registry_fields.get("activity_description"):
+            detail_stats["activity_description_count"] += 1
+        if registry_fields.get("commercial_names"):
+            detail_stats["commercial_name_count"] += 1
+        if registry_fields.get("domains") or registry_fields.get("domain"):
+            detail_stats["domain_count"] += 1
+        if registry_fields.get("observations"):
+            detail_stats["observation_count"] += 1
+        if registry_fields.get("history_labels"):
+            detail_stats["history_count"] += 1
+        return enriched
+
+    def _score_rows() -> tuple[list[dict[str, Any]], dict[str, int]]:
+        scored: list[dict[str, Any]] = []
+        activity_counts: dict[str, int] = {}
+        for siren, (record, code_distance, code_reason) in raw_rows.items():
+            score, semantic_meta = _fr_registry_semantic_score(
+                record,
+                scope_pack=scope_pack,
+                normalized_scope=normalized_scope,
+                code_distance=code_distance,
+            )
+            scored.append(
+                {
+                    "record": record,
+                    "score": score,
+                    "semantic_meta": semantic_meta,
+                    "code_distance": code_distance,
+                    "code_reason": code_reason,
+                }
+            )
+            activity_code = str(record.get("activity_code") or "").strip()
+            if activity_code:
+                activity_counts[activity_code] = activity_counts.get(activity_code, 0) + 1
+        scored.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+        return scored, activity_counts
+
+    def _primary_origin_type(record: dict[str, Any]) -> str:
+        source_paths = set(record.get("lookup_source_paths") or [])
+        if "commercial_name_lookup" in source_paths:
+            return "registry_fr_commercial_lookup"
+        if "observation_counterparty_lookup" in source_paths:
+            return "registry_fr_observation_lookup"
+        if "history_alias_lookup" in source_paths:
+            return "registry_fr_history_lookup"
+        if "seed_name_registry_lookup" in source_paths or bool(record.get("seed_lookup_match")):
+            return "registry_fr_seed_lookup"
+        return "registry_fr_base"
+
+    seed_query_count = 0
+
+    secondary_seed_query_count = 0
+
+    def _execute_lookup_specs(
+        specs: list[dict[str, Any]],
+        *,
+        phase: str,
+        per_query: int,
+    ) -> None:
+        nonlocal seed_query_count, secondary_seed_query_count
+        for seed_spec in specs:
+            if query_budget_exhausted or elapsed_budget_exhausted:
+                break
+            query = str(seed_spec.get("query") or "").strip()
+            query_type = str(seed_spec.get("query_type") or "").strip() or "secondary_lookup"
+            only_active = bool(seed_spec.get("only_active", True))
+            if not query:
+                continue
+            lookup_key = (query.lower(), query_type, only_active)
+            if lookup_key in executed_lookup_keys:
+                continue
+            rows, _error = _budgeted_registry_search(
+                phase=phase,
+                query=query,
+                page=1,
+                per_page=per_query,
+                only_active=only_active,
+            )
+            matched_rows = 0
+            if _error in {
+                "fr_registry_query_budget_exhausted",
+                "fr_registry_elapsed_budget_exhausted",
+                f"fr_registry_{phase}_budget_exhausted",
+            }:
+                executed_lookup_attempts.append(
+                    {
+                        "phase": phase,
+                        "query": query,
+                        "query_type": query_type,
+                        "only_active": only_active,
+                        "row_count": 0,
+                        "matched_count": 0,
+                        "error": _error,
+                    }
+                )
+                break
+            executed_lookup_keys.add(lookup_key)
+            if phase == "seed":
+                seed_query_count += 1
+            elif phase == "secondary":
+                secondary_seed_query_count += 1
+            for row in rows:
+                record = _fr_registry_source_record(row, query_hint=query)
+                if not _fr_registry_seed_query_matches_record(record, query):
+                    if phase == "seed" and query_type not in {"adjacency_label", "adjacency_vendor_phrase"}:
+                        continue
+                    if phase == "secondary":
+                        continue
+                matched_rows += 1
+                _store_raw_record(
+                    record,
+                    code_distance=0,
+                    code_reason="seed_lookup" if phase == "seed" else query_type,
+                    source_path=_fr_registry_query_type_to_source_path(query_type),
+                    seed_query=query,
+                    seed_query_type=query_type,
+                )
+            executed_lookup_attempts.append(
+                {
+                    "phase": phase,
+                    "query": query,
+                    "query_type": query_type,
+                    "only_active": only_active,
+                    "row_count": len(rows),
+                    "matched_count": matched_rows,
+                    "error": _error,
+                }
+            )
+
+    _execute_lookup_specs(seed_queries, phase="seed", per_query=seed_per_query)
+    _execute_lookup_specs(initial_secondary_seed_queries, phase="secondary", per_query=secondary_seed_per_query)
+
+    for code_entry in code_neighborhood:
+        if query_budget_exhausted or elapsed_budget_exhausted:
+            break
+        code = str(code_entry.get("code") or "").strip()
+        if not code:
+            continue
+        fetch_stats = code_fetch_stats.setdefault(
+            code,
+            {
+                "code": code,
+                "distance": int(code_entry.get("distance") or 0),
+                "reason": str(code_entry.get("reason") or ""),
+                "pages_fetched": 0,
+                "rows_fetched": 0,
+                "signal_rows": 0,
+                "extended_pages": 0,
+                "stopped_early": False,
+            },
+        )
+        current_limit = pages_per_code
+        consecutive_no_signal_pages = 0
+        page = 1
+        while page <= current_limit and page <= max_pages_per_code:
+            if _elapsed_exhausted():
+                break
+            rows, _error = _budgeted_registry_search(
+                phase="code",
+                activite_principale=code,
+                page=page,
+                per_page=per_page,
+                only_active=True,
+            )
+            if _error in {
+                "fr_registry_query_budget_exhausted",
+                "fr_registry_elapsed_budget_exhausted",
+                "fr_registry_code_budget_exhausted",
+            }:
+                break
+            if not rows:
+                break
+            fetch_stats["pages_fetched"] = int(fetch_stats.get("pages_fetched") or 0) + 1
+            fetch_stats["rows_fetched"] = int(fetch_stats.get("rows_fetched") or 0) + len(rows)
+            page_signal_hits = 0
+            for row in rows:
+                record = _fr_registry_source_record(row, query_hint=code)
+                signal = _fr_registry_recall_signal(
+                    record,
+                    scope_pack=scope_pack,
+                    normalized_scope=normalized_scope,
+                    code_distance=int(code_entry.get("distance") or 0),
+                )
+                if signal.get("has_signal"):
+                    page_signal_hits += 1
+                _store_raw_record(
+                    record,
+                    code_distance=int(code_entry.get("distance") or 0),
+                    code_reason=str(code_entry.get("reason") or ""),
+                    source_path="code_neighborhood_crawl",
+                )
+            fetch_stats["signal_rows"] = int(fetch_stats.get("signal_rows") or 0) + int(page_signal_hits)
+            if page_signal_hits > 0:
+                consecutive_no_signal_pages = 0
+            else:
+                consecutive_no_signal_pages += 1
+            if page_signal_hits >= page_extension_min_hits and current_limit < max_pages_per_code:
+                current_limit += 1
+                fetch_stats["extended_pages"] = int(fetch_stats.get("extended_pages") or 0) + 1
+            if page >= pages_per_code and consecutive_no_signal_pages >= page_stop_after_no_signal:
+                fetch_stats["stopped_early"] = True
+                break
+            if len(raw_rows) >= candidate_cap:
+                break
+            page += 1
+        if len(raw_rows) >= candidate_cap or query_budget_exhausted or elapsed_budget_exhausted:
+            break
+
+    scored_rows, activity_code_counts = _score_rows()
+
+    detail_priority_rows = sorted(scored_rows, key=_fr_registry_detail_priority, reverse=True)
+    detail_registry_ids = {
+        str((item.get("record") or {}).get("registry_id") or "").strip()
+        for item in detail_priority_rows[:detail_cap]
+        if str((item.get("record") or {}).get("registry_id") or "").strip()
+    }
+    enriched_rows: list[dict[str, Any]] = []
+    for index, item in enumerate(scored_rows):
+        record = item["record"]
+        if str(record.get("registry_id") or "").strip() in detail_registry_ids:
+            record = _detail_enrich_record(record)
+            score, semantic_meta = _fr_registry_semantic_score(
+                record,
+                scope_pack=scope_pack,
+                normalized_scope=normalized_scope,
+                code_distance=int(item.get("code_distance") or 0),
+            )
+            item = {
+                **item,
+                "record": record,
+                "score": score,
+                "semantic_meta": semantic_meta,
+            }
+        enriched_rows.append(item)
+    enriched_rows.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    detailed_seed_records = [item["record"] for item in enriched_rows[:detail_cap] if isinstance(item.get("record"), dict)]
+    secondary_seed_queries = _fr_registry_secondary_lookup_specs(profile, source_record, detailed_seed_records)[:secondary_query_cap]
+    _execute_lookup_specs(secondary_seed_queries, phase="secondary", per_query=secondary_seed_per_query)
+
+    scored_rows, activity_code_counts = _score_rows()
+    detail_priority_rows = sorted(scored_rows, key=_fr_registry_detail_priority, reverse=True)
+    detail_registry_ids = {
+        str((item.get("record") or {}).get("registry_id") or "").strip()
+        for item in detail_priority_rows[:detail_cap]
+        if str((item.get("record") or {}).get("registry_id") or "").strip()
+    }
+    enriched_rows = []
+    for index, item in enumerate(scored_rows):
+        record = item["record"]
+        if str(record.get("registry_id") or "").strip() in detail_registry_ids:
+            record = _detail_enrich_record(record)
+            score, semantic_meta = _fr_registry_semantic_score(
+                record,
+                scope_pack=scope_pack,
+                normalized_scope=normalized_scope,
+                code_distance=int(item.get("code_distance") or 0),
+            )
+            item = {
+                **item,
+                "record": record,
+                "score": score,
+                "semantic_meta": semantic_meta,
+            }
+        enriched_rows.append(item)
+
+    candidates: list[dict[str, Any]] = []
+    enriched_rows.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+
+    for item in enriched_rows[:candidate_cap]:
+        record = item["record"]
+        semantic_meta = item["semantic_meta"] if isinstance(item.get("semantic_meta"), dict) else {}
+        lane_ids = semantic_meta.get("lane_ids") or []
+        lane_labels = semantic_meta.get("lane_labels") or []
+        scope_bucket = str(semantic_meta.get("scope_bucket") or "broad_market")
+        if scope_bucket == "out_of_scope":
+            continue
+        website = str(record.get("website") or "").strip() or None
+        official_domain = normalize_domain(website)
+        display_name = str(record.get("display_name") or record.get("name") or "").strip()
+        legal_name = str(record.get("legal_name") or "").strip() or None
+        registry_url = str(record.get("registry_url") or "").strip() or None
+        node_fit_summary = semantic_meta.get("node_fit_summary") if isinstance(semantic_meta.get("node_fit_summary"), dict) else {}
+        short_description = _fr_registry_candidate_short_description(record, semantic_meta)
+        directness = _directness_from_node_fit_summary(node_fit_summary, fallback=scope_bucket)
+        origin_type = _primary_origin_type(record)
+        candidate = {
+            "name": display_name,
+            "display_name": display_name,
+            "legal_name": legal_name,
+            "brand_name": display_name if display_name and display_name != legal_name else None,
+            "brand_names": record.get("brand_names") if isinstance(record.get("brand_names"), list) else [],
+            "alias_names": _dedupe_strings(
+                list(record.get("brand_names") or [])
+                + list(((record.get("registry_fields") or {}).get("commercial_names") or []))
+                + list(_fr_registry_extract_observation_entities(list(((record.get("registry_fields") or {}).get("observations") or [])))
+                )
+            )[:12],
+            "website": website,
+            "official_website_url": website,
+            "discovery_url": registry_url,
+            "profile_url": registry_url,
+            "entity_type": "company",
+            "registry_id": record.get("registry_id"),
+            "registry_source": record.get("registry_source"),
+            "registry_country": "FR",
+            "registry_status": record.get("status"),
+            "country": "FR",
+            "identity": {
+                "official_website": website,
+                "identity_confidence": "medium" if website else "low",
+                "error": None if website else "missing_website",
+            },
+            "first_party_domains": [official_domain] if official_domain else [],
+            "industry_signature": _normalize_industry_signature(
+                list(record.get("industry_codes") or []),
+                list(record.get("industry_keywords") or []),
+            ),
+            "why_relevant": [
+                {
+                    "text": short_description or f"French registry candidate surfaced from {record.get('activity_code') or 'APE'} neighborhood.",
+                    "citation_url": registry_url,
+                    "dimension": "registry_lookup",
+                }
+            ],
+            "precomputed_discovery_score": float(item.get("score") or 0.0),
+            "discovery_score": float(item.get("score") or 0.0),
+            "directness": directness,
+            "node_fit_summary": node_fit_summary,
+            "registry_fields": {
+                **(record.get("registry_fields") if isinstance(record.get("registry_fields"), dict) else {}),
+                "matched_terms": semantic_meta.get("matched_terms") or [],
+                "generic_infra_hits": semantic_meta.get("generic_infra_hits") or [],
+                "code_reason": item.get("code_reason"),
+                "lookup_source_paths": list(record.get("lookup_source_paths") or []),
+                "seed_lookup_match": bool(record.get("seed_lookup_match")),
+                "seed_lookup_queries": list(record.get("seed_lookup_queries") or []),
+                "seed_lookup_types": list(record.get("seed_lookup_types") or []),
+            },
+            "_origins": [
+                {
+                    "origin_type": origin_type,
+                    "origin_url": registry_url,
+                    "source_name": "fr_registry",
+                    "source_run_id": None,
+                    "metadata": {
+                        "query_type": "registry_lookup",
+                        "query_family": "registry_lookup",
+                        "source_family": "registry",
+                        "scope_bucket": scope_bucket,
+                        "fit_to_adjacency_box_ids": lane_ids,
+                        "fit_to_adjacency_box_labels": lane_labels,
+                        "source_capability_matches": semantic_meta.get("source_capability_matches") or [],
+                        "registry_id": record.get("registry_id"),
+                        "registry_source": record.get("registry_source"),
+                        "code_distance": int(item.get("code_distance") or 0),
+                        "code_reason": item.get("code_reason"),
+                        "lookup_source_paths": list(record.get("lookup_source_paths") or []),
+                        "seed_lookup_match": bool(record.get("seed_lookup_match")),
+                        "seed_lookup_queries": list(record.get("seed_lookup_queries") or []),
+                        "seed_lookup_types": list(record.get("seed_lookup_types") or []),
+                        "node_fit_summary": node_fit_summary,
+                    },
+                }
+            ],
+        }
+        candidates.append(candidate)
+
+    source_path_counts: dict[str, int] = {}
+    for record, _code_distance, _code_reason in raw_rows.values():
+        paths = list(record.get("lookup_source_paths") or ["code_neighborhood_crawl"])
+        for path in paths:
+            source_path_counts[path] = source_path_counts.get(path, 0) + 1
+
+    def _candidate_names(payload: dict[str, Any]) -> set[str]:
+        names = _dedupe_strings(
+            [
+                str(payload.get("display_name") or "").strip(),
+                str(payload.get("legal_name") or "").strip(),
+                *list(payload.get("brand_names") or []),
+                *list(((payload.get("registry_fields") or {}).get("commercial_names") or [])),
+                *list(payload.get("alias_names") or []),
+            ]
+        )
+        return {
+            _normalize_name_for_matching(name)
+            for name in names
+            if _normalize_name_for_matching(name)
+        }
+
+    benchmarks = [
+        {"label": "THE WORKING COMPANY / 814956744", "registry_id": "814956744", "names": ["THE WORKING COMPANY", "BRIGAD"]},
+        {"label": "MEDIFLASH / 887656270", "registry_id": "887656270", "names": ["MEDIFLASH"]},
+        {"label": "MEDIKSTAFF / 820625564", "registry_id": "820625564", "names": ["MEDIKSTAFF", "MSTAFF"]},
+    ]
+    benchmark_hits: list[dict[str, Any]] = []
+    final_candidates_by_id = {str(item.get("registry_id") or "").strip(): item for item in candidates if str(item.get("registry_id") or "").strip()}
+    raw_candidates_by_id = {str(record.get("registry_id") or "").strip(): record for record, _dist, _reason in raw_rows.values() if str(record.get("registry_id") or "").strip()}
+    for benchmark in benchmarks:
+        normalized_names = {_normalize_name_for_matching(name) for name in benchmark["names"] if _normalize_name_for_matching(name)}
+        raw_match = raw_candidates_by_id.get(benchmark["registry_id"])
+        final_match = final_candidates_by_id.get(benchmark["registry_id"])
+        if raw_match is None:
+            for record, _dist, _reason in raw_rows.values():
+                if _candidate_names(record) & normalized_names:
+                    raw_match = record
+                    break
+        if final_match is None:
+            for candidate in candidates:
+                if _candidate_names(candidate) & normalized_names:
+                    final_match = candidate
+                    break
+        benchmark_hits.append(
+            {
+                "label": benchmark["label"],
+                "registry_id": benchmark["registry_id"],
+                "raw_found": raw_match is not None,
+                "final_found": final_match is not None,
+                "raw_match_name": str((raw_match or {}).get("display_name") or (raw_match or {}).get("legal_name") or "").strip() or None,
+                "final_match_name": str((final_match or {}).get("display_name") or (final_match or {}).get("legal_name") or "").strip() or None,
+            }
+        )
+
+    alias_only_paths = {"commercial_name_lookup", "observation_counterparty_lookup", "history_alias_lookup"}
+    alias_only_recovered_count = 0
+    for record, _dist, _reason in raw_rows.values():
+        source_paths = set(record.get("lookup_source_paths") or [])
+        if source_paths and source_paths.issubset(alias_only_paths):
+            alias_only_recovered_count += 1
+
+    diagnostics = {
+        "source_resolution": source_diagnostics,
+        "source_record": {
+            "display_name": source_record.get("display_name"),
+            "legal_name": source_record.get("legal_name"),
+            "registry_id": source_record.get("registry_id"),
+            "activity_code": source_record.get("activity_code"),
+            "activity_code_naf25": source_record.get("activity_code_naf25"),
+            "detail_summary": {
+                "object_text_present": bool(str(((source_record.get("registry_fields") or {}).get("object_text") or "")).strip()),
+                "activity_description_present": bool(
+                    str(((source_record.get("registry_fields") or {}).get("activity_description") or "")).strip()
+                ),
+                "inpi_auth_error": str(((source_record.get("registry_fields") or {}).get("inpi_auth_error") or "")).strip() or None,
+                "commercial_names": list(((source_record.get("registry_fields") or {}).get("commercial_names") or []))[:8],
+                "domains": list(((source_record.get("registry_fields") or {}).get("domains") or []))[:8],
+                "observations": list(((source_record.get("registry_fields") or {}).get("observations") or []))[:4],
+                "history_labels": list(((source_record.get("registry_fields") or {}).get("history_labels") or []))[:8],
+            },
+        },
+        "code_neighborhood": code_neighborhood,
+        "registry_queries_count": query_count,
+        "registry_raw_candidate_count": len(raw_rows),
+        "registry_scored_candidate_count": len(scored_rows),
+        "registry_detail_fetch_count": min(detail_cap, len(scored_rows)),
+        "registry_candidate_count": len(candidates),
+        "registry_seed_query_count": seed_query_count,
+        "registry_secondary_query_count": secondary_seed_query_count,
+        "registry_code_query_count": int(query_phase_counts.get("code") or 0),
+        "registry_source_path_counts": source_path_counts,
+        "seed_query_specs": seed_queries[:12],
+        "initial_secondary_query_specs": initial_secondary_seed_queries[:12],
+        "post_detail_secondary_query_specs": secondary_seed_queries[:12],
+        "executed_lookup_attempts": executed_lookup_attempts[:24],
+        "detail_stats": detail_stats,
+        "alias_only_recovered_count": alias_only_recovered_count,
+        "benchmark_hits": benchmark_hits,
+        "code_fetch_stats": sorted(
+            code_fetch_stats.values(),
+            key=lambda item: (
+                -int(item.get("rows_fetched") or 0),
+                str(item.get("code") or ""),
+            ),
+        ),
+        "raw_activity_code_counts": [
+            {"code": code, "count": count}
+            for code, count in sorted(activity_code_counts.items(), key=lambda item: (-int(item[1]), item[0]))[:20]
+        ],
+        "final_candidate_commercial_name_count": sum(
+            1 for candidate in candidates if list((candidate.get("registry_fields") or {}).get("commercial_names") or [])
+        ),
+        "final_candidate_observation_count": sum(
+            1 for candidate in candidates if list((candidate.get("registry_fields") or {}).get("observations") or [])
+        ),
+        "final_candidate_object_text_count": sum(
+            1 for candidate in candidates if str((candidate.get("registry_fields") or {}).get("object_text") or "").strip()
+        ),
+        "scope_pack": {
+            "core_node_terms_count": len(scope_pack.get("core", {}).get("terms") or []),
+            "adjacency_node_terms_count": len(scope_pack.get("adjacent", {}).get("terms") or []),
+            "entity_seed_terms_count": len(scope_pack.get("entity_seed", {}).get("terms") or []),
+        },
+        "budget": {
+            "pages_per_code": pages_per_code,
+            "max_pages_per_code": max_pages_per_code,
+            "candidate_cap": candidate_cap,
+            "detail_cap": detail_cap,
+            "search_timeout_seconds": search_timeout_seconds,
+            "detail_timeout_seconds": detail_timeout_seconds,
+            "seed_query_cap": seed_query_cap,
+            "seed_query_reserve": seed_query_budget,
+            "secondary_query_cap": secondary_query_cap,
+            "secondary_query_reserve": secondary_query_budget,
+            "code_query_budget": code_query_budget,
+            "max_total_queries": max_total_queries,
+            "max_elapsed_seconds": max_elapsed_seconds,
+            "page_extension_min_hits": page_extension_min_hits,
+            "page_stop_after_no_signal": page_stop_after_no_signal,
+        },
+        "query_budget_exhausted": query_budget_exhausted,
+        "elapsed_budget_exhausted": elapsed_budget_exhausted,
+        "elapsed_seconds": round(time.perf_counter() - started_at, 3),
+        "estimated_max_query_ceiling": min(
+            max_total_queries,
+            int(max_pages_per_code * max(1, len(code_neighborhood))) + seed_query_cap + secondary_query_cap,
+        ),
+    }
+    return candidates, diagnostics
+
+
+def _run_france_registry_recall_benchmark(
+    profile: CompanyProfile,
+    normalized_scope: dict[str, Any],
+    *,
+    tiers: Optional[list[dict[str, int]]] = None,
+) -> list[dict[str, Any]]:
+    benchmark_tiers = tiers or [
+        {"pages_per_code": 5, "max_pages_per_code": 5, "candidate_cap": 1200, "detail_cap": 60},
+        {"pages_per_code": 8, "max_pages_per_code": 8, "candidate_cap": 1800, "detail_cap": 80},
+        {"pages_per_code": 12, "max_pages_per_code": 12, "candidate_cap": 2500, "detail_cap": 120},
+    ]
+    results: list[dict[str, Any]] = []
+    for tier in benchmark_tiers:
+        started_at = time.perf_counter()
+        candidates, diagnostics = _build_france_registry_universe_candidates(
+            profile,
+            normalized_scope,
+            budget_overrides=tier,
+        )
+        results.append(
+            {
+                "budget": dict(tier),
+                "elapsed_seconds": round(time.perf_counter() - started_at, 3),
+                "registry_raw_candidate_count": diagnostics.get("registry_raw_candidate_count"),
+                "registry_scored_candidate_count": diagnostics.get("registry_scored_candidate_count"),
+                "registry_candidate_count": diagnostics.get("registry_candidate_count"),
+                "registry_queries_count": diagnostics.get("registry_queries_count"),
+                "registry_seed_query_count": diagnostics.get("registry_seed_query_count"),
+                "registry_secondary_query_count": diagnostics.get("registry_secondary_query_count"),
+                "registry_source_path_counts": diagnostics.get("registry_source_path_counts"),
+                "detail_stats": diagnostics.get("detail_stats"),
+                "benchmark_hits": diagnostics.get("benchmark_hits"),
+                "code_fetch_stats": diagnostics.get("code_fetch_stats"),
+                "top_candidates": [
+                    {
+                        "display_name": item.get("display_name"),
+                        "legal_name": item.get("legal_name"),
+                        "registry_id": item.get("registry_id"),
+                        "directness": item.get("directness"),
+                    }
+                    for item in candidates[:10]
+                ],
+            }
+        )
+    return results
+
+
 def _software_signal_score_from_codes(codes: list[str]) -> float:
     normalized = [str(code or "").strip().lower() for code in codes if str(code or "").strip()]
     if not normalized:
@@ -985,6 +3231,19 @@ NAME_STOPWORDS = {
     "platform",
 }
 
+FR_REGISTRY_SCOPE_LOW_SIGNAL_TERMS = {
+    "manage",
+    "management",
+    "internal",
+    "mobility",
+    "customer",
+    "customers",
+    "service",
+    "services",
+    "application",
+    "applications",
+}
+
 TOKEN_SYNONYMS = {
     "financial": "finance",
     "financiere": "finance",
@@ -1039,6 +3298,78 @@ COUNTRY_HINT_TOKENS = {
     "LU": {"luxembourg", "luxembourg city", "letzebuerg"},
     "CH": {"switzerland", "swiss", "zurich", "geneva", "lausanne", "zug"},
     "MC": {"monaco", "monegasque", "monte carlo"},
+}
+
+FR_REGISTRY_DIGITAL_APE_CODES = (
+    "58.21Z",
+    "58.29A",
+    "58.29B",
+    "58.29C",
+    "58.29Y",
+    "62.01Z",
+    "62.02A",
+    "62.02B",
+    "62.03Z",
+    "62.09Z",
+    "63.11Z",
+    "63.12Z",
+)
+
+FR_REGISTRY_RECRUITMENT_APE_CODES = (
+    "78.10Z",
+    "78.20Z",
+    "78.30Z",
+)
+
+FR_REGISTRY_SOFT_BLOCKED_NAME_TOKENS = (
+    "minist",
+    "mairie",
+    "ville de",
+    "commune",
+    "centre hospitalier",
+    "hopitaux",
+    "hôpitaux",
+    "onisep",
+    "universit",
+    "chambre de commerce",
+    "conseil departemental",
+    "département",
+    "prefecture",
+    "préfecture",
+)
+
+FR_REGISTRY_GENERIC_INFRA_TOKENS = (
+    "hebergement",
+    "hébergement",
+    "cloud",
+    "datacenter",
+    "data center",
+    "hosting",
+    "outsourcing",
+    "bpo",
+    "archivage",
+    "sauvegarde",
+    "backup",
+    "ged",
+    "dematerialisation",
+    "dématérialisation",
+    "copie",
+    "photocopie",
+    "impression",
+    "messagerie",
+)
+
+FR_REGISTRY_SEMANTIC_EXPANSIONS = {
+    "software": ["logiciel", "saas", "plateforme", "application", "applications", "edition", "édition"],
+    "platform": ["plateforme", "marketplace", "place de marche", "place de marché", "reseau", "réseau"],
+    "healthcare": ["sante", "santé", "medical", "médical", "hospitalier", "hospitaliere", "hospitalière"],
+    "hospital": ["hopital", "hôpital", "clinique", "ehpad", "etablissement de sante", "établissement de santé"],
+    "staffing": ["recrutement", "interim", "intérim", "vacation", "vacataire", "remplacement", "mise en relation"],
+    "recruitment": ["recrutement", "mise en relation", "talent", "embauche"],
+    "workforce": ["personnel", "effectif", "effectifs", "ressources humaines", "rh", "gestion administrative"],
+    "scheduling": ["planning", "planification", "horaire", "horaires", "shift", "roster"],
+    "marketplace": ["marketplace", "place de marche", "place de marché", "mise en relation"],
+    "payments": ["paiement", "facturation"],
 }
 
 REGISTRY_PROFILE_DOMAINS = {
@@ -1750,9 +4081,40 @@ def _merge_candidate_into_entity(
     entity["likely_verticals"] = _dedupe_strings(
         [str(v).strip() for v in (entity.get("likely_verticals") or []) + (candidate.get("likely_verticals") or []) if str(v).strip()]
     )
+    entity["brand_names"] = _dedupe_strings(
+        [str(v).strip() for v in (entity.get("brand_names") or []) + (candidate.get("brand_names") or []) if str(v).strip()]
+    )
+    entity["short_description"] = (
+        str(candidate.get("short_description") or "").strip()
+        or str(entity.get("short_description") or "").strip()
+        or None
+    )
+    entity["legal_name"] = entity.get("legal_name") or (str(candidate.get("legal_name") or "").strip() or None)
+    if not str(entity.get("display_name") or "").strip():
+        entity["display_name"] = (
+            str(candidate.get("display_name") or "").strip()
+            or str(candidate.get("brand_name") or "").strip()
+            or entity.get("canonical_name")
+        )
+    entity["registry_fields"] = {
+        **(entity.get("registry_fields") if isinstance(entity.get("registry_fields"), dict) else {}),
+        **(candidate.get("registry_fields") if isinstance(candidate.get("registry_fields"), dict) else {}),
+    }
     entity["reference_input"] = bool(entity.get("reference_input")) or bool(candidate.get("reference_input"))
     entity["merged_candidates_count"] = int(entity.get("merged_candidates_count") or 1) + 1
     entity["merge_confidence"] = max(float(entity.get("merge_confidence") or 0.0), merge_confidence)
+    entity["precomputed_discovery_score"] = max(
+        float(entity.get("precomputed_discovery_score") or 0.0),
+        float(candidate.get("precomputed_discovery_score") or candidate.get("discovery_score") or 0.0),
+    )
+    entity["node_fit_summary"] = _merge_node_fit_summary(
+        entity.get("node_fit_summary") if isinstance(entity.get("node_fit_summary"), dict) else {},
+        candidate.get("node_fit_summary") if isinstance(candidate.get("node_fit_summary"), dict) else {},
+    )
+    entity["directness"] = _directness_from_node_fit_summary(
+        entity.get("node_fit_summary") if isinstance(entity.get("node_fit_summary"), dict) else {},
+        fallback=str(candidate.get("directness") or entity.get("directness") or "").strip().lower() or None,
+    )
     if not entity.get("discovery_primary_url") and discovery_url:
         entity["discovery_primary_url"] = discovery_url
 
@@ -1836,6 +4198,7 @@ def _merge_candidate_into_entity(
             entity["canonical_domain"] = domain
             if candidate_name:
                 entity["canonical_name"] = candidate_name
+                entity["display_name"] = str(candidate.get("display_name") or candidate_name).strip() or candidate_name
 
     if not entity.get("country"):
         entity["country"] = _canonical_country(candidate)
@@ -1927,6 +4290,16 @@ def _collapse_candidates_to_entities(
         new_entity = {
             "temp_entity_id": f"entity_{len(entities) + 1}",
             "canonical_name": name,
+            "display_name": str(candidate.get("display_name") or candidate.get("brand_name") or name).strip() or name,
+            "legal_name": str(candidate.get("legal_name") or "").strip() or None,
+            "brand_names": _dedupe_strings(
+                [
+                    str(v).strip()
+                    for v in ([candidate.get("brand_name")] if str(candidate.get("brand_name") or "").strip() else [])
+                    + (candidate.get("brand_names") or [])
+                    if str(v).strip()
+                ]
+            ),
             "canonical_website": website,
             "canonical_domain": domain,
             "discovery_primary_url": str(candidate.get("discovery_url") or candidate.get("profile_url") or "")[:1000] or None,
@@ -1954,6 +4327,13 @@ def _collapse_candidates_to_entities(
             "normalized_name": name_norm,
             "merged_candidates_count": 1,
             "merge_confidence": 1.0,
+            "precomputed_discovery_score": float(candidate.get("precomputed_discovery_score") or candidate.get("discovery_score") or 0.0),
+            "directness": _directness_from_node_fit_summary(
+                candidate.get("node_fit_summary") if isinstance(candidate.get("node_fit_summary"), dict) else {},
+                fallback=str(candidate.get("directness") or "").strip().lower() or None,
+            ),
+            "node_fit_summary": candidate.get("node_fit_summary") if isinstance(candidate.get("node_fit_summary"), dict) else {},
+            "short_description": str(candidate.get("short_description") or "").strip() or None,
             "first_party_domains": _normalize_domain_list(candidate.get("first_party_domains") or []),
             "solutions": (
                 [
@@ -1969,6 +4349,7 @@ def _collapse_candidates_to_entities(
             ),
             "registry_identity": candidate.get("registry_identity") if isinstance(candidate.get("registry_identity"), dict) else {},
             "industry_signature": candidate.get("industry_signature") if isinstance(candidate.get("industry_signature"), dict) else {},
+            "registry_fields": candidate.get("registry_fields") if isinstance(candidate.get("registry_fields"), dict) else {},
         }
         entities.append(new_entity)
         entity_idx = len(entities) - 1
@@ -1994,6 +4375,14 @@ def _collapse_candidates_to_entities(
         entity["industry_signature"] = _merge_industry_signatures(
             entity.get("industry_signature") if isinstance(entity.get("industry_signature"), dict) else {},
             {},
+        )
+        entity["node_fit_summary"] = _merge_node_fit_summary(
+            entity.get("node_fit_summary") if isinstance(entity.get("node_fit_summary"), dict) else {},
+            {},
+        )
+        entity["directness"] = _directness_from_node_fit_summary(
+            entity.get("node_fit_summary") if isinstance(entity.get("node_fit_summary"), dict) else {},
+            fallback=str(entity.get("directness") or "").strip().lower() or None,
         )
 
     raw_count = len(candidates)
@@ -2394,73 +4783,21 @@ def _search_fr_registry_neighbors(
 ) -> tuple[list[dict[str, Any]], Optional[str]]:
     if not query.strip():
         return [], None
-    url = "https://recherche-entreprises.api.gouv.fr/search"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; MA-BuySide-Radar/1.0)",
-        "Accept": "application/json",
-    }
-    try:
-        with httpx.Client(timeout=timeout_seconds, headers=headers) as client:
-            response = client.get(url, params={"q": query.strip(), "page": 1, "per_page": max_hits})
-            response.raise_for_status()
-            payload = response.json()
-    except Exception as exc:
-        return [], f"fr_registry_search_failed:{exc}"
-
+    rows, error = _fr_registry_search(
+        query=query.strip(),
+        page=1,
+        per_page=max_hits,
+        only_active=False,
+        timeout_seconds=timeout_seconds,
+    )
+    if error:
+        return [], error
     results: list[dict[str, Any]] = []
-    for row in payload.get("results", [])[:max_hits]:
-        if not isinstance(row, dict):
+    for row in rows[:max_hits]:
+        record = _fr_registry_source_record(row, query_hint=query)
+        if not str(record.get("name") or "").strip():
             continue
-        name = str(
-            row.get("nom_complet")
-            or row.get("nom_raison_sociale")
-            or row.get("nom")
-            or ""
-        ).strip()
-        siren = str(row.get("siren") or "").strip()
-        website = row.get("site_internet") or row.get("site_web")
-        if isinstance(website, list):
-            website = website[0] if website else None
-        website = str(website or "").strip() or None
-        activity_code = _first_non_empty(
-            row.get("activite_principale"),
-            row.get("activite_principale_naf25"),
-        )
-        section_code = _first_non_empty(row.get("section_activite_principale"))
-        activity_label = _first_non_empty(row.get("libelle_activite_principale"), activity_code)
-        status = _first_non_empty(row.get("etat_administratif"), "A")
-        context_text = " ".join(
-            token
-            for token in [
-                str(activity_label or ""),
-                str(activity_code or ""),
-                str(section_code or ""),
-                str(row.get("nature_juridique") or ""),
-            ]
-            if token
-        ).strip()
-        industry_codes = _dedupe_strings(
-            [str(activity_code or "").upper(), str(section_code or "").upper()]
-        )
-        citation_url = f"https://annuaire-entreprises.data.gouv.fr/entreprise/{siren}" if siren else f"{url}?q={quote_plus(query)}"
-        if not name:
-            continue
-        record = {
-            "name": name,
-            "website": website,
-            "country": "FR",
-            "registry_id": siren or None,
-            "registry_source": "fr_recherche_entreprises",
-            "registry_url": citation_url,
-            "status": status,
-            "is_active": _looks_active_status(status),
-            "context_text": context_text,
-            "industry_codes": industry_codes,
-        }
-        record["industry_keywords"] = _industry_keywords_from_record(record)
-        results.append(
-            record
-        )
+        results.append(record)
     return results, None
 
 
@@ -3296,45 +5633,86 @@ def _expand_registry_neighbors(
 
 
 def _candidate_priority_score(entity: dict[str, Any]) -> float:
+    explicit_score = float(
+        entity.get("precomputed_discovery_score")
+        or entity.get("discovery_score")
+        or 0.0
+    )
     lane_keys, query_families, source_families = _entity_scoring_dimensions(entity)
     origin_types = set(entity.get("origin_types") or [])
-    score = 0.0
+    node_fit_summary = entity.get("node_fit_summary") if isinstance(entity.get("node_fit_summary"), dict) else {}
+    node_fit_score = float(node_fit_summary.get("node_fit_score") or 0.0)
+    explicit_directness = str(entity.get("directness") or "").strip().lower()
+    if explicit_directness:
+        directness = explicit_directness
+    elif {"competitor_direct", "alternatives"} & set(query_families):
+        directness = "direct"
+    elif lane_keys and lane_keys != ["unscoped"]:
+        directness = "adjacent"
+    else:
+        directness = "broad_market"
+    geo_signals = _dedupe_strings(
+        [
+            value
+            for value in [
+                normalize_country(entity.get("country")),
+                normalize_country(entity.get("registry_country")),
+            ]
+            if value
+        ]
+    )
+    score = compute_discovery_score(
+        source_families=source_families,
+        query_families=query_families,
+        lane_ids=lane_keys,
+        geo_signals=geo_signals,
+        origin_types=list(origin_types),
+        identity_confidence=str(entity.get("identity_confidence") or "low").lower(),
+        directness=directness,
+    )
     entity_type = str(entity.get("entity_type") or "company").strip().lower()
     if entity_type == "solution":
-        score -= 25.0
+        score -= 18.0
     if "reference_seed" in origin_types:
-        score += 100.0
+        score += 14.0
     if "benchmark_seed" in origin_types:
-        score += 95.0
-    if "external_search_seed" in origin_types:
-        score += 90.0
-    if "llm_seed" in origin_types:
-        score += 65.0
-    if "directory_seed" in origin_types:
-        score += 18.0
+        score += 12.0
     if "registry_neighbor" in origin_types:
-        score += 55.0
-    if str(entity.get("identity_confidence") or "").lower() == "high":
-        score += 10.0
+        score += 6.0
+    if "registry_fr_seed_lookup" in origin_types:
+        score += 12.0
     canonical_website = str(entity.get("canonical_website") or "").strip()
     canonical_domain = normalize_domain(canonical_website)
     if canonical_domain and not _is_non_first_party_profile_domain(canonical_domain):
-        score += 24.0
+        score += 6.0
     elif not canonical_domain:
-        score -= 12.0
-    if origin_types == {"directory_seed"} and not canonical_domain:
-        score -= 40.0
+        score -= 4.0
     registry_identity = entity.get("registry_identity") if isinstance(entity.get("registry_identity"), dict) else {}
     if registry_identity.get("id"):
-        score += 12.0
+        score += 4.0
     if float(registry_identity.get("match_confidence") or 0.0) >= 0.8:
-        score += 8.0
-    score += min(20.0, float(len(entity.get("why_relevant") or [])))
-    score += min(10.0, float(len(entity.get("capability_signals") or [])))
-    score += min(8.0, max(0.0, float(len(origin_types) - 1) * 2.0))
-    score += min(6.0, float(len(lane_keys)))
-    score += min(4.0, float(len(query_families)))
-    score += min(3.0, float(len(source_families)))
+        score += 3.0
+    if "competitor_direct" in query_families:
+        score += 6.0
+    if "alternatives" in query_families:
+        score += 5.0
+    if "local_market" in query_families:
+        score += 4.0
+    if "comparative_source" in query_families:
+        score += 3.0
+    if "peer_expansion" in query_families:
+        score += 2.0
+    if "traffic_affinity" in query_families:
+        score += 1.0
+    if directness == "direct":
+        score += 4.0
+    elif directness == "adjacent":
+        score += 2.0
+    elif directness == "out_of_scope":
+        score -= 40.0
+    score += min(20.0, node_fit_score)
+    if explicit_score > 0:
+        score = max(score, explicit_score)
     return score
 
 
@@ -3358,19 +5736,25 @@ def _entity_scoring_dimensions(entity: dict[str, Any]) -> tuple[list[str], list[
         )
         provider = str(metadata.get("provider") or "").strip().lower()
         query_type = str(metadata.get("query_type") or "").strip().lower()
+        query_family = normalize_discovery_query_family(
+            metadata.get("query_family") or metadata.get("query_intent") or query_type,
+            query_text=metadata.get("query_text"),
+            provider=provider,
+        )
         brick_name = str(metadata.get("brick_name") or "").strip().lower()
-        if provider or query_type or brick_name:
-            query_families.append("::".join([part for part in [provider, query_type, brick_name] if part][:3]))
+        if query_family:
+            query_families.append(query_family)
+        elif brick_name:
+            query_families.append(normalize_discovery_query_family(brick_name, query_text=brick_name))
         elif origin_type:
-            query_families.append(origin_type)
-        if origin_type in {"directory_seed", "directory_profile", "reference_seed"}:
-            source_families.append("directory")
-        elif origin_type in {"external_search_seed", "llm_seed", "benchmark_seed"}:
-            source_families.append("search")
-        elif origin_type.startswith("registry"):
-            source_families.append("registry")
-        elif origin_type:
-            source_families.append(origin_type)
+            query_families.append(normalize_discovery_query_family(origin_type, query_text=origin_type))
+        source_families.append(
+            normalize_discovery_source_family(
+                origin_type,
+                metadata,
+                origin.get("origin_url"),
+            )
+        )
     return (
         _dedupe_strings(lane_keys or ["unscoped"]),
         _dedupe_strings(query_families or ["unknown"]),
@@ -3495,11 +5879,11 @@ def _select_scoring_entities(
     }
 
 
-def _dedupe_strings(values: list[str]) -> list[str]:
+def _dedupe_strings(values: list[Any]) -> list[str]:
     seen: set[str] = set()
     deduped: list[str] = []
     for value in values:
-        normalized = value.strip()
+        normalized = str(value or "").strip()
         if not normalized:
             continue
         key = normalized.lower()
@@ -5727,7 +8111,8 @@ Output schema:
 [
   {{
     "name": "Company Name",
-    "website": "https://example.com",
+    "website": "https://example.com or null if not known",
+    "discovery_url": "https://retrieval-context-url-that-mentioned-the-company",
     "hq_country": "DE",
     "likely_verticals": ["wealth_manager"],
     "employee_estimate": 120,
@@ -5772,15 +8157,29 @@ def _normalize_query_entries(values: Any, max_items: int = 6) -> list[dict[str, 
             query_text = item.strip()
             if not query_text:
                 continue
-            entries.append({"query_text": query_text[:220], "query_intent": None, "brick_name": None, "scope_bucket": None})
+            entries.append(
+                {
+                    "query_text": query_text[:220],
+                    "query_intent": None,
+                    "query_family": normalize_discovery_query_family(query_text, query_text=query_text),
+                    "brick_name": None,
+                    "scope_bucket": None,
+                }
+            )
         elif isinstance(item, dict):
             query_text = str(item.get("query") or item.get("query_text") or item.get("text") or "").strip()
             if not query_text:
                 continue
+            query_family = normalize_discovery_query_family(
+                item.get("query_family") or item.get("query_intent") or item.get("intent"),
+                query_text=query_text,
+                provider=item.get("provider"),
+            )
             entries.append(
                 {
                     "query_text": query_text[:220],
-                    "query_intent": str(item.get("query_intent") or item.get("intent") or "").strip() or None,
+                    "query_intent": str(item.get("query_intent") or item.get("intent") or query_family).strip() or None,
+                    "query_family": query_family,
                     "brick_name": str(item.get("brick_name") or "").strip() or None,
                     "scope_bucket": str(item.get("scope_bucket") or "").strip().lower() or None,
                 }
@@ -5788,6 +8187,25 @@ def _normalize_query_entries(values: Any, max_items: int = 6) -> list[dict[str, 
         if len(entries) >= max_items:
             break
     return entries
+
+
+def _normalize_labeled_values(values: Any, *, max_items: int = 12, max_len: int = 120) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    for value in values:
+        text = ""
+        if isinstance(value, dict):
+            text = str(value.get("label") or value.get("name") or value.get("id") or "").strip()
+        else:
+            text = str(value or "").strip()
+        if not text:
+            continue
+        if text not in normalized:
+            normalized.append(text[:max_len])
+        if len(normalized) >= max_items:
+            break
+    return normalized
 
 
 def _normalize_scope_hints(scope_hints: Any) -> dict[str, Any]:
@@ -5836,6 +8254,14 @@ def _normalize_scope_hints(scope_hints: Any) -> dict[str, Any]:
             if not name:
                 continue
             website = str(raw.get("website") or "").strip() or None
+            evidence_urls: list[str] = []
+            if isinstance(raw.get("evidence"), list):
+                for item in raw.get("evidence") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    url = str(item.get("url") or "").strip()
+                    if url:
+                        evidence_urls.append(url[:220])
             company_seeds.append(
                 {
                     "id": str(raw.get("id") or "").strip() or None,
@@ -5844,6 +8270,8 @@ def _normalize_scope_hints(scope_hints: Any) -> dict[str, Any]:
                     "status": str(raw.get("status") or "").strip().lower() or None,
                     "seed_type": str(raw.get("seed_type") or "").strip().lower() or None,
                     "seed_role": str(raw.get("seed_role") or "").strip().lower() or None,
+                    "confidence": _safe_float(raw.get("confidence"), default=0.0),
+                    "evidence": [{"url": value} for value in _dedupe_strings(evidence_urls)[:6]],
                     "fit_to_adjacency_box_ids": _normalize_string_list(raw.get("fit_to_adjacency_box_ids"), max_items=8, max_len=120),
                 }
             )
@@ -5871,8 +8299,8 @@ def _normalize_scope_hints(scope_hints: Any) -> dict[str, Any]:
     return {
         "source_capabilities": _normalize_string_list(payload.get("source_capabilities"), max_items=10, max_len=140),
         "source_customer_segments": _normalize_string_list(payload.get("source_customer_segments"), max_items=8, max_len=120),
-        "named_account_anchors": _normalize_string_list(payload.get("named_account_anchors"), max_items=8, max_len=120),
-        "geography_expansions": _normalize_string_list(payload.get("geography_expansions"), max_items=8, max_len=96),
+        "named_account_anchors": _normalize_labeled_values(payload.get("named_account_anchors"), max_items=8, max_len=120),
+        "geography_expansions": _normalize_labeled_values(payload.get("geography_expansions"), max_items=8, max_len=96),
         "adjacency_boxes": adjacency_boxes,
         "adjacency_box_labels": adjacency_box_labels,
         "adjacent_lanes": adjacent_lanes,
@@ -6066,11 +8494,133 @@ def _filter_discovery_seed_urls(urls: list[str]) -> list[str]:
     return _dedupe_strings(filtered)
 
 
+def _company_label_from_url(raw_url: Any) -> Optional[str]:
+    domain = normalize_domain(normalize_url(raw_url or ""))
+    if not domain:
+        return None
+    label = domain.split(".")[0].replace("-", " ").replace("_", " ").strip()
+    normalized = " ".join(part.capitalize() for part in label.split() if part)
+    return normalized or None
+
+
+def _has_non_placeholder_evidence_urls(seed: dict[str, Any]) -> bool:
+    for item in (seed.get("evidence") or []):
+        if not isinstance(item, dict):
+            continue
+        url = normalize_url(item.get("url") or "")
+        domain = normalize_domain(url)
+        if not url or not domain:
+            continue
+        if domain in PLACEHOLDER_SEED_DOMAINS or any(domain.endswith(f".{suffix}") for suffix in PLACEHOLDER_SEED_DOMAINS):
+            continue
+        return True
+    return False
+
+
+def _high_confidence_company_seed_names(company_seeds: list[dict[str, Any]]) -> list[str]:
+    selected: list[str] = []
+    for seed in company_seeds or []:
+        if not isinstance(seed, dict):
+            continue
+        name = str(seed.get("name") or "").strip()
+        if not name:
+            continue
+        website = normalize_url(seed.get("website") or "")
+        website_domain = normalize_domain(website)
+        status = str(seed.get("status") or "").strip().lower()
+        try:
+            confidence = float(seed.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        has_real_website = bool(
+            website_domain
+            and website_domain not in PLACEHOLDER_SEED_DOMAINS
+            and not any(website_domain.endswith(f".{suffix}") for suffix in PLACEHOLDER_SEED_DOMAINS)
+            and not _is_non_first_party_profile_domain(website_domain)
+        )
+        strong_status = status in {"confirmed", "approved", "reference", "keep", "strong_signal", "validated"}
+        if has_real_website and (strong_status or confidence >= 0.75 or _has_non_placeholder_evidence_urls(seed)):
+            selected.append(name[:140])
+    return _dedupe_strings(selected)[:6]
+
+
+def _backfill_comparative_retrieval_context(
+    retrieval_results: list[dict[str, Any]],
+    *,
+    cap: int = 8,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not retrieval_results:
+        return retrieval_results, {"attempted": 0, "updated": 0, "errors": []}
+
+    updated: list[dict[str, Any]] = []
+    attempted = 0
+    changed = 0
+    errors: list[str] = []
+
+    for row in retrieval_results:
+        item = dict(row)
+        query_family = normalize_discovery_query_family(
+            item.get("query_family") or item.get("query_intent") or item.get("query_type"),
+            query_text=item.get("query_text"),
+            provider=item.get("provider"),
+        )
+        snippet = str(item.get("snippet") or "").strip()
+        url = normalize_url(item.get("normalized_url") or item.get("url") or "")
+        needs_backfill = query_family in {
+            "competitor_direct",
+            "alternatives",
+            "comparative_source",
+            "traffic_affinity",
+            "peer_expansion",
+            "local_market",
+        } and len(snippet) < 80 and bool(url)
+        if needs_backfill and attempted < max(0, int(cap)):
+            attempted += 1
+            try:
+                fast = fetch_page_fast(url)
+                content = re.sub(r"\s+", " ", str(fast.get("content") or "").strip())
+                if content:
+                    item["snippet"] = content[:900]
+                    item["snippet_backfilled"] = True
+                    item["snippet_backfill_provider"] = fast.get("provider")
+                    changed += 1
+            except Exception as exc:
+                errors.append(f"{url}:{exc}")
+        updated.append(item)
+
+    return updated, {
+        "attempted": attempted,
+        "updated": changed,
+        "errors": errors[:12],
+    }
+
+
+def _planner_scope_hints(scope_hints: Optional[dict[str, Any]]) -> dict[str, Any]:
+    normalized_scope = _normalize_scope_hints(scope_hints)
+    if not normalized_scope:
+        return {}
+    trusted_seed_names = set(
+        _high_confidence_company_seed_names(
+            [seed for seed in (normalized_scope.get("company_seeds") or []) if isinstance(seed, dict)]
+        )
+    )
+    if trusted_seed_names:
+        normalized_scope["company_seeds"] = [
+            seed
+            for seed in (normalized_scope.get("company_seeds") or [])
+            if isinstance(seed, dict) and str(seed.get("name") or "").strip() in trusted_seed_names
+        ]
+    else:
+        normalized_scope["company_seeds"] = []
+    return normalized_scope
+
+
 def _default_discovery_query_plan(
     taxonomy_bricks: list[dict[str, Any]],
     geo_scope: dict[str, Any],
     vertical_focus: list[str],
     scope_hints: Optional[dict[str, Any]] = None,
+    source_company_url: Optional[str] = None,
 ) -> dict[str, Any]:
     normalized_scope = _normalize_scope_hints(scope_hints)
     brick_names = [str(b.get("name") or "").strip() for b in (taxonomy_bricks or []) if str(b.get("name") or "").strip()]
@@ -6080,24 +8630,69 @@ def _default_discovery_query_plan(
         + (normalized_scope.get("company_seed_urls") or [])
     )
     seed_urls = _filter_discovery_seed_urls(seed_urls)[:12]
+    source_company_name = _company_label_from_url(source_company_url)
     lane_candidates = _adjacency_lane_candidates(normalized_scope)
     market_scan_hint = _market_scan_hint(normalized_scope, vertical_focus, brick_names, lane_candidates)
-    company_seed_names = _dedupe_strings(
-        [
-            str(seed.get("name") or "").strip()
-            for seed in (normalized_scope.get("company_seeds") or [])
-            if isinstance(seed, dict) and str(seed.get("name") or "").strip()
-        ]
-    )[:6]
+    company_seed_names = _high_confidence_company_seed_names(
+        [seed for seed in (normalized_scope.get("company_seeds") or []) if isinstance(seed, dict)]
+    )
 
     precision_queries: list[dict[str, Any]] = []
     recall_queries: list[dict[str, Any]] = []
+    source_company_precision_queries: list[dict[str, Any]] = []
+    source_company_recall_queries: list[dict[str, Any]] = []
     seen_queries: set[str] = set()
+    geography_terms = _dedupe_strings(
+        [
+            str(item.get("label") or item.get("name") or item.get("id") or "").strip()
+            for item in (normalized_scope.get("geography_expansions") or [])
+            if isinstance(item, dict) and str(item.get("label") or item.get("name") or item.get("id") or "").strip()
+        ]
+        + _normalize_string_list(
+            [item for item in (normalized_scope.get("geography_expansions") or []) if not isinstance(item, dict)],
+            max_items=2,
+            max_len=32,
+        )
+    )
+    geography_terms = [term for term in geography_terms if "{" not in term and "}" not in term][:4]
+    include_country_terms = _dedupe_strings(
+        [
+            str(item.get("label") or item.get("name") or item.get("id") or "").strip()
+            for item in ((geo_scope or {}).get("include_countries") or [])
+            if isinstance(item, dict) and str(item.get("label") or item.get("name") or item.get("id") or "").strip()
+        ]
+        + _normalize_string_list(
+            [item for item in ((geo_scope or {}).get("include_countries") or []) if not isinstance(item, dict)],
+            max_items=2,
+            max_len=32,
+        )
+    )
+    include_country_terms = [term for term in include_country_terms if "{" not in term and "}" not in term][:4]
+    language_terms = _dedupe_strings(
+        [
+            str(item.get("label") or item.get("name") or item.get("id") or "").strip()
+            for item in ((geo_scope or {}).get("languages") or [])
+            if isinstance(item, dict) and str(item.get("label") or item.get("name") or item.get("id") or "").strip()
+        ]
+        + _normalize_string_list(
+            [item for item in ((geo_scope or {}).get("languages") or []) if not isinstance(item, dict)],
+            max_items=2,
+            max_len=16,
+        )
+    )
+    language_terms = [term for term in language_terms if "{" not in term and "}" not in term][:4]
+    local_market_hint = " ".join(
+        _dedupe_strings(
+            include_country_terms[:2]
+            + language_terms[:2]
+            + geography_terms[:2]
+        )[:3]
+    ).strip() or region
 
     def _add_query(
         bucket: list[dict[str, Any]],
         query_text: str,
-        query_intent: str,
+        query_family: str,
         brick_name: Optional[str],
         scope_bucket: str,
     ) -> None:
@@ -6111,7 +8706,8 @@ def _default_discovery_query_plan(
         bucket.append(
             {
                 "query_text": normalized_query[:220],
-                "query_intent": query_intent,
+                "query_intent": query_family,
+                "query_family": normalize_discovery_query_family(query_family, query_text=normalized_query),
                 "brick_name": brick_name,
                 "scope_bucket": scope_bucket,
             }
@@ -6135,14 +8731,28 @@ def _default_discovery_query_plan(
             _add_query(
                 precision_queries,
                 f"{capability} software vendor {customer_hint} {region}",
-                "capability_discovery",
+                "category_vendor",
                 capability,
                 "core",
             )
             _add_query(
                 precision_queries,
                 f"{capability} platform provider {customer_hint} {region}",
-                "competitor_discovery",
+                "buyer_substitute",
+                capability,
+                "core",
+            )
+            _add_query(
+                precision_queries,
+                f"{capability} competitors {customer_hint} {local_market_hint}",
+                "competitor_direct",
+                capability,
+                "core",
+            )
+            _add_query(
+                precision_queries,
+                f"{capability} alternatives {customer_hint} {region}",
+                "alternatives",
                 capability,
                 "core",
             )
@@ -6171,28 +8781,56 @@ def _default_discovery_query_plan(
                 ),
                 None,
             )
+            lane_context_hint = " ".join(
+                _dedupe_strings(
+                    [
+                        retrieval_query_seed or "",
+                        lane_workflow or "",
+                        market_scan_hint or "",
+                    ]
+                )[:2]
+            ).strip()
             if retrieval_query_seed:
                 _add_query(
                     recall_queries,
                     f"{retrieval_query_seed} software vendor {region}",
-                    "adjacent",
+                    "adjacent_substitute",
                     lane_label,
                     "adjacent",
                 )
-            lane_query = f"{lane_label} software vendor {lane_customer_hint} {region}"
-            if lane_workflow:
-                lane_query = f"{lane_label} {lane_workflow} software vendor {lane_customer_hint} {region}"
+            lane_query = f"{lane_label} {lane_context_hint} software vendor {lane_customer_hint} {region}".strip()
             _add_query(
                 recall_queries,
                 lane_query,
-                "adjacent",
+                "adjacent_substitute",
                 lane_label,
                 "adjacent",
             )
             _add_query(
                 recall_queries,
-                f"{lane_label} platform provider {lane_customer_hint} {region}",
+                f"{lane_label} {lane_context_hint} platform provider {lane_customer_hint} {region}".strip(),
+                "buyer_substitute",
+                lane_label,
                 "adjacent",
+            )
+            _add_query(
+                recall_queries,
+                f"{lane_label} {lane_context_hint} software competitors {lane_customer_hint} {local_market_hint}".strip(),
+                "competitor_direct",
+                lane_label,
+                "adjacent",
+            )
+            _add_query(
+                recall_queries,
+                f"{lane_label} {lane_context_hint} software alternatives {lane_customer_hint} {region}".strip(),
+                "alternatives",
+                lane_label,
+                "adjacent",
+            )
+            _add_query(
+                recall_queries,
+                f"best {lane_label} {lane_context_hint} software {local_market_hint}".strip(),
+                "comparative_source",
                 lane_label,
                 "adjacent",
             )
@@ -6207,23 +8845,96 @@ def _default_discovery_query_plan(
             )
             _add_query(
                 recall_queries,
-                f"companies like {seed_name} {market_scan_hint} {region}",
-                "market_scan",
+                f"{seed_name} competitors {market_scan_hint} {local_market_hint}",
+                "competitor_direct",
                 seed_name,
                 "adjacent",
+            )
+            _add_query(
+                recall_queries,
+                f"companies like {seed_name} {market_scan_hint} {region}",
+                "peer_expansion",
+                seed_name,
+                "adjacent",
+            )
+            _add_query(
+                recall_queries,
+                f"{seed_name} similarweb competitors",
+                "traffic_affinity",
+                seed_name,
+                "adjacent",
+            )
+
+        if source_company_name:
+            _add_query(
+                source_company_precision_queries,
+                f"{source_company_name} competitors",
+                "competitor_direct",
+                source_company_name,
+                "core",
+            )
+            _add_query(
+                source_company_precision_queries,
+                f"{source_company_name} alternatives",
+                "alternatives",
+                source_company_name,
+                "core",
+            )
+            _add_query(
+                source_company_precision_queries,
+                f"companies like {source_company_name}",
+                "peer_expansion",
+                source_company_name,
+                "core",
+            )
+            _add_query(
+                source_company_precision_queries,
+                f"{source_company_name} competitors {market_scan_hint} {local_market_hint}",
+                "competitor_direct",
+                source_company_name,
+                "core",
+            )
+            _add_query(
+                source_company_recall_queries,
+                f"best alternatives to {source_company_name}",
+                "comparative_source",
+                source_company_name,
+                "core",
+            )
+            _add_query(
+                source_company_recall_queries,
+                f"{source_company_name} alternatives {market_scan_hint} {region}",
+                "alternatives",
+                source_company_name,
+                "core",
+            )
+            _add_query(
+                source_company_recall_queries,
+                f"{source_company_name} similarweb competitors",
+                "traffic_affinity",
+                source_company_name,
+                "core",
             )
 
         if not recall_queries:
             _add_query(
                 recall_queries,
                 f"adjacent workflow software vendor {customer_hint} {region}",
-                "adjacent",
+                "adjacent_substitute",
                 None,
                 "adjacent",
             )
         return {
-            "precision_queries": precision_queries[:8],
-            "recall_queries": recall_queries[:8],
+            "precision_queries": _merge_query_entries(
+                source_company_precision_queries,
+                precision_queries,
+                max_items=10,
+            ),
+            "recall_queries": _merge_query_entries(
+                source_company_recall_queries,
+                recall_queries,
+                max_items=12,
+            ),
             "seed_urls": seed_urls,
             "must_include_terms": _dedupe_strings(
                 customer_terms[:2]
@@ -6247,34 +8958,106 @@ def _default_discovery_query_plan(
     _add_query(
         precision_queries,
         f"{brick_hint} software vendor {vertical_hint} {region}",
-        "capability_discovery",
+        "category_vendor",
         brick_names[0] if brick_names else None,
         "core",
     )
     _add_query(
         precision_queries,
         f"{brick_hint} platform provider {vertical_hint} {region}",
-        "competitor_discovery",
+        "buyer_substitute",
         brick_names[1] if len(brick_names) > 1 else (brick_names[0] if brick_names else None),
+        "core",
+    )
+    _add_query(
+        precision_queries,
+        f"{brick_hint} competitors {vertical_hint} {local_market_hint}",
+        "competitor_direct",
+        brick_names[0] if brick_names else None,
         "core",
     )
     _add_query(
         recall_queries,
         f"{vertical_hint} SaaS vendor {region}",
-        "market_scan",
+        "category_vendor",
         None,
         "core",
     )
     _add_query(
         recall_queries,
         f"{vertical_hint} adjacent workflow software vendor {region}",
-        "adjacent",
+        "adjacent_substitute",
         None,
         "adjacent",
     )
+    if source_company_name:
+        _add_query(
+            source_company_precision_queries,
+            f"{source_company_name} competitors",
+            "competitor_direct",
+            source_company_name,
+            "core",
+        )
+        _add_query(
+            source_company_precision_queries,
+            f"{source_company_name} alternatives",
+            "alternatives",
+            source_company_name,
+            "core",
+        )
+        _add_query(
+            source_company_precision_queries,
+            f"{source_company_name} competitors {vertical_hint} {local_market_hint}",
+            "competitor_direct",
+            source_company_name,
+            "core",
+        )
+        _add_query(
+            source_company_recall_queries,
+            f"best alternatives to {source_company_name}",
+            "comparative_source",
+            source_company_name,
+            "core",
+        )
+        _add_query(
+            source_company_recall_queries,
+            f"{source_company_name} alternatives {vertical_hint} {region}",
+            "alternatives",
+            source_company_name,
+            "core",
+        )
+        _add_query(
+            source_company_recall_queries,
+            f"companies like {source_company_name}",
+            "peer_expansion",
+            source_company_name,
+            "core",
+        )
+    _add_query(
+        recall_queries,
+        f"{vertical_hint} alternatives {local_market_hint}",
+        "alternatives",
+        None,
+        "core",
+    )
+    _add_query(
+        recall_queries,
+        f"best {vertical_hint} software {local_market_hint}",
+        "comparative_source",
+        None,
+        "core",
+    )
     return {
-        "precision_queries": precision_queries[:8],
-        "recall_queries": recall_queries[:8],
+        "precision_queries": _merge_query_entries(
+            source_company_precision_queries,
+            precision_queries,
+            max_items=10,
+        ),
+        "recall_queries": _merge_query_entries(
+            source_company_recall_queries,
+            recall_queries,
+            max_items=12,
+        ),
         "seed_urls": seed_urls,
         "must_include_terms": [],
         "must_exclude_terms": _default_exclude_terms_for_scope(
@@ -6297,12 +9080,14 @@ def _build_discovery_query_plan_prompt(
     vertical_focus: list[str],
     comparator_mentions: list[dict[str, Any]],
     scope_hints: Optional[dict[str, Any]] = None,
+    source_company_url: Optional[str] = None,
 ) -> str:
-    normalized_scope = _normalize_scope_hints(scope_hints)
+    normalized_scope = _planner_scope_hints(scope_hints)
     brick_names = [str(b.get("name") or "").strip() for b in (taxonomy_bricks or []) if str(b.get("name") or "").strip()]
     region = str((geo_scope or {}).get("region") or "EU+UK")
     include_countries = [str(c).strip() for c in ((geo_scope or {}).get("include_countries") or []) if str(c).strip()]
     verticals = [str(v).strip() for v in (vertical_focus or []) if str(v).strip()]
+    source_company_name = _company_label_from_url(source_company_url) or "target company"
 
     seed_lines: list[str] = []
     for mention in (comparator_mentions or [])[:20]:
@@ -6317,10 +9102,10 @@ def _build_discovery_query_plan_prompt(
 Return ONLY valid JSON with this schema:
 {{
   "precision_queries": [
-    {{"query": "string", "query_intent": "competitors|capability|pricing|integrations|market_scan", "brick_name": "optional capability name", "scope_bucket": "core|adjacent"}}
+    {{"query": "string", "query_family": "category_vendor|competitor_direct|alternatives|buyer_substitute|adjacent_substitute|peer_expansion|local_market|comparative_source|traffic_affinity", "brick_name": "optional capability name", "scope_bucket": "core|adjacent"}}
   ],
   "recall_queries": [
-    {{"query": "string", "query_intent": "market_scan|alternatives|adjacent", "brick_name": "optional capability name", "scope_bucket": "core|adjacent"}}
+    {{"query": "string", "query_family": "category_vendor|competitor_direct|alternatives|buyer_substitute|adjacent_substitute|peer_expansion|local_market|comparative_source|traffic_affinity", "brick_name": "optional capability name", "scope_bucket": "core|adjacent"}}
   ],
   "seed_urls": ["https://..."],
   "must_include_terms": ["string"],
@@ -6336,6 +9121,7 @@ Buyer context:
 
 Target filters:
 - Region: {region}
+- Source company: {source_company_name}
 - Include countries: {", ".join(include_countries) if include_countries else "auto"}
 - Approved scope hints: {json.dumps(normalized_scope, ensure_ascii=False) if normalized_scope else "none confirmed yet"}
 - Legacy vertical hints: {", ".join(verticals) if verticals else "generic software"}
@@ -6345,9 +9131,10 @@ Comparator seeds:
 {seeds_text}
 
 Constraints:
-- 5-8 precision queries, 3-8 recall queries.
+- 6-10 precision queries, 6-12 recall queries.
 - Keep queries short, seller-oriented, and evidence-friendly.
 - Prefer software vendors, platform providers, SaaS companies, and official company or product pages.
+- Include a diversified mix across direct competitors, alternatives, local-market phrasing, adjacent substitutes, comparative/list-source discovery, and buyer-substitute wording when relevant.
 - Avoid buyer institutions, bank homepages, consultants, market-research reports, listicles, generic news pages, and PDFs unless no stronger company evidence exists.
 - Seed URLs should be high-confidence competitor/company homepages only, and should not point back to the seed company itself or its subdomains when searching for similar companies.
 - Include must_exclude_terms only when they are clearly relevant to the market and query family. Always exclude generic low-signal pages like careers/jobs when useful.
@@ -6406,6 +9193,7 @@ def _query_is_seller_oriented(query_text: Any) -> bool:
         "companies like",
         "competitor",
         "competitors",
+        "best ",
         "wealthtech",
     )
     return any(marker in text for marker in markers)
@@ -6497,6 +9285,7 @@ def _stabilize_discovery_query_plan(
     normalized_scope: Optional[dict[str, Any]] = None,
     vertical_focus: Optional[list[str]] = None,
     brick_names: Optional[list[str]] = None,
+    source_company_url: Optional[str] = None,
 ) -> tuple[dict[str, Any], list[str]]:
     stabilized = {
         "precision_queries": _normalize_query_entries(plan.get("precision_queries"), max_items=8),
@@ -6527,6 +9316,7 @@ def _stabilize_discovery_query_plan(
         [str(v).strip() for v in (brick_names or []) if str(v).strip()],
         _adjacency_lane_candidates(normalized_scope or {}),
     ).lower()
+    source_company_name = str(_company_label_from_url(source_company_url) or "").strip()
 
     if stabilized["domain_allowlist"]:
         stabilized["domain_allowlist"] = []
@@ -6554,6 +9344,66 @@ def _stabilize_discovery_query_plan(
             max_items=8,
         )
         adjustments.append("fallback_recall_queries")
+
+    required_precision_families = {"category_vendor", "competitor_direct"}
+    required_recall_families = {"alternatives", "local_market", "comparative_source"}
+
+    present_precision_families = {
+        normalize_discovery_query_family(
+            entry.get("query_family") or entry.get("query_intent"),
+            query_text=entry.get("query_text"),
+        )
+        for entry in stabilized["precision_queries"]
+    }
+    present_recall_families = {
+        normalize_discovery_query_family(
+            entry.get("query_family") or entry.get("query_intent"),
+            query_text=entry.get("query_text"),
+        )
+        for entry in stabilized["recall_queries"]
+    }
+
+    if not required_precision_families.issubset(present_precision_families):
+        stabilized["precision_queries"] = _merge_query_entries(
+            [entry for entry in fallback["precision_queries"] if normalize_discovery_query_family(entry.get("query_family") or entry.get("query_intent"), query_text=entry.get("query_text")) in required_precision_families],
+            stabilized["precision_queries"],
+            max_items=10,
+        )
+        adjustments.append("restore_precision_family_mix")
+
+    if not required_recall_families.issubset(present_recall_families):
+        stabilized["recall_queries"] = _merge_query_entries(
+            [entry for entry in fallback["recall_queries"] if normalize_discovery_query_family(entry.get("query_family") or entry.get("query_intent"), query_text=entry.get("query_text")) in required_recall_families],
+            stabilized["recall_queries"],
+            max_items=12,
+        )
+        adjustments.append("restore_recall_family_mix")
+
+    if source_company_name:
+        source_company_query_present = any(
+            source_company_name.lower() in str(entry.get("query_text") or "").strip().lower()
+            for entry in stabilized["precision_queries"] + stabilized["recall_queries"]
+        )
+        if not source_company_query_present:
+            stabilized["precision_queries"] = _merge_query_entries(
+                [
+                    entry
+                    for entry in fallback["precision_queries"]
+                    if source_company_name.lower() in str(entry.get("query_text") or "").strip().lower()
+                ],
+                stabilized["precision_queries"],
+                max_items=10,
+            )
+            stabilized["recall_queries"] = _merge_query_entries(
+                [
+                    entry
+                    for entry in fallback["recall_queries"]
+                    if source_company_name.lower() in str(entry.get("query_text") or "").strip().lower()
+                ],
+                stabilized["recall_queries"],
+                max_items=12,
+            )
+            adjustments.append("restore_source_company_queries")
 
     stabilized["seed_urls"] = _filter_discovery_seed_urls(
         _dedupe_strings(stabilized["seed_urls"] + fallback["seed_urls"])
@@ -6604,26 +9454,46 @@ def _build_external_search_queries_from_plan(
     country_hint = " ".join([str(c) for c in (preferred_countries or []) if str(c).strip()])
     language_hint = " ".join([str(c) for c in (preferred_languages or []) if str(c).strip()])
     hint_suffix = " ".join([country_hint, language_hint]).strip()
+    lightweight_query_families = {
+        "competitor_direct",
+        "alternatives",
+        "comparative_source",
+        "traffic_affinity",
+        "peer_expansion",
+        "local_market",
+    }
+    lightweight_exclude_terms = [
+        term
+        for term in exclude_terms
+        if str(term).strip().lower() in {"career", "careers", "job", "jobs"}
+    ][:4]
 
     def _add_entries(entries: list[dict[str, Any]], query_type: str) -> None:
         for idx, entry in enumerate(entries, start=1):
             query_text = str(entry.get("query_text") or "").strip()
-            if hint_suffix:
+            query_family = normalize_discovery_query_family(
+                entry.get("query_family") or entry.get("query_intent"),
+                query_text=query_text,
+            )
+            if hint_suffix and query_family not in lightweight_query_families:
                 query_text = f"{query_text} {hint_suffix}".strip()
             scope_metadata = _scope_metadata_for_query_entry(entry, normalized_scope=normalized_scope)
+            family_include_terms = [] if query_family in lightweight_query_families else include_terms
+            family_exclude_terms = lightweight_exclude_terms if query_family in lightweight_query_families else exclude_terms
             queries.append(
                 {
                     "query_id": f"{query_type}_{idx}",
                     "query_text": query_text,
                     "query_type": query_type,
-                    "query_intent": entry.get("query_intent"),
+                    "query_intent": entry.get("query_intent") or query_family,
+                    "query_family": query_family,
                     "brick_name": entry.get("brick_name"),
                     "scope_bucket": scope_metadata.get("scope_bucket"),
                     "fit_to_adjacency_box_ids": scope_metadata.get("fit_to_adjacency_box_ids") or [],
                     "fit_to_adjacency_box_labels": scope_metadata.get("fit_to_adjacency_box_labels") or [],
                     "source_capability_matches": scope_metadata.get("source_capability_matches") or [],
-                    "must_include_terms": include_terms,
-                    "must_exclude_terms": exclude_terms,
+                    "must_include_terms": family_include_terms,
+                    "must_exclude_terms": family_exclude_terms,
                     "domain_allowlist": allowlist,
                     "domain_blocklist": blocklist,
                 }
@@ -6640,6 +9510,15 @@ def _build_external_search_queries_from_plan(
                 str(entry.get("scope_bucket") or "")
                 for entry in precision_entries + recall_entries
                 if str(entry.get("scope_bucket") or "").strip()
+            ]
+        ),
+        "query_families": _dedupe_strings(
+            [
+                normalize_discovery_query_family(
+                    entry.get("query_family") or entry.get("query_intent"),
+                    query_text=entry.get("query_text"),
+                )
+                for entry in precision_entries + recall_entries
             ]
         ),
         "must_include_terms": include_terms,
@@ -6680,8 +9559,6 @@ def _known_entity_suppression_profile(
     profile: CompanyProfile | None,
     *,
     existing_companies: list[Any] | None = None,
-    previous_entities: list[Any] | None = None,
-    previous_aliases: list[Any] | None = None,
 ) -> dict[str, Any]:
     blocked_domains: set[str] = set()
     blocked_registry_ids: set[str] = set()
@@ -6739,15 +9616,6 @@ def _known_entity_suppression_profile(
     for company in existing_companies or []:
         register_name(_read(company, "name"))
         register_url(_read(company, "website"))
-
-    for entity in previous_entities or []:
-        register_name(_read(entity, "canonical_name"))
-        register_url(_read(entity, "canonical_website"))
-        register_registry_id(_read(entity, "registry_id"))
-
-    for alias in previous_aliases or []:
-        register_name(_read(alias, "alias_name"))
-        register_url(_read(alias, "alias_website"))
 
     return {
         "blocked_domains": sorted(blocked_domains),
@@ -6998,6 +9866,11 @@ def _external_candidate_name(title: Any, url: str) -> str:
         return domain_label
     normalized = raw_title.replace("\n", " ").strip()
     lower = normalized.lower()
+    profile_match = re.match(r"^\s*([^|:\-]{2,80}?)\s*[-|:]\s*(?:\d{4}\s+)?company profile\b", normalized, flags=re.I)
+    if profile_match:
+        leading_name = str(profile_match.group(1) or "").strip()
+        if leading_name and _brand_key(leading_name) not in domain_variants:
+            return leading_name[:300]
     domain_lower = domain_label.lower()
     generic_segment_tokens = (
         "software",
@@ -7060,6 +9933,20 @@ def _external_candidate_name(title: Any, url: str) -> str:
     if domain_lower and domain_lower not in lower and len(normalized.split()) > 8:
         return domain_label
     return normalized[:300]
+
+
+def _is_third_party_profile_result(row: dict[str, Any]) -> bool:
+    title = str(row.get("title") or "").strip()
+    if not title:
+        return False
+    lowered = title.lower()
+    if "company profile" in lowered or "company overview" in lowered or "organization profile" in lowered:
+        return True
+    url = normalize_url(row.get("normalized_url") or row.get("url") or "")
+    path = str(urlparse(url).path or "").lower()
+    return any(token in path for token in ("/companies/", "/company/", "/organization/")) and any(
+        marker in lowered for marker in ("profile", "overview", "company")
+    )
 
 
 def _looks_like_vendor_candidate_result(row: dict[str, Any]) -> bool:
@@ -7165,12 +10052,13 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
             continue
         if domain and any(domain == blocked or domain.endswith(f".{blocked}") for blocked in DISCOVERY_NON_VENDOR_HOSTS):
             continue
+        third_party_profile = _is_third_party_profile_result(row)
         homepage_url = (
             f"{parsed.scheme or 'https'}://{parsed.netloc}"
             if parsed.netloc
             else (normalized_url or url)
         )
-        official_website_url = homepage_url
+        official_website_url = None if third_party_profile else homepage_url
         discovery_url = normalized_url or url
         candidates.append(
             {
@@ -7179,7 +10067,7 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
                 "official_website_url": official_website_url,
                 "discovery_url": discovery_url,
                 "entity_type": "company",
-                "first_party_domains": [domain] if domain else [],
+                "first_party_domains": [domain] if domain and not third_party_profile else [],
                 "hq_country": "Unknown",
                 "likely_verticals": [],
                 "employee_estimate": None,
@@ -7193,6 +10081,8 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
                         "source_kind": "external_search_snippet",
                         "provider": row.get("provider"),
                         "query_id": row.get("query_id"),
+                        "query_intent": row.get("query_intent"),
+                        "query_family": row.get("query_family"),
                         "scope_bucket": row.get("scope_bucket"),
                         "fit_to_adjacency_box_ids": row.get("fit_to_adjacency_box_ids") or [],
                         "fit_to_adjacency_box_labels": row.get("fit_to_adjacency_box_labels") or [],
@@ -7209,6 +10099,8 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
                         "metadata": {
                             "query_id": row.get("query_id"),
                             "query_type": row.get("query_type"),
+                            "query_intent": row.get("query_intent"),
+                            "query_family": row.get("query_family"),
                             "query_text": row.get("query_text"),
                             "brick_name": row.get("brick_name"),
                             "scope_bucket": row.get("scope_bucket"),
@@ -7217,6 +10109,15 @@ def _candidates_from_retrieval_results(results: list[dict[str, Any]]) -> list[di
                             "source_capability_matches": row.get("source_capability_matches") or [],
                             "rank": row.get("rank"),
                             "provider": row.get("provider"),
+                            "source_family": normalize_discovery_source_family(
+                                "external_search_seed",
+                                {
+                                    "query_family": row.get("query_family"),
+                                    "query_type": row.get("query_type"),
+                                    "provider": row.get("provider"),
+                                },
+                                discovery_url,
+                            ),
                         },
                     }
                 ],
@@ -7269,18 +10170,68 @@ def _candidate_validation_lane_metadata(
     return _dedupe_strings(final_lane_ids)[:8], _dedupe_strings(final_lane_labels)[:8]
 
 
+def _candidate_origin_discovery_families(origin_items: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    query_families: list[str] = []
+    source_families: list[str] = []
+    for origin in origin_items or []:
+        if not isinstance(origin, dict):
+            continue
+        metadata = origin.get("metadata") if isinstance(origin.get("metadata"), dict) else {}
+        query_families.append(
+            normalize_discovery_query_family(
+                metadata.get("query_family") or metadata.get("query_intent") or metadata.get("query_type"),
+                query_text=metadata.get("query_text"),
+                provider=metadata.get("provider"),
+            )
+        )
+        source_families.append(
+            normalize_discovery_source_family(
+                origin.get("origin_type"),
+                metadata,
+                origin.get("origin_url"),
+            )
+        )
+    return _dedupe_strings(query_families)[:8], _dedupe_strings(source_families)[:8]
+
+
 def _is_persistable_vendor_entity(entity: dict[str, Any]) -> bool:
     canonical_website = str(entity.get("canonical_website") or "").strip()
     discovery_url = str(entity.get("discovery_primary_url") or "").strip()
     canonical_domain = normalize_domain(canonical_website)
     discovery_domain = normalize_domain(discovery_url)
+    origin_types = {
+        str(origin_type or "").strip().lower()
+        for origin_type in (entity.get("origin_types") or [])
+        if str(origin_type or "").strip()
+    }
+    registry_id = str(entity.get("registry_id") or "").strip()
+    registry_source = str(entity.get("registry_source") or "").strip().lower()
+    registry_fields = entity.get("registry_fields") if isinstance(entity.get("registry_fields"), dict) else {}
+    is_fr_registry_candidate = bool(
+        registry_id
+        and (
+            "registry_fr_base" in origin_types
+            or registry_source.startswith("fr_")
+            or normalize_country(entity.get("registry_country")) == "FR"
+            or bool(registry_fields)
+        )
+    )
 
-    for domain in [canonical_domain, discovery_domain]:
+    for domain in [canonical_domain]:
         if not domain:
             continue
         if _is_non_first_party_profile_domain(domain):
             return False
         if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in DISCOVERY_NON_VENDOR_HOSTS):
+            return False
+    if discovery_domain:
+        if _is_non_first_party_profile_domain(discovery_domain):
+            if not is_fr_registry_candidate:
+                return False
+        elif any(
+            discovery_domain == blocked or discovery_domain.endswith(f".{blocked}")
+            for blocked in DISCOVERY_NON_VENDOR_HOSTS
+        ):
             return False
 
     parsed_discovery = urlparse(normalize_url(discovery_url) or discovery_url) if discovery_url else None
@@ -7344,6 +10295,7 @@ def _build_candidate_synthesis_prompt(
                 "provider": row.get("provider"),
                 "query_id": row.get("query_id"),
                 "query_type": row.get("query_type"),
+                "query_family": row.get("query_family") or row.get("query_intent"),
                 "rank": row.get("rank"),
             }
         )
@@ -7368,6 +10320,7 @@ Output schema:
   {{
     "name": "Company Name",
     "website": "https://example.com",
+    "discovery_url": "https://example.com/competitors-page",
     "hq_country": "DE",
     "likely_verticals": ["wealth_manager"],
     "employee_estimate": 120,
@@ -7388,8 +10341,12 @@ Output schema:
 ]
 
 Constraints:
-- Every company must have website and citation_url from retrieval_context.
+- Every company must have at least one citation_url from retrieval_context.
+- `website` is optional. Use it only if the official company site is clearly present in retrieval_context. Otherwise leave it null and keep the company as a discovery candidate.
+- `discovery_url` should point to the retrieval-context page that mentioned or surfaced the company.
 - Do not invent companies or URLs not present above.
+- Prefer plausible software vendors and market-map candidates even if the evidence is comparative/list-source rather than first-party.
+- It is acceptable to extract a company from a comparative/list article snippet when the company is clearly named there, even if the official company site is not in retrieval_context yet.
 - Return JSON only.
 """
 
@@ -7421,13 +10378,18 @@ def _validate_closed_world_candidates(
     for candidate in candidates:
         website_raw = str(candidate.get("website") or "").strip()
         website = normalize_url(website_raw) if website_raw else ""
-        if not website or website not in allowed_urls:
+        discovery_url = normalize_url(
+            str(candidate.get("discovery_url") or candidate.get("profile_url") or "").strip()
+        ) if str(candidate.get("discovery_url") or candidate.get("profile_url") or "").strip() else ""
+        provenance_url = discovery_url or website
+        if not provenance_url or provenance_url not in allowed_urls:
             stats["dropped_missing_url"] += 1
             continue
         website_domain = normalize_domain(website)
         if website_domain and _is_non_first_party_profile_domain(website_domain):
             stats["dropped_non_first_party_website"] += 1
-            continue
+            website = ""
+            website_domain = None
 
         reasons: list[dict[str, Any]] = []
         for item in candidate.get("why_relevant", []) or []:
@@ -7448,16 +10410,18 @@ def _validate_closed_world_candidates(
             reasons.append(reason)
 
         if not reasons:
-            provenance = retrieval_by_url.get(website)
+            provenance = retrieval_by_url.get(provenance_url)
             if provenance:
                 reasons.append(
                     {
                         "text": str(provenance.get("snippet") or "Externally discovered candidate signal.")[:400],
-                        "citation_url": website,
+                        "citation_url": provenance_url,
                         "dimension": "external_search_seed",
                         "source_kind": "external_search_snippet",
                         "provider": provenance.get("provider"),
                         "query_id": provenance.get("query_id"),
+                        "query_intent": provenance.get("query_intent"),
+                        "query_family": provenance.get("query_family"),
                         "rank": provenance.get("rank"),
                     }
                 )
@@ -7466,28 +10430,54 @@ def _validate_closed_world_candidates(
             stats["dropped_missing_evidence"] += 1
             continue
 
-        candidate["website"] = website
+        candidate["website"] = website or None
+        candidate["official_website_url"] = website or None
+        candidate["discovery_url"] = provenance_url
         candidate["why_relevant"] = reasons
         candidate.setdefault("_origins", [])
-        provenance = retrieval_by_url.get(website)
+        provenance = retrieval_by_url.get(provenance_url)
         if provenance and not _looks_like_vendor_candidate_result(provenance):
-            stats["dropped_non_vendor_result"] += 1
-            continue
+            provenance_query_family = normalize_discovery_query_family(
+                provenance.get("query_family") or provenance.get("query_intent") or provenance.get("query_type"),
+                query_text=provenance.get("query_text"),
+                provider=provenance.get("provider"),
+            )
+            if provenance_query_family not in {
+                "competitor_direct",
+                "alternatives",
+                "comparative_source",
+                "traffic_affinity",
+                "peer_expansion",
+                "local_market",
+            }:
+                stats["dropped_non_vendor_result"] += 1
+                continue
         if provenance:
             candidate["_origins"].append(
                 {
                     "origin_type": "external_search_seed",
-                    "origin_url": website,
+                    "origin_url": provenance_url,
                     "source_name": provenance.get("provider"),
                     "source_run_id": None,
                     "metadata": {
                         "query_id": provenance.get("query_id"),
                         "query_type": provenance.get("query_type"),
+                        "query_intent": provenance.get("query_intent"),
+                        "query_family": provenance.get("query_family"),
                         "query_text": provenance.get("query_text"),
                         "brick_name": provenance.get("brick_name"),
                         "scope_bucket": provenance.get("scope_bucket"),
                         "rank": provenance.get("rank"),
                         "provider": provenance.get("provider"),
+                        "source_family": normalize_discovery_source_family(
+                            "external_search_seed",
+                            {
+                                "query_family": provenance.get("query_family"),
+                                "query_type": provenance.get("query_type"),
+                                "provider": provenance.get("provider"),
+                            },
+                            provenance_url,
+                        ),
                     },
                 }
             )
@@ -7544,18 +10534,25 @@ def _parse_discovery_candidates_from_text(raw_text: str) -> list[dict[str, Any]]
             continue
         name = str(row.get("name") or "").strip()
         website = str(row.get("website") or "").strip()
-        if not name or not website:
+        discovery_url = str(row.get("discovery_url") or row.get("profile_url") or "").strip()
+        why_relevant = row.get("why_relevant") if isinstance(row.get("why_relevant"), list) else []
+        has_citation = any(
+            isinstance(item, dict) and str(item.get("citation_url") or "").strip()
+            for item in why_relevant
+        )
+        if not name or not (website or discovery_url or has_citation):
             continue
         validated.append(
             {
                 "name": name,
-                "website": website,
+                "website": website or None,
+                "discovery_url": discovery_url or None,
                 "hq_country": str(row.get("hq_country") or "Unknown").strip() or "Unknown",
                 "likely_verticals": row.get("likely_verticals") if isinstance(row.get("likely_verticals"), list) else [],
                 "employee_estimate": row.get("employee_estimate"),
                 "capability_signals": row.get("capability_signals") if isinstance(row.get("capability_signals"), list) else [],
                 "qualification": row.get("qualification") if isinstance(row.get("qualification"), dict) else {},
-                "why_relevant": row.get("why_relevant") if isinstance(row.get("why_relevant"), list) else [],
+                "why_relevant": why_relevant,
             }
         )
     return validated
@@ -9114,6 +12111,15 @@ def _run_discovery_universe_fixture(job_id: int):
                     "origin_types": ["expansion_company_seed"],
                     "fixture_mode": True,
                     "fit_to_adjacency_box_ids": seed.get("fit_to_adjacency_box_ids") or [],
+                    "short_description": str(seed.get("why_relevant") or "Expansion company seed.")[:240],
+                    "why_relevant": [
+                        {
+                            "text": str(seed.get("why_relevant") or "Expansion company seed.")[:240],
+                            "citation_url": website,
+                        }
+                    ] if website or seed.get("why_relevant") else [],
+                    "discovery_score": float(total_score),
+                    "geo_signals": [hq_country] if hq_country else [],
                 },
             )
             db.add(entity)
@@ -9505,88 +12511,97 @@ def _run_discovery_universe_monolith(job_id: int):
                         }
                     )
 
+            france_registry_first = _should_use_france_registry_universe(profile)
             job.progress = 0.2
-            job.progress_message = "Ingesting comparator directories..."
+            job.progress_message = (
+                "Building France registry universe..."
+                if france_registry_first
+                else "Ingesting comparator directories..."
+            )
             db.commit()
 
             seed_stage_started = _stage_started()
             mention_records: list[dict[str, Any]] = []
             comparator_errors: list[str] = []
-            source_names = _discovery_source_names_for_workspace(
-                profile,
-                segment_hints=segment_hints,
-                normalized_scope=normalized_scope_hints,
-            )
-            for source_name in source_names:
-                source_result = ingest_source(source_name)
-                run_row = ComparatorSourceRun(
-                    workspace_id=workspace.id,
-                    source_name=source_result["source_name"],
-                    source_url=source_result["source_url"],
-                    status="completed" if not source_result.get("errors") else "completed_with_errors",
-                    mentions_found=len(source_result.get("mentions", [])),
-                    metadata_json={
-                        "pages_crawled": source_result.get("pages_crawled", 0),
-                        "errors": source_result.get("errors", []),
-                        "source_tier": "tier4_discovery",
-                    },
+            source_names: list[str] = []
+            if not france_registry_first:
+                source_names = _discovery_source_names_for_workspace(
+                    profile,
+                    segment_hints=segment_hints,
+                    normalized_scope=normalized_scope_hints,
                 )
-                db.add(run_row)
-                db.flush()
-
-                for mention in source_result.get("mentions", []):
-                    profile_url = str(
-                        mention.get("profile_url")
-                        or mention.get("company_url")
-                        or mention.get("listing_url")
-                        or source_result["source_url"]
-                    ).strip()
-                    official_website_url = str(mention.get("official_website_url") or "").strip() or None
-                    if official_website_url and _is_non_first_party_profile_domain(normalize_domain(official_website_url)):
-                        official_website_url = None
-                    record = CompanyMention(
+                for source_name in source_names:
+                    source_result = ingest_source(source_name)
+                    run_row = ComparatorSourceRun(
                         workspace_id=workspace.id,
-                        source_run_id=run_row.id,
                         source_name=source_result["source_name"],
-                        listing_url=str(mention.get("listing_url") or source_result["source_url"]),
-                        company_name=str(mention.get("company_name") or "")[:300],
-                        company_url=str(mention.get("company_url") or "")[:1000] or None,
-                        profile_url=profile_url[:1000] if profile_url else None,
-                        official_website_url=official_website_url[:1000] if official_website_url else None,
-                        company_slug=str(mention.get("company_slug") or "")[:180] or None,
-                        solution_slug=str(mention.get("solution_slug") or "")[:220] or None,
-                        entity_type=str(mention.get("entity_type") or "company")[:32] or "company",
-                        category_tags=mention.get("category_tags") or [],
-                        listing_text_snippets=mention.get("listing_text_snippets") or [],
-                        provenance_json={
-                            **(mention.get("provenance") or {}),
+                        source_url=source_result["source_url"],
+                        status="completed" if not source_result.get("errors") else "completed_with_errors",
+                        mentions_found=len(source_result.get("mentions", [])),
+                        metadata_json={
+                            "pages_crawled": source_result.get("pages_crawled", 0),
+                            "errors": source_result.get("errors", []),
                             "source_tier": "tier4_discovery",
                         },
                     )
-                    db.add(record)
-                    mention_records.append(
-                        {
-                            "company_name": record.company_name,
-                            "company_url": record.company_url,
-                            "profile_url": record.profile_url,
-                            "official_website_url": record.official_website_url,
-                            "company_slug": record.company_slug,
-                            "solution_slug": record.solution_slug,
-                            "entity_type": record.entity_type,
-                            "listing_url": record.listing_url,
-                            "category_tags": record.category_tags or [],
-                            "listing_text_snippets": record.listing_text_snippets or [],
-                            "source_name": record.source_name,
-                            "source_run_id": run_row.id,
-                        }
-                    )
-                comparator_errors.extend(source_result.get("errors", []))
-                source_coverage[source_name] = {
-                    "mentions": len(source_result.get("mentions", [])),
-                    "pages_crawled": source_result.get("pages_crawled", 0),
-                    "errors": source_result.get("errors", []),
-                }
-                db.commit()
+                    db.add(run_row)
+                    db.flush()
+
+                    for mention in source_result.get("mentions", []):
+                        profile_url = str(
+                            mention.get("profile_url")
+                            or mention.get("company_url")
+                            or mention.get("listing_url")
+                            or source_result["source_url"]
+                        ).strip()
+                        official_website_url = str(mention.get("official_website_url") or "").strip() or None
+                        if official_website_url and _is_non_first_party_profile_domain(normalize_domain(official_website_url)):
+                            official_website_url = None
+                        record = CompanyMention(
+                            workspace_id=workspace.id,
+                            source_run_id=run_row.id,
+                            source_name=source_result["source_name"],
+                            listing_url=str(mention.get("listing_url") or source_result["source_url"]),
+                            company_name=str(mention.get("company_name") or "")[:300],
+                            company_url=str(mention.get("company_url") or "")[:1000] or None,
+                            profile_url=profile_url[:1000] if profile_url else None,
+                            official_website_url=official_website_url[:1000] if official_website_url else None,
+                            company_slug=str(mention.get("company_slug") or "")[:180] or None,
+                            solution_slug=str(mention.get("solution_slug") or "")[:220] or None,
+                            entity_type=str(mention.get("entity_type") or "company")[:32] or "company",
+                            category_tags=mention.get("category_tags") or [],
+                            listing_text_snippets=mention.get("listing_text_snippets") or [],
+                            provenance_json={
+                                **(mention.get("provenance") or {}),
+                                "source_tier": "tier4_discovery",
+                            },
+                        )
+                        db.add(record)
+                        mention_records.append(
+                            {
+                                "company_name": record.company_name,
+                                "company_url": record.company_url,
+                                "profile_url": record.profile_url,
+                                "official_website_url": record.official_website_url,
+                                "company_slug": record.company_slug,
+                                "solution_slug": record.solution_slug,
+                                "entity_type": record.entity_type,
+                                "listing_url": record.listing_url,
+                                "category_tags": record.category_tags or [],
+                                "listing_text_snippets": record.listing_text_snippets or [],
+                                "source_name": record.source_name,
+                                "source_run_id": run_row.id,
+                            }
+                        )
+                    comparator_errors.extend(source_result.get("errors", []))
+                    source_coverage[source_name] = {
+                        "mentions": len(source_result.get("mentions", [])),
+                        "pages_crawled": source_result.get("pages_crawled", 0),
+                        "errors": source_result.get("errors", []),
+                    }
+                    db.commit()
+            else:
+                source_coverage["fr_registry"] = {"mode": "registry_first", "enabled": True}
             _stage_finished("stage_seed_ingest", seed_stage_started, settings.stage_seed_ingest_timeout_seconds)
             _save_stage_checkpoint(
                 job_id,
@@ -9595,6 +12610,7 @@ def _run_discovery_universe_monolith(job_id: int):
                     "mentions_count": len(mention_records),
                     "source_coverage_keys": list(source_coverage.keys())[:20],
                     "comparator_errors_count": len(comparator_errors),
+                    "france_registry_first": france_registry_first,
                 },
             )
 
@@ -9617,58 +12633,98 @@ def _run_discovery_universe_monolith(job_id: int):
             external_search_result_counts: dict[str, Any] = {}
             external_search_brick_yield: dict[str, int] = {}
             retrieval_results: list[dict[str, Any]] = []
+            backfill_stats: dict[str, Any] = {"attempted": 0, "updated": 0, "errors": []}
+            search_queries: list[dict[str, Any]] = []
+            query_plan: dict[str, Any] = {}
 
-            fallback_plan = _default_discovery_query_plan(
-                taxonomy_bricks=capability_hints,
-                geo_scope=profile.geo_scope or {},
-                vertical_focus=segment_hints,
-                scope_hints=normalized_scope_hints,
-            )
-            query_plan = fallback_plan
-            query_plan_adjustments: list[str] = []
-            try:
-                plan_prompt = _build_discovery_query_plan_prompt(
-                    context_pack=profile.context_pack_markdown or "",
+            if france_registry_first:
+                query_plan_summary = {
+                    "france_registry_first": True,
+                    "search_overlay_skipped": True,
+                }
+                source_coverage["external_search"] = {
+                    "candidates": 0,
+                    "synthesized_candidates": 0,
+                    "provider_mix": {},
+                    "query_plan_summary": query_plan_summary,
+                    "query_plan_error": None,
+                    "candidate_synthesis_enabled": False,
+                    "brick_yield": {},
+                    "dedupe_stats": {},
+                    "result_counts": {},
+                    "errors": [],
+                }
+                _stage_finished(
+                    "stage_llm_discovery_fanout",
+                    llm_stage_started,
+                    settings.stage_llm_discovery_timeout_seconds,
+                )
+                _save_stage_checkpoint(
+                    job_id,
+                    "stage_llm_discovery_fanout",
+                    {
+                        "llm_candidates_count": 0,
+                        "external_search_candidates_count": 0,
+                        "external_search_results_count": 0,
+                        "llm_error": None,
+                        "external_search_errors_count": 0,
+                    },
+                )
+            else:
+                fallback_plan = _default_discovery_query_plan(
                     taxonomy_bricks=capability_hints,
                     geo_scope=profile.geo_scope or {},
                     vertical_focus=segment_hints,
-                    comparator_mentions=mention_records[:120],
                     scope_hints=normalized_scope_hints,
+                    source_company_url=profile.buyer_company_url,
                 )
-                plan_response = LLMOrchestrator().run_stage(
-                    LLMRequest(
-                        stage=LLMStage.discovery_query_planning,
-                        prompt=plan_prompt,
-                        timeout_seconds=max(45, int(settings.stage_llm_discovery_timeout_seconds // 2)),
-                        use_web_search=False,
-                        expect_json=True,
-                        metadata={"workspace_id": workspace.id, "job_id": job.id},
+                query_plan = fallback_plan
+                query_plan_adjustments: list[str] = []
+                preferred_countries = _normalize_string_list((profile.geo_scope or {}).get("include_countries"), max_items=8, max_len=8)
+                preferred_languages = _normalize_string_list((profile.geo_scope or {}).get("languages"), max_items=6, max_len=8)
+                try:
+                    plan_prompt = _build_discovery_query_plan_prompt(
+                        context_pack=profile.context_pack_markdown or "",
+                        taxonomy_bricks=capability_hints,
+                        geo_scope=profile.geo_scope or {},
+                        vertical_focus=segment_hints,
+                        comparator_mentions=mention_records[:120],
+                        scope_hints=normalized_scope_hints,
+                        source_company_url=profile.buyer_company_url,
                     )
+                    plan_response = LLMOrchestrator().run_stage(
+                        LLMRequest(
+                            stage=LLMStage.discovery_query_planning,
+                            prompt=plan_prompt,
+                            timeout_seconds=max(45, int(settings.stage_llm_discovery_timeout_seconds // 2)),
+                            use_web_search=False,
+                            expect_json=True,
+                            metadata={"workspace_id": workspace.id, "job_id": job.id},
+                        )
+                    )
+                    model_attempt_trace.extend([asdict(attempt) for attempt in plan_response.attempts])
+                    query_plan = _parse_discovery_query_plan(plan_response.text, fallback_plan)
+                except Exception as exc:
+                    llm_plan_error = str(exc)
+                    if isinstance(exc, LLMOrchestrationError):
+                        model_attempt_trace.extend([asdict(attempt) for attempt in exc.attempts])
+                query_plan, query_plan_adjustments = _stabilize_discovery_query_plan(
+                    query_plan,
+                    fallback_plan,
+                    normalized_scope=normalized_scope_hints,
+                    vertical_focus=segment_hints,
+                    brick_names=[str(item.get("name") or "").strip() for item in capability_hints if str(item.get("name") or "").strip()],
+                    source_company_url=profile.buyer_company_url,
                 )
-                model_attempt_trace.extend([asdict(attempt) for attempt in plan_response.attempts])
-                query_plan = _parse_discovery_query_plan(plan_response.text, fallback_plan)
-            except Exception as exc:
-                llm_plan_error = str(exc)
-                if isinstance(exc, LLMOrchestrationError):
-                    model_attempt_trace.extend([asdict(attempt) for attempt in exc.attempts])
-            query_plan, query_plan_adjustments = _stabilize_discovery_query_plan(
-                query_plan,
-                fallback_plan,
-                normalized_scope=normalized_scope_hints,
-                vertical_focus=segment_hints,
-                brick_names=[str(item.get("name") or "").strip() for item in capability_hints if str(item.get("name") or "").strip()],
-            )
 
-            preferred_countries = _normalize_string_list((profile.geo_scope or {}).get("include_countries"), max_items=8, max_len=8)
-            preferred_languages = _normalize_string_list((profile.geo_scope or {}).get("languages"), max_items=6, max_len=8)
-            search_queries, query_plan_summary = _build_external_search_queries_from_plan(
-                query_plan,
-                preferred_countries=preferred_countries,
-                preferred_languages=preferred_languages,
-                normalized_scope=normalized_scope_hints,
-            )
-            query_plan_summary["plan_adjustments"] = query_plan_adjustments
-            query_plan_summary["used_fallback_plan"] = bool(query_plan_adjustments)
+                search_queries, query_plan_summary = _build_external_search_queries_from_plan(
+                    query_plan,
+                    preferred_countries=preferred_countries,
+                    preferred_languages=preferred_languages,
+                    normalized_scope=normalized_scope_hints,
+                )
+                query_plan_summary["plan_adjustments"] = query_plan_adjustments
+                query_plan_summary["used_fallback_plan"] = bool(query_plan_adjustments)
             query_brick_map = {
                 str(entry.get("query_id")): str(entry.get("brick_name") or "").strip()
                 for entry in search_queries
@@ -9685,7 +12741,7 @@ def _run_discovery_universe_monolith(job_id: int):
                 seed_urls.append(str(url))
             seed_urls = _dedupe_strings([normalize_url(url) for url in seed_urls if normalize_url(url)])
             known_blocked_domains = _known_discovery_blocked_domains(profile, seed_urls)
-            if known_blocked_domains:
+            if known_blocked_domains and not france_registry_first:
                 query_plan["domain_blocklist"] = _dedupe_strings(
                     [str(item) for item in (query_plan.get("domain_blocklist") or [])] + known_blocked_domains
                 )[:12]
@@ -9702,7 +12758,7 @@ def _run_discovery_universe_monolith(job_id: int):
                     continue
                 high_confidence_seed_urls.append(seed_url)
             similar_seed_cap = max(0, int(getattr(settings, "discovery_retrieval_similar_seed_cap", 4)))
-            if similar_seed_cap > 0:
+            if similar_seed_cap > 0 and not france_registry_first:
                 for idx, seed_url in enumerate(high_confidence_seed_urls[:similar_seed_cap], start=1):
                     search_queries.append(
                         {
@@ -9730,7 +12786,7 @@ def _run_discovery_universe_monolith(job_id: int):
                 "tavily": bool(settings.tavily_api_key),
                 "serpapi": bool(settings.serpapi_api_key),
             }
-            available_providers = [p for p in provider_order if provider_keys.get(p)]
+            available_providers = [] if france_registry_first else [p for p in provider_order if provider_keys.get(p)]
 
             if not available_providers:
                 external_search_errors = ["external_search_unavailable:no_provider_keys"]
@@ -9746,6 +12802,10 @@ def _run_discovery_universe_monolith(job_id: int):
                         per_domain_cap=max(1, int(getattr(settings, "discovery_retrieval_per_domain_cap", 3))),
                     )
                     retrieval_results = [row for row in (search_output.get("results") or []) if isinstance(row, dict)]
+                    retrieval_results, backfill_stats = _backfill_comparative_retrieval_context(
+                        retrieval_results,
+                        cap=max(0, int(getattr(settings, "discovery_retrieval_snippet_backfill_cap", 8))),
+                    )
                     external_search_errors = [
                         str(item) for item in (search_output.get("errors") or []) if str(item).strip()
                     ]
@@ -9755,6 +12815,7 @@ def _run_discovery_universe_monolith(job_id: int):
                         "raw_count": int(search_output.get("dedupe_stats", {}).get("total_in", 0)),
                         "deduped_count": len(retrieval_results),
                         "per_query_counts": search_output.get("query_counts") or {},
+                        "backfill": backfill_stats,
                     }
                     for row in retrieval_results:
                         brick_name = query_brick_map.get(str(row.get("query_id") or ""))
@@ -9766,54 +12827,55 @@ def _run_discovery_universe_monolith(job_id: int):
                     external_search_errors = [f"external_search_failed:{exc}"]
 
             # Persist external search run/results for auditability.
-            try:
-                run_key = f"job:{job_id}:run:{screening_run_id}"
-                query_plan_hash = hashlib.sha256(
-                    json.dumps(query_plan, sort_keys=True, default=str).encode("utf-8")
-                ).hexdigest()
-                run_row = ExternalSearchRun(
-                    workspace_id=workspace.id,
-                    job_id=job.id,
-                    run_id=run_key,
-                    provider_order=",".join(available_providers),
-                    caps_json={
-                        "per_query_cap": int(getattr(settings, "discovery_retrieval_per_query_cap", 8)),
-                        "total_cap": int(getattr(settings, "discovery_retrieval_total_cap", 60)),
-                        "per_domain_cap": int(getattr(settings, "discovery_retrieval_per_domain_cap", 3)),
-                        "similar_seed_cap": int(getattr(settings, "discovery_retrieval_similar_seed_cap", 4)),
-                    },
-                    query_plan_json=query_plan if isinstance(query_plan, dict) else {},
-                    query_plan_hash=query_plan_hash,
-                )
-                db.add(run_row)
-                db.flush()
-                for row in retrieval_results:
-                    retrieved_at = row.get("retrieved_at")
-                    parsed_retrieved_at = datetime.utcnow()
-                    if isinstance(retrieved_at, str):
-                        try:
-                            parsed_retrieved_at = datetime.fromisoformat(retrieved_at)
-                        except Exception:
-                            parsed_retrieved_at = datetime.utcnow()
-                    db.add(
-                        ExternalSearchResult(
-                            run_id=run_key,
-                            provider=str(row.get("provider") or "")[:40],
-                            query_id=str(row.get("query_id") or "")[:80],
-                            query_type=str(row.get("query_type") or "precision")[:40],
-                            query_text=str(row.get("query_text") or "")[:500],
-                            rank=int(row.get("rank") or 0),
-                            url=str(row.get("normalized_url") or row.get("url") or "")[:1000],
-                            url_fingerprint=str(row.get("url_fingerprint") or "")[:40],
-                            domain_fingerprint=str(row.get("domain_fingerprint") or "")[:40] or None,
-                            title=str(row.get("title") or "")[:500] or None,
-                            snippet=str(row.get("snippet") or "")[:2000] or None,
-                            retrieved_at=parsed_retrieved_at,
-                        )
+            if not france_registry_first:
+                try:
+                    run_key = f"job:{job_id}:run:{screening_run_id}"
+                    query_plan_hash = hashlib.sha256(
+                        json.dumps(query_plan, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()
+                    run_row = ExternalSearchRun(
+                        workspace_id=workspace.id,
+                        job_id=job.id,
+                        run_id=run_key,
+                        provider_order=",".join(available_providers),
+                        caps_json={
+                            "per_query_cap": int(getattr(settings, "discovery_retrieval_per_query_cap", 8)),
+                            "total_cap": int(getattr(settings, "discovery_retrieval_total_cap", 60)),
+                            "per_domain_cap": int(getattr(settings, "discovery_retrieval_per_domain_cap", 3)),
+                            "similar_seed_cap": int(getattr(settings, "discovery_retrieval_similar_seed_cap", 4)),
+                        },
+                        query_plan_json=query_plan if isinstance(query_plan, dict) else {},
+                        query_plan_hash=query_plan_hash,
                     )
-                db.flush()
-            except Exception as exc:
-                external_search_errors.append(f"external_search_persist_failed:{exc}")
+                    db.add(run_row)
+                    db.flush()
+                    for row in retrieval_results:
+                        retrieved_at = row.get("retrieved_at")
+                        parsed_retrieved_at = datetime.utcnow()
+                        if isinstance(retrieved_at, str):
+                            try:
+                                parsed_retrieved_at = datetime.fromisoformat(retrieved_at)
+                            except Exception:
+                                parsed_retrieved_at = datetime.utcnow()
+                        db.add(
+                            ExternalSearchResult(
+                                run_id=run_key,
+                                provider=str(row.get("provider") or "")[:40],
+                                query_id=str(row.get("query_id") or "")[:80],
+                                query_type=str(row.get("query_type") or "precision")[:40],
+                                query_text=str(row.get("query_text") or "")[:500],
+                                rank=int(row.get("rank") or 0),
+                                url=str(row.get("normalized_url") or row.get("url") or "")[:1000],
+                                url_fingerprint=str(row.get("url_fingerprint") or "")[:40],
+                                domain_fingerprint=str(row.get("domain_fingerprint") or "")[:40] or None,
+                                title=str(row.get("title") or "")[:500] or None,
+                                snippet=str(row.get("snippet") or "")[:2000] or None,
+                                retrieved_at=parsed_retrieved_at,
+                            )
+                        )
+                    db.flush()
+                except Exception as exc:
+                    external_search_errors.append(f"external_search_persist_failed:{exc}")
 
             candidate_synthesis_enabled = bool(
                 retrieval_results and getattr(settings, "discovery_candidate_synthesis_enabled", False)
@@ -9885,106 +12947,131 @@ def _run_discovery_universe_monolith(job_id: int):
                     "external_search_candidates_count": len([c for c in external_search_candidates if isinstance(c, dict)]),
                     "external_search_results_count": len(retrieval_results),
                     "llm_error": llm_error,
-                    "external_search_errors_count": len(external_search_errors),
-                },
-            )
+                        "external_search_errors_count": len(external_search_errors),
+                    },
+                )
 
-            seeded_candidates = _seed_candidates_from_mentions(
-                mention_records,
-                normalized_scope=normalized_scope_hints,
-            )
-            seeded_candidates, directory_seed_limit_stats = _limit_directory_seed_candidates(
-                seeded_candidates,
-                max_total=max(50, int(getattr(settings, "discovery_directory_seed_total_cap", 400))),
-                max_per_listing=max(25, int(getattr(settings, "discovery_directory_seed_per_listing_cap", 400))),
-                max_per_source=max(25, int(getattr(settings, "discovery_directory_seed_per_source_cap", 350))),
-                max_without_website=max(25, int(getattr(settings, "discovery_directory_seed_without_website_cap", 300))),
-            )
-            reference_seeded_candidates = _seed_candidates_from_reference_urls(
-                profile.comparator_seed_urls or []
-            )
-            benchmark_seeded_candidates: list[dict[str, Any]] = []
-            if _should_add_wealth_benchmark_seeds(profile, segment_hints, mention_records):
-                benchmark_seeded_candidates = _seed_candidates_from_benchmark_list()
-            first_party_hint_urls_by_domain = _build_first_party_hint_url_map(
-                profile=profile,
-                include_benchmark_hints=bool(benchmark_seeded_candidates),
-            )
-            source_coverage["benchmark_seeds"] = {
-                "seeded_candidates": len(benchmark_seeded_candidates),
-                "enabled": bool(benchmark_seeded_candidates),
-            }
-            source_coverage["directory_seeds"] = {
-                "seeded_candidates": len(seeded_candidates),
-                "deduped_company_names": len({str(candidate.get("name") or "").strip().lower() for candidate in seeded_candidates if str(candidate.get("name") or "").strip()}),
-                "limit_stats": directory_seed_limit_stats,
-            }
-            directory_profile_resolution_enabled = bool(
-                getattr(settings, "discovery_directory_profile_resolution_enabled", True)
-            )
-            directory_profile_resolution_stats: dict[str, Any] = {}
-            if directory_profile_resolution_enabled and seeded_candidates:
-                directory_profile_resolution_stats = _resolve_directory_profile_seed_candidates(
+            if france_registry_first:
+                fr_registry_candidates, fr_registry_metrics = _build_france_registry_universe_candidates(
+                    profile,
+                    normalized_scope_hints,
+                )
+                first_party_hint_urls_by_domain = {}
+                source_coverage["fr_registry"] = {
+                    **(source_coverage.get("fr_registry") or {}),
+                    **fr_registry_metrics,
+                    "candidate_count": len(fr_registry_candidates),
+                }
+                source_coverage["benchmark_seeds"] = {"seeded_candidates": 0, "enabled": False}
+                source_coverage["directory_seeds"] = {
+                    "seeded_candidates": 0,
+                    "deduped_company_names": 0,
+                    "limit_stats": {},
+                    "profile_resolution": {"enabled": False},
+                }
+                raw_candidates = [candidate for candidate in fr_registry_candidates if isinstance(candidate, dict)]
+                seed_llm_count = 0
+                seed_external_search_count = 0
+                seed_directory_count = 0
+                seed_reference_count = 0
+                seed_benchmark_count = 0
+            else:
+                seeded_candidates = _seed_candidates_from_mentions(
+                    mention_records,
+                    normalized_scope=normalized_scope_hints,
+                )
+                seeded_candidates, directory_seed_limit_stats = _limit_directory_seed_candidates(
                     seeded_candidates,
-                    max_fetches=max(
-                        0,
-                        int(getattr(settings, "discovery_directory_profile_resolution_cap", 30)),
-                    ),
-                    timeout_seconds=IDENTITY_RESOLUTION_TIMEOUT_SECONDS,
-                    concurrency=IDENTITY_RESOLUTION_CONCURRENCY,
+                    max_total=max(50, int(getattr(settings, "discovery_directory_seed_total_cap", 400))),
+                    max_per_listing=max(25, int(getattr(settings, "discovery_directory_seed_per_listing_cap", 400))),
+                    max_per_source=max(25, int(getattr(settings, "discovery_directory_seed_per_source_cap", 350))),
+                    max_without_website=max(25, int(getattr(settings, "discovery_directory_seed_without_website_cap", 300))),
                 )
-            source_coverage["directory_seeds"]["profile_resolution"] = {
-                "enabled": directory_profile_resolution_enabled,
-                **directory_profile_resolution_stats,
-            }
-            for candidate in llm_candidates:
-                if not isinstance(candidate, dict):
-                    continue
-                website = str(candidate.get("website") or "").strip()
-                if website and not website.startswith(("http://", "https://")):
-                    website = f"https://{website}"
-                website_domain = normalize_domain(website)
-                candidate["website"] = website or None
-                candidate["official_website_url"] = website or None
-                candidate["discovery_url"] = candidate.get("discovery_url") or website or None
-                candidate["entity_type"] = str(candidate.get("entity_type") or "company").strip().lower() or "company"
-                if website_domain and not _is_non_first_party_profile_domain(website_domain):
-                    candidate["first_party_domains"] = _dedupe_strings(
-                        [str(v) for v in (candidate.get("first_party_domains") or []) + [website_domain]]
-                    )
-                else:
-                    candidate["first_party_domains"] = _dedupe_strings(
-                        [str(v) for v in (candidate.get("first_party_domains") or []) if str(v).strip()]
-                    )
-                candidate.setdefault(
-                    "_origins",
-                    [
-                        {
-                            "origin_type": "llm_seed",
-                            "origin_url": str(candidate.get("discovery_url") or candidate.get("website") or ""),
-                            "source_name": "external_search_synthesis",
-                            "source_run_id": None,
-                            "metadata": {},
-                        }
-                    ],
+                reference_seeded_candidates = _seed_candidates_from_reference_urls(
+                    profile.comparator_seed_urls or []
                 )
+                benchmark_seeded_candidates: list[dict[str, Any]] = []
+                if _should_add_wealth_benchmark_seeds(profile, segment_hints, mention_records):
+                    benchmark_seeded_candidates = _seed_candidates_from_benchmark_list()
+                first_party_hint_urls_by_domain = _build_first_party_hint_url_map(
+                    profile=profile,
+                    include_benchmark_hints=bool(benchmark_seeded_candidates),
+                )
+                source_coverage["benchmark_seeds"] = {
+                    "seeded_candidates": len(benchmark_seeded_candidates),
+                    "enabled": bool(benchmark_seeded_candidates),
+                }
+                source_coverage["directory_seeds"] = {
+                    "seeded_candidates": len(seeded_candidates),
+                    "deduped_company_names": len({str(candidate.get("name") or "").strip().lower() for candidate in seeded_candidates if str(candidate.get("name") or "").strip()}),
+                    "limit_stats": directory_seed_limit_stats,
+                }
+                directory_profile_resolution_enabled = bool(
+                    getattr(settings, "discovery_directory_profile_resolution_enabled", True)
+                )
+                directory_profile_resolution_stats: dict[str, Any] = {}
+                if directory_profile_resolution_enabled and seeded_candidates:
+                    directory_profile_resolution_stats = _resolve_directory_profile_seed_candidates(
+                        seeded_candidates,
+                        max_fetches=max(
+                            0,
+                            int(getattr(settings, "discovery_directory_profile_resolution_cap", 30)),
+                        ),
+                        timeout_seconds=IDENTITY_RESOLUTION_TIMEOUT_SECONDS,
+                        concurrency=IDENTITY_RESOLUTION_CONCURRENCY,
+                    )
+                source_coverage["directory_seeds"]["profile_resolution"] = {
+                    "enabled": directory_profile_resolution_enabled,
+                    **directory_profile_resolution_stats,
+                }
+                for candidate in llm_candidates:
+                    if not isinstance(candidate, dict):
+                        continue
+                    website = str(candidate.get("website") or "").strip()
+                    if website and not website.startswith(("http://", "https://")):
+                        website = f"https://{website}"
+                    website_domain = normalize_domain(website)
+                    candidate["website"] = website or None
+                    candidate["official_website_url"] = website or None
+                    candidate["discovery_url"] = candidate.get("discovery_url") or website or None
+                    candidate["entity_type"] = str(candidate.get("entity_type") or "company").strip().lower() or "company"
+                    if website_domain and not _is_non_first_party_profile_domain(website_domain):
+                        candidate["first_party_domains"] = _dedupe_strings(
+                            [str(v) for v in (candidate.get("first_party_domains") or []) + [website_domain]]
+                        )
+                    else:
+                        candidate["first_party_domains"] = _dedupe_strings(
+                            [str(v) for v in (candidate.get("first_party_domains") or []) if str(v).strip()]
+                        )
+                    candidate.setdefault(
+                        "_origins",
+                        [
+                            {
+                                "origin_type": "llm_seed",
+                                "origin_url": str(candidate.get("discovery_url") or candidate.get("website") or ""),
+                                "source_name": "external_search_synthesis",
+                                "source_run_id": None,
+                                "metadata": {},
+                            }
+                        ],
+                    )
 
-            raw_candidates: list[dict[str, Any]] = []
-            raw_candidates.extend([c for c in llm_candidates if isinstance(c, dict)])
-            raw_candidates.extend([c for c in external_search_candidates if isinstance(c, dict)])
-            raw_candidates.extend(seeded_candidates)
-            raw_candidates.extend(reference_seeded_candidates)
-            raw_candidates.extend(benchmark_seeded_candidates)
-            seed_llm_count = len([c for c in llm_candidates if isinstance(c, dict)])
-            seed_external_search_count = len([c for c in external_search_candidates if isinstance(c, dict)])
-            seed_directory_count = len(seeded_candidates)
-            seed_reference_count = len(reference_seeded_candidates)
-            seed_benchmark_count = len(benchmark_seeded_candidates)
+                raw_candidates = []
+                raw_candidates.extend([c for c in llm_candidates if isinstance(c, dict)])
+                raw_candidates.extend([c for c in external_search_candidates if isinstance(c, dict)])
+                raw_candidates.extend(seeded_candidates)
+                raw_candidates.extend(reference_seeded_candidates)
+                raw_candidates.extend(benchmark_seeded_candidates)
+                seed_llm_count = len([c for c in llm_candidates if isinstance(c, dict)])
+                seed_external_search_count = len([c for c in external_search_candidates if isinstance(c, dict)])
+                seed_directory_count = len(seeded_candidates)
+                seed_reference_count = len(reference_seeded_candidates)
+                seed_benchmark_count = len(benchmark_seeded_candidates)
 
             registry_stage_started = _stage_started()
             identity_resolution_enabled = bool(
                 getattr(settings, "discovery_identity_resolution_enabled", False)
-            )
+            ) and not france_registry_first
             identity_seed_stats: dict[str, Any] = {}
             if identity_resolution_enabled:
                 identity_seed_stats = _resolve_identities_for_candidates(
@@ -10006,8 +13093,6 @@ def _run_discovery_universe_monolith(job_id: int):
             known_entity_profile = _known_entity_suppression_profile(
                 profile,
                 existing_companies=existing_companies,
-                previous_entities=previous_entities,
-                previous_aliases=previous_aliases,
             )
             raw_candidates, known_entity_raw_stats = _suppress_known_entity_candidates(
                 raw_candidates,
@@ -10016,7 +13101,7 @@ def _run_discovery_universe_monolith(job_id: int):
             pre_registry_entities, pre_registry_metrics = _collapse_candidates_to_entities(raw_candidates)
             registry_expansion_enabled = bool(
                 getattr(settings, "discovery_registry_expansion_enabled", False)
-            )
+            ) and not france_registry_first
             registry_identity_metrics: dict[str, Any] = {}
             registry_identity_query_logs: list[dict[str, Any]] = []
             registry_neighbor_candidates: list[dict[str, Any]] = []
@@ -10137,6 +13222,13 @@ def _run_discovery_universe_monolith(job_id: int):
             origin_mix_distribution: dict[str, int] = {}
             alias_clusters_count = 0
             for entity in canonical_entities:
+                why_relevant = entity.get("why_relevant") if isinstance(entity.get("why_relevant"), list) else []
+                short_description = str(entity.get("short_description") or "").strip()[:240] or None
+                if not short_description:
+                    for reason in why_relevant:
+                        if isinstance(reason, dict) and str(reason.get("text") or "").strip():
+                            short_description = str(reason.get("text") or "").strip()[:240]
+                            break
                 row = CandidateEntity(
                     workspace_id=workspace.id,
                     canonical_name=str(entity.get("canonical_name") or "")[:300],
@@ -10153,17 +13245,28 @@ def _run_discovery_universe_monolith(job_id: int):
                     registry_id=(str(entity.get("registry_id") or "")[:128] or None),
                     registry_source=(str(entity.get("registry_source") or "")[:120] or None),
                     metadata_json={
+                        "display_name": str(entity.get("display_name") or entity.get("canonical_name") or "")[:300] or None,
+                        "legal_name": (str(entity.get("legal_name") or "")[:300] or None),
+                        "brand_names": entity.get("brand_names") if isinstance(entity.get("brand_names"), list) else [],
                         "merge_rationale": entity.get("merge_reasons") or [],
                         "origin_types": entity.get("origin_types") or [],
                         "merged_candidates_count": int(entity.get("merged_candidates_count") or 1),
                         "merge_confidence": float(entity.get("merge_confidence") or 0.0),
                         "registry_identity": entity.get("registry_identity") if isinstance(entity.get("registry_identity"), dict) else {},
+                        "registry_fields": entity.get("registry_fields") if isinstance(entity.get("registry_fields"), dict) else {},
                         "industry_signature": entity.get("industry_signature") if isinstance(entity.get("industry_signature"), dict) else {},
                         "entity_type": str(entity.get("entity_type") or "company"),
                         "first_party_domains": entity.get("first_party_domains") if isinstance(entity.get("first_party_domains"), list) else [],
                         "solutions": entity.get("solutions") if isinstance(entity.get("solutions"), list) else [],
+                        "qualification": entity.get("qualification") if isinstance(entity.get("qualification"), dict) else {},
+                        "why_relevant": why_relevant[:12],
+                        "short_description": short_description,
                         "discovery_primary_url": entity.get("discovery_primary_url"),
+                        "directness": str(entity.get("directness") or "").strip() or None,
+                        "node_fit_summary": entity.get("node_fit_summary") if isinstance(entity.get("node_fit_summary"), dict) else {},
                         "priority_score": _candidate_priority_score(entity),
+                        "discovery_score": _candidate_priority_score(entity),
+                        "geo_signals": _dedupe_strings([normalize_country(entity.get("country")), normalize_country(entity.get("registry_country"))]),
                         "suspected_duplicates": canonical_metrics.get("suspected_duplicates", []),
                     },
                 )
@@ -10232,6 +13335,39 @@ def _run_discovery_universe_monolith(job_id: int):
                             metadata_json=origin_metadata,
                         )
                     )
+
+                validation_lane_ids, validation_lane_labels = _candidate_validation_lane_metadata(
+                    entity,
+                    scope_buckets=_dedupe_strings(
+                        [
+                            str((origin.get("metadata") or {}).get("scope_bucket") or "").strip().lower()
+                            for origin in (entity.get("origins") or [])
+                            if isinstance(origin, dict) and isinstance(origin.get("metadata"), dict)
+                        ]
+                    ),
+                )
+                discovery_query_families, discovery_source_families = _candidate_origin_discovery_families(
+                    [origin for origin in (entity.get("origins") or []) if isinstance(origin, dict)]
+                )
+                set_validation_metadata(
+                    row,
+                    {
+                        "status": VALIDATION_STATUS_QUEUED,
+                        "recommendation": VALIDATION_STATUS_QUEUED,
+                        "promoted_to_cards": False,
+                        "lane_ids": validation_lane_ids,
+                        "lane_labels": validation_lane_labels,
+                        "query_families": discovery_query_families,
+                        "source_families": discovery_source_families,
+                        "origin_types": _dedupe_strings(entity.get("origin_types") or [])[:8],
+                        "identity_confidence": str(row.identity_confidence or "low"),
+                        "short_description": short_description,
+                        "validation_score": 0.0,
+                        "priority_score": float(_candidate_priority_score(entity)),
+                        "display_name": str(entity.get("display_name") or entity.get("canonical_name") or "").strip() or None,
+                        "legal_name": str(entity.get("legal_name") or "").strip() or None,
+                    },
+                )
 
             # Existing companies index
             existing_by_domain: dict[str, Company] = {}
@@ -11113,6 +14249,9 @@ def _run_discovery_universe_monolith(job_id: int):
                 )
                 entity_row = entity_row_by_id.get(int(entity.get("db_entity_id") or 0))
                 if entity_row is not None:
+                    discovery_query_families, discovery_source_families = _candidate_origin_discovery_families(
+                        [origin for origin in (entity.get("origins") or []) if isinstance(origin, dict)]
+                    )
                     set_validation_metadata(
                         entity_row,
                         {
@@ -11142,20 +14281,8 @@ def _run_discovery_universe_monolith(job_id: int):
                             ),
                             "lane_ids": validation_lane_ids,
                             "lane_labels": validation_lane_labels,
-                            "query_families": _dedupe_strings(
-                                [
-                                    str((origin.get("metadata") or {}).get("query_type") or "").strip()
-                                    or str((origin.get("metadata") or {}).get("brick_name") or "").strip()
-                                    for origin in (entity.get("origins") or [])
-                                    if isinstance(origin, dict)
-                                    and isinstance(origin.get("metadata"), dict)
-                                    and (
-                                        str((origin.get("metadata") or {}).get("query_type") or "").strip()
-                                        or str((origin.get("metadata") or {}).get("brick_name") or "").strip()
-                                    )
-                                ]
-                            )[:8],
-                            "source_families": _dedupe_strings(entity.get("origin_types") or [])[:8],
+                            "query_families": discovery_query_families,
+                            "source_families": discovery_source_families,
                             "origin_types": _dedupe_strings(entity.get("origin_types") or [])[:8],
                             "priority_score": float(decision.total_score if hasattr(decision, "total_score") else total_score or 0.0),
                         },
@@ -11249,15 +14376,45 @@ def _run_discovery_universe_monolith(job_id: int):
 
             discovery_candidate_graph_sync = {"status": "not_run"}
             try:
+                discovery_graph_candidates: list[dict[str, Any]] = []
+                for entity in canonical_entities:
+                    entity_id = int(entity.get("db_entity_id") or 0)
+                    entity_row = entity_row_by_id.get(entity_id)
+                    if entity_id <= 0 or entity_row is None:
+                        continue
+                    lane_ids, lane_labels = _candidate_validation_lane_metadata(
+                        entity,
+                        scope_buckets=_dedupe_strings(
+                            [
+                                str((origin.get("metadata") or {}).get("scope_bucket") or "").strip().lower()
+                                for origin in (entity.get("origins") or [])
+                                if isinstance(origin, dict) and isinstance(origin.get("metadata"), dict)
+                            ]
+                        ),
+                    )
+                    discovery_query_families, discovery_source_families = _candidate_origin_discovery_families(
+                        [origin for origin in (entity.get("origins") or []) if isinstance(origin, dict)]
+                    )
+                    discovery_graph_candidates.append(
+                        {
+                            "candidate_entity_id": entity_id,
+                            "company_name": entity_row.canonical_name,
+                            "official_website_url": entity_row.canonical_website,
+                            "discovery_url": entity_row.discovery_primary_url,
+                            "entity_type": entity_row.entity_type,
+                            "discovery_score": float((entity_row.metadata_json or {}).get("discovery_score") or _candidate_priority_score(entity)),
+                            "lane_ids": lane_ids,
+                            "lane_labels": lane_labels,
+                            "query_families": discovery_query_families,
+                            "source_families": discovery_source_families,
+                            "validation_status": validation_metadata(entity_row).get("status") or VALIDATION_STATUS_QUEUED,
+                            "promoted_to_cards": bool(validation_metadata(entity_row).get("promoted_to_cards")),
+                            "directness": "adjacent" if lane_ids or lane_labels else "broad_market",
+                        }
+                    )
                 graph_payload = build_discovery_candidate_graph_payload(
                     workspace_id=workspace.id,
-                    candidates=[
-                        {
-                            **candidate,
-                            "validation_queue_rank": queue_rank_by_entity_id.get(int(candidate["candidate_entity_id"])),
-                        }
-                        for candidate in validation_queue_candidates
-                    ],
+                    candidates=discovery_graph_candidates,
                 )
                 discovery_candidate_graph_sync = Neo4jDiscoveryCandidateGraphStore().sync_graph(graph_payload)
             except Exception as discovery_graph_exc:

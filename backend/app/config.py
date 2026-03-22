@@ -2,7 +2,13 @@ from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import List, Tuple
 from urllib.parse import urlparse
+from pathlib import Path
 import re
+
+
+BACKEND_APP_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = BACKEND_APP_DIR.parent
+REPO_ROOT = BACKEND_DIR.parent
 
 
 class Settings(BaseSettings):
@@ -31,6 +37,9 @@ class Settings(BaseSettings):
 
     # Optional registry API keys
     companies_house_api_key: str = ""
+    inpi_token: str = ""
+    inpi_username: str = ""
+    inpi_password: str = ""
 
     # Neo4j company-context graph
     neo4j_uri: str = ""
@@ -71,6 +80,7 @@ class Settings(BaseSettings):
     audit_max_fp_registry_or_directory_overweight: int = 5
     audit_max_fn_customer_proof_but_thin_grouping: int = 8
     discovery_candidate_entity_cap: int = 2000
+    discovery_universe_limit: int = 60
     discovery_scoring_entities_cap: int = 120
     discovery_scoring_lane_cap: int = 18
     discovery_scoring_query_family_cap: int = 10
@@ -123,10 +133,28 @@ class Settings(BaseSettings):
     discovery_retrieval_total_cap: int = 90
     discovery_retrieval_per_domain_cap: int = 3
     discovery_retrieval_similar_seed_cap: int = 6
-    discovery_candidate_synthesis_enabled: bool = False
+    discovery_candidate_synthesis_enabled: bool = True
     discovery_identity_resolution_enabled: bool = True
     discovery_registry_expansion_enabled: bool = False
     discovery_first_party_enrichment_enabled: bool = True
+    discovery_fr_registry_first_enabled: bool = True
+    discovery_fr_registry_per_page: int = 25
+    discovery_fr_registry_pages_per_code: int = 5
+    discovery_fr_registry_max_pages_per_code: int = 12
+    discovery_fr_registry_candidate_cap: int = 1200
+    discovery_fr_registry_detail_cap: int = 60
+    discovery_fr_registry_search_timeout_seconds: int = 3
+    discovery_fr_registry_detail_timeout_seconds: int = 4
+    discovery_fr_registry_seed_per_query: int = 8
+    discovery_fr_registry_seed_query_cap: int = 24
+    discovery_fr_registry_seed_query_reserve: int = 4
+    discovery_fr_registry_page_extension_min_hits: int = 2
+    discovery_fr_registry_page_stop_after_no_signal: int = 2
+    discovery_fr_registry_secondary_seed_per_query: int = 6
+    discovery_fr_registry_secondary_query_cap: int = 48
+    discovery_fr_registry_secondary_query_reserve: int = 4
+    discovery_fr_registry_max_total_queries: int = 200
+    discovery_fr_registry_max_elapsed_seconds: int = 45
     company_context_secondary_provider_order: str = "serper,brave"
     company_context_secondary_per_query_cap: int = 4
     company_context_secondary_query_cap: int = 18
@@ -175,7 +203,14 @@ class Settings(BaseSettings):
         return self._parse_provider_models(mapping.get(stage_name, self.llm_stage_discovery_models))
 
     class Config:
-        env_file = ".env"
+        env_file = (
+            str(REPO_ROOT / ".env"),
+            str(REPO_ROOT / ".env.local"),
+            str(BACKEND_DIR / ".env"),
+            str(BACKEND_DIR / ".env.local"),
+            ".env",
+            ".env.local",
+        )
         env_file_encoding = "utf-8"
         extra = "ignore"
 
