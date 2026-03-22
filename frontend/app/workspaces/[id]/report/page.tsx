@@ -119,6 +119,19 @@ function CardSection({ card }: { card: ReportCard }) {
         </span>
       </div>
 
+      {(card.lane_labels?.length || card.lane_ids?.length) && (
+        <div className="flex flex-wrap gap-2">
+          {(card.lane_labels?.length ? card.lane_labels : card.lane_ids || []).slice(0, 4).map((lane) => (
+            <span
+              key={`${card.company_id}-${lane}`}
+              className="px-2 py-0.5 text-xs bg-info/10 text-info border border-info/30"
+            >
+              {lane}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-3 border border-steel-200 bg-white p-3">
         <div>
           <div className="text-xs uppercase tracking-wide text-steel-500 mb-1">Fit Score</div>
@@ -272,6 +285,7 @@ export default function ReportPage() {
   const [reportName, setReportName] = useState("");
   const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
   const [sizeFilter, setSizeFilter] = useState<"all" | "sme_in_range" | "unknown" | "outside_sme_range">("all");
+  const [laneFilter, setLaneFilter] = useState<string>("all");
   const [exporting, setExporting] = useState(false);
 
   const { data: reports, isLoading: reportsLoading, refetch: refetchReports } = useReports(workspaceId);
@@ -305,6 +319,20 @@ export default function ReportPage() {
     if (!cards) return [];
     return [...cards].sort((a, b) => b.fit_score - a.fit_score || b.evidence_score - a.evidence_score);
   }, [cards]);
+  const laneOptions = useMemo(() => {
+    const options = new Set<string>();
+    for (const card of cards || []) {
+      for (const label of card.lane_labels || []) options.add(label);
+      for (const id of card.lane_ids || []) options.add(id);
+    }
+    return Array.from(options).sort((a, b) => a.localeCompare(b));
+  }, [cards]);
+  const visibleCards = useMemo(() => {
+    if (laneFilter === "all") return sortedCards;
+    return sortedCards.filter((card) =>
+      [...(card.lane_labels || []), ...(card.lane_ids || [])].some((item) => item === laneFilter)
+    );
+  }, [sortedCards, laneFilter]);
 
   const handleExport = async () => {
     if (!selectedReportId) return;
@@ -448,7 +476,7 @@ export default function ReportPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-sm text-steel-600">
           <BarChart3 className="w-4 h-4" />
-          Cards are ranked by fit score, then evidence score.
+          Cards are ranked within the promoted shortlist. Use the lane filter to focus on the strongest companies for a specific node.
         </div>
         <div className="flex items-center gap-2">
           <Filter className="w-4 h-4 text-steel-500" />
@@ -461,6 +489,18 @@ export default function ReportPage() {
             <option value="sme_in_range">SME 15-100</option>
             <option value="unknown">Unknown size</option>
             <option value="outside_sme_range">Outside range</option>
+          </select>
+          <select
+            value={laneFilter}
+            onChange={(e) => setLaneFilter(e.target.value)}
+            className="input"
+          >
+            <option value="all">All lanes</option>
+            {laneOptions.map((lane) => (
+              <option key={lane} value={lane}>
+                {lane}
+              </option>
+            ))}
           </select>
         </div>
       </div>
@@ -475,14 +515,14 @@ export default function ReportPage() {
         </div>
       ) : (
         <>
-          {sortedCards.length === 0 ? (
+          {visibleCards.length === 0 ? (
             <div className="text-center py-12 bg-steel-50 border border-steel-200">
               <AlertCircle className="w-10 h-10 text-steel-400 mx-auto mb-3" />
               <div className="text-steel-600">No cards found for this filter.</div>
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {sortedCards.map((card) => (
+              {visibleCards.map((card) => (
                 <CardSection key={card.company_id} card={card} />
               ))}
             </div>

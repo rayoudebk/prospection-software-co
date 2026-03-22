@@ -40,6 +40,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/prospection
       DATABASE_URL_SYNC: postgresql://postgres:postgres@postgres:5432/prospection
       REDIS_URL: redis://redis:6379/0
+      CELERY_QUEUE_NAMESPACE: ${CELERY_QUEUE_NAMESPACE:-localhost-prospection}
+      INPI_TOKEN: ${INPI_TOKEN:-}
+      INPI_USERNAME: ${INPI_USERNAME:-}
+      INPI_PASSWORD: ${INPI_PASSWORD:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       CHROME_MCP_ENABLED: ${CHROME_MCP_ENABLED:-false}
       CHROME_MCP_ENDPOINT: ${CHROME_MCP_ENDPOINT:-}
@@ -54,13 +58,17 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
-    command: celery -A app.workers.celery_app worker --loglevel=info --queues discovery.search --concurrency=12 --prefetch-multiplier=1
+    command: /bin/sh -c "celery -A app.workers.celery_app worker --loglevel=info --queues ${CELERY_QUEUE_NAMESPACE:-localhost-prospection}.discovery.search --concurrency=12 --prefetch-multiplier=1"
     volumes:
       - ./backend:/app
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/prospection
       DATABASE_URL_SYNC: postgresql://postgres:postgres@postgres:5432/prospection
       REDIS_URL: redis://redis:6379/0
+      CELERY_QUEUE_NAMESPACE: ${CELERY_QUEUE_NAMESPACE:-localhost-prospection}
+      INPI_TOKEN: ${INPI_TOKEN:-}
+      INPI_USERNAME: ${INPI_USERNAME:-}
+      INPI_PASSWORD: ${INPI_PASSWORD:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -81,13 +89,17 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
-    command: celery -A app.workers.celery_app worker --loglevel=info --queues discovery.registry --concurrency=10 --prefetch-multiplier=1
+    command: /bin/sh -c "celery -A app.workers.celery_app worker --loglevel=info --queues ${CELERY_QUEUE_NAMESPACE:-localhost-prospection}.discovery.registry --concurrency=10 --prefetch-multiplier=1"
     volumes:
       - ./backend:/app
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/prospection
       DATABASE_URL_SYNC: postgresql://postgres:postgres@postgres:5432/prospection
       REDIS_URL: redis://redis:6379/0
+      CELERY_QUEUE_NAMESPACE: ${CELERY_QUEUE_NAMESPACE:-localhost-prospection}
+      INPI_TOKEN: ${INPI_TOKEN:-}
+      INPI_USERNAME: ${INPI_USERNAME:-}
+      INPI_PASSWORD: ${INPI_PASSWORD:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -104,13 +116,17 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
-    command: celery -A app.workers.celery_app worker --loglevel=info --queues discovery.crawl --concurrency=16 --prefetch-multiplier=1
+    command: /bin/sh -c "celery -A app.workers.celery_app worker --loglevel=info --queues ${CELERY_QUEUE_NAMESPACE:-localhost-prospection}.discovery.crawl --concurrency=16 --prefetch-multiplier=1"
     volumes:
       - ./backend:/app
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/prospection
       DATABASE_URL_SYNC: postgresql://postgres:postgres@postgres:5432/prospection
       REDIS_URL: redis://redis:6379/0
+      CELERY_QUEUE_NAMESPACE: ${CELERY_QUEUE_NAMESPACE:-localhost-prospection}
+      INPI_TOKEN: ${INPI_TOKEN:-}
+      INPI_USERNAME: ${INPI_USERNAME:-}
+      INPI_PASSWORD: ${INPI_PASSWORD:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -129,13 +145,17 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
-    command: celery -A app.workers.celery_app worker --loglevel=info --queues discovery.score --concurrency=6 --prefetch-multiplier=1
+    command: /bin/sh -c "celery -A app.workers.celery_app worker --loglevel=info --queues ${CELERY_QUEUE_NAMESPACE:-localhost-prospection}.discovery.score --concurrency=6 --prefetch-multiplier=1"
     volumes:
       - ./backend:/app
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/prospection
       DATABASE_URL_SYNC: postgresql://postgres:postgres@postgres:5432/prospection
       REDIS_URL: redis://redis:6379/0
+      CELERY_QUEUE_NAMESPACE: ${CELERY_QUEUE_NAMESPACE:-localhost-prospection}
+      INPI_TOKEN: ${INPI_TOKEN:-}
+      INPI_USERNAME: ${INPI_USERNAME:-}
+      INPI_PASSWORD: ${INPI_PASSWORD:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}

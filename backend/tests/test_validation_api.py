@@ -10,6 +10,7 @@ from app.api import workspaces
 from app.models.base import Base
 from app.models.company_context import CompanyContextPack
 from app.models.intelligence import CandidateEntity, CompanyScreening
+from app.models.job import Job, JobProvider, JobState, JobType
 from app.models.workspace import Workspace, CompanyProfile
 
 
@@ -33,7 +34,12 @@ def _build_test_client(tmp_path: Path):
     return TestClient(app), session_maker
 
 
-def _seed_validation_workspace(session_maker: async_sessionmaker[AsyncSession], workspace_id: int = 1) -> None:
+def _seed_validation_workspace(
+    session_maker: async_sessionmaker[AsyncSession],
+    workspace_id: int = 1,
+    *,
+    degraded_run: bool = False,
+) -> None:
     async def seed() -> None:
         async with session_maker() as session:
             workspace = Workspace(id=workspace_id, name="Validation Test", region_scope="EU+UK")
@@ -63,7 +69,19 @@ def _seed_validation_workspace(session_maker: async_sessionmaker[AsyncSession], 
                 discovery_primary_url="https://www.qplix.com",
                 entity_type="company",
                 identity_confidence="high",
+                registry_id="HRB 12345",
+                registry_country="DE",
+                registry_source="de_handelsregister",
                 metadata_json={
+                    "legal_name": "QPLIX GmbH",
+                    "registry_identity": {
+                        "id": "HRB 12345",
+                        "country": "DE",
+                        "source": "de_handelsregister",
+                        "match_confidence": 0.94,
+                        "status": "active",
+                        "name": "QPLIX GmbH",
+                    },
                     "validation": {
                         "status": "queued_for_validation",
                         "recommendation": "validated_keep",
@@ -136,7 +154,23 @@ def _seed_validation_workspace(session_maker: async_sessionmaker[AsyncSession], 
                     ],
                 },
             )
-            session.add_all([workspace, profile, pack, entity, screening])
+            job = Job(
+                workspace_id=workspace_id,
+                job_type=JobType.discovery_universe,
+                state=JobState.completed,
+                provider=JobProvider.gemini_flash,
+                progress=1.0,
+                progress_message="Complete",
+                result_json={
+                    "screening_run_id": "run-1",
+                    "run_quality_tier": "degraded" if degraded_run else "ready",
+                    "quality_gate_passed": not degraded_run,
+                    "quality_audit_passed": not degraded_run,
+                    "degraded_reasons": ["insufficient_evidence"] if degraded_run else [],
+                    "final_universe_count": 1,
+                },
+            )
+            session.add_all([workspace, profile, pack, entity, screening, job])
             await session.commit()
 
     asyncio.run(seed())
@@ -151,8 +185,13 @@ def test_validation_queue_and_promotion_flow(tmp_path: Path):
     payload = queue_response.json()
     assert len(payload) == 1
     assert payload[0]["candidate_entity_id"] == 11
+    assert payload[0]["display_name"] == "QPLIX"
+    assert payload[0]["company_name"] == "QPLIX"
+    assert payload[0]["legal_name"] == "QPLIX GmbH"
+    assert payload[0]["registry_id"] == "HRB 12345"
     assert payload[0]["validation_status"] == "queued_for_validation"
     assert payload[0]["validation_lane_labels"] == ["Portfolio management"]
+    assert payload[0]["short_description"] is None or isinstance(payload[0]["short_description"], str)
 
     update_response = client.patch(
         "/workspaces/1/validation/11",
@@ -162,6 +201,42 @@ def test_validation_queue_and_promotion_flow(tmp_path: Path):
     updated = update_response.json()
     assert updated["validation_status"] == "promoted_to_cards"
     assert updated["promoted_to_cards"] is True
+
+
+def test_universe_endpoint_is_candidate_centric(tmp_path: Path):
+    client, session_maker = _build_test_client(tmp_path)
+    _seed_validation_workspace(session_maker)
+
+    response = client.get("/workspaces/1/universe/top-candidates")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["candidate_entity_id"] == 11
+    assert payload[0]["display_name"] == "QPLIX"
+    assert payload[0]["legal_name"] == "QPLIX GmbH"
+    assert payload[0]["registry_id"] == "HRB 12345"
+    assert payload[0]["registry_source"] == "de_handelsregister"
+    assert payload[0]["registry_country"] == "DE"
+    assert "discovery_score" in payload[0]
+    assert "source_families" in payload[0]
+    assert "query_families" in payload[0]
+    assert "lane_labels" in payload[0]
+    assert "node_fit_summary" in payload[0]
+    assert "registry_summary" in payload[0]
+    assert "decision_classification" not in payload[0]
+    assert "identity_confidence" not in payload[0]
+    assert "validation_status" not in payload[0]
+
+
+def test_universe_endpoint_allows_degraded_latest_run(tmp_path: Path):
+    client, session_maker = _build_test_client(tmp_path)
+    _seed_validation_workspace(session_maker, degraded_run=True)
+
+    response = client.get("/workspaces/1/universe/top-candidates")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["candidate_entity_id"] == 11
 
 
 def test_report_generation_requires_promoted_shortlist(tmp_path: Path):
@@ -219,5 +294,7 @@ def test_validation_refresh_updates_identity_diagnostics(tmp_path: Path, monkeyp
     assert len(payload) == 1
     assert payload[0]["identity_confidence"] == "high"
     assert payload[0]["vendor_classification"] == "vendor_candidate"
+    assert payload[0]["page_classification"] == "product"
+    assert payload[0]["validated_description"]
     assert payload[0]["identity_diagnostics"]["resolved_via_redirect"] is True
     assert payload[0]["identity_diagnostics"]["has_first_party_evidence"] is True

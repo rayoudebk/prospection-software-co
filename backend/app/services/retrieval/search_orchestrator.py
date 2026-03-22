@@ -84,6 +84,8 @@ def run_external_search_queries(
                 continue
             query_id = str(query_meta.get("query_id") or "").strip() or f"{provider_key}:{len(raw_results)}"
             query_type = str(query_meta.get("query_type") or "precision").strip()
+            query_intent = str(query_meta.get("query_intent") or "").strip() or None
+            query_family = str(query_meta.get("query_family") or query_meta.get("query_intent") or "").strip() or None
             brick_name = str(query_meta.get("brick_name") or "").strip() or None
             scope_bucket = str(query_meta.get("scope_bucket") or "").strip().lower() or None
             seed_url = str(query_meta.get("seed_url") or "").strip() or None
@@ -138,6 +140,8 @@ def run_external_search_queries(
                         "provider": provider_key,
                         "query_id": query_id,
                         "query_type": query_type,
+                        "query_intent": query_intent,
+                        "query_family": query_family,
                         "query_text": adjusted_query,
                         "brick_name": brick_name,
                         "scope_bucket": scope_bucket,

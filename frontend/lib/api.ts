@@ -705,89 +705,49 @@ export interface Company {
   open_questions?: string[];
 }
 
-export interface UniverseTopCandidate {
-  company_id: number | null;
-  candidate_entity_id: number | null;
-  company_name: string;
-  company_status?: "candidate" | "kept" | "removed" | "enriched" | string | null;
-  official_website_url: string | null;
-  hq_country?: string | null;
-  evidence_count: number;
-  discovery_sources: string[];
-  entity_type: string;
-  decision_classification: string;
-  evidence_sufficiency: string;
-  reason_codes: {
-    positive: string[];
-    caution: string[];
-    reject: string[];
-  };
-  rationale_summary: string | null;
-  top_claim: {
-    text?: string;
-    claim_type?: string;
-    source_url?: string;
-    source_tier?: string;
-    source_kind?: string;
-    captured_at?: string;
-  };
-  citation_summary_v1?: CitationSummaryV1 | null;
-  registry_neighbors_with_first_party_website_count?: number;
-  registry_neighbors_dropped_missing_official_website_count?: number;
-  registry_origin_screening_counts?: Record<string, number>;
-  first_party_hint_urls_used_count?: number;
-  first_party_hint_pages_crawled_total?: number;
-  capability_signals: string[];
-  likely_verticals: string[];
-  scope_buckets: string[];
-  origin_types: string[];
-  registry_identity?: {
-    id?: string | null;
-    country?: string | null;
-    source?: string | null;
-    match_confidence?: number | null;
-    matched_query?: string | null;
-    status?: string | null;
-  } | null;
-  expansion_provenance: Array<{
-    query_id?: string | null;
-    query_type?: string | null;
-    query_text?: string | null;
-    provider?: string | null;
-    brick_name?: string | null;
-    scope_bucket?: string | null;
-    rank?: number | null;
-  }>;
-  missing_claim_groups: string[];
-  unresolved_contradictions_count: number;
-  ranking_eligible: boolean;
-  validation_status: string;
-  validation_recommendation: string;
-  validation_queue_rank?: number | null;
-  promoted_to_cards: boolean;
-  validation_lane_ids: string[];
-  validation_lane_labels: string[];
-  validation_query_families: string[];
-  validation_source_families: string[];
-  vendor_classification?: string | null;
-  identity_confidence?: string | null;
-  official_website_confidence?: string | null;
-  identity_diagnostics?: {
-    identity_error?: string | null;
-    resolved_via_redirect?: boolean;
-    first_party_method?: string | null;
-    first_party_tier?: string | null;
-    pages_crawled?: number;
-    signals_extracted?: number;
-    has_first_party_evidence?: boolean;
-  } | null;
-  multi_origin_count: number;
-  priority_score: number;
-  run_quality_tier?: "high_quality" | "degraded" | string;
-  quality_gate_passed?: boolean;
-  quality_audit_passed?: boolean;
-  degraded_reasons?: string[];
+export interface UniverseCandidateRegistrySummary {
+  ape_code?: string | null;
+  naf25_code?: string | null;
+  active_status?: string | null;
+  commercial_names?: string[];
+  object_text_present?: boolean;
+  observation_count?: number;
+  country?: string | null;
+  country_code?: string | null;
+  summary?: string | null;
 }
+
+export interface UniverseCandidateNodeFitSummary {
+  matched_node_ids: string[];
+  matched_node_labels: string[];
+  core_match_count: number;
+  adjacent_match_count: number;
+  node_fit_score: number;
+}
+
+export interface UniverseCandidate {
+  candidate_entity_id: number;
+  display_name: string;
+  legal_name?: string | null;
+  registry_id?: string | null;
+  registry_source?: string | null;
+  registry_country?: string | null;
+  official_website_url?: string | null;
+  discovery_url?: string | null;
+  short_description?: string | null;
+  discovery_score: number;
+  source_families: string[];
+  query_families: string[];
+  lane_ids: string[];
+  lane_labels: string[];
+  node_fit_summary: UniverseCandidateNodeFitSummary;
+  geo_signals: string[];
+  directness: "direct" | "adjacent" | "broad_market" | string;
+  provenance_summary: Record<string, unknown>;
+  registry_summary?: UniverseCandidateRegistrySummary | null;
+}
+
+export type UniverseTopCandidate = UniverseCandidate;
 
 export interface ValidationQueueItem {
   candidate_entity_id: number;
@@ -797,9 +757,6 @@ export interface ValidationQueueItem {
   discovery_url: string | null;
   hq_country?: string | null;
   entity_type: string;
-  decision_classification: string;
-  evidence_sufficiency: string;
-  rationale_summary: string | null;
   validation_status: string;
   validation_recommendation: string;
   validation_queue_rank: number;
@@ -810,8 +767,12 @@ export interface ValidationQueueItem {
   validation_source_families: string[];
   discovery_sources: string[];
   origin_types: string[];
-  capability_signals: string[];
-  likely_verticals: string[];
+  short_description?: string | null;
+  validated_description?: string | null;
+  page_classification?: string | null;
+  validation_score: number;
+  geo_signals: string[];
+  directness: "direct" | "adjacent" | "broad_market" | string;
   vendor_classification?: string | null;
   identity_confidence?: string | null;
   official_website_confidence?: string | null;
@@ -826,29 +787,7 @@ export interface ValidationQueueItem {
   } | null;
   multi_origin_count: number;
   priority_score: number;
-  top_claim: {
-    text?: string;
-    claim_type?: string;
-    source_url?: string;
-    source_tier?: string;
-    source_kind?: string;
-    captured_at?: string;
-  };
-  reason_codes: {
-    positive: string[];
-    caution: string[];
-    reject: string[];
-  };
-  expansion_provenance: Array<{
-    query_id?: string | null;
-    query_type?: string | null;
-    query_text?: string | null;
-    provider?: string | null;
-    brick_name?: string | null;
-    scope_bucket?: string | null;
-    rank?: number | null;
-  }>;
-  citation_summary_v1?: CitationSummaryV1 | null;
+  provenance_summary: Record<string, unknown>;
 }
 
 export interface DiscoveryDiagnostics {
@@ -1053,6 +992,8 @@ export interface ReportCard {
   reason_highlights?: string[];
   evidence_quality_summary?: Record<string, unknown>;
   known_unknowns?: string[];
+  lane_ids?: string[];
+  lane_labels?: string[];
 }
 
 export interface ReasonCatalogEntry {
@@ -1284,7 +1225,7 @@ export const workspaceApi = {
       `/workspaces/${id}/discovery:diagnostics?include_quality_audit=${includeQualityAudit ? "true" : "false"}`
     ),
   getTopCandidates: (id: number, limit = 25, allowDegraded = false) =>
-    fetchJSON<UniverseTopCandidate[]>(
+    fetchJSON<UniverseCandidate[]>(
       `/workspaces/${id}/universe/top-candidates?limit=${encodeURIComponent(String(limit))}&allow_degraded=${allowDegraded ? "true" : "false"}`
     ),
   listValidationQueue: (id: number, limit = 36, allowDegraded = false, includeRejected = false) =>
@@ -1383,12 +1324,18 @@ export const workspaceApi = {
   listReportCards: (
     workspaceId: number,
     reportId: number,
-    sizeBucket?: "sme_in_range" | "unknown" | "outside_sme_range"
+    sizeBucket?: "sme_in_range" | "unknown" | "outside_sme_range",
+    lane?: string
   ) =>
     fetchJSON<ReportCard[]>(
-      `/workspaces/${workspaceId}/reports/${reportId}/cards${
-        sizeBucket ? `?size_bucket=${sizeBucket}` : ""
-      }`
+      `/workspaces/${workspaceId}/reports/${reportId}/cards?${new URLSearchParams(
+        Object.fromEntries(
+          Object.entries({
+            size_bucket: sizeBucket || "",
+            lane: lane || "",
+          }).filter(([, value]) => value)
+        )
+      ).toString()}`
     ),
 
   exportReport: (workspaceId: number, reportId: number, format: "default" | "rich_json" = "default") =>

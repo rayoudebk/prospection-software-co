@@ -205,12 +205,16 @@ export function useCompanies(workspaceId: number, status?: string) {
   });
 }
 
-export function useTopCandidates(workspaceId: number, limit = 25, allowDegraded = false) {
+export function useUniverseCandidates(workspaceId: number, limit = 25, allowDegraded = false) {
   return useQuery({
-    queryKey: ["top-candidates", workspaceId, limit, allowDegraded],
+    queryKey: ["universe-candidates", workspaceId, limit, allowDegraded],
     queryFn: () => workspaceApi.getTopCandidates(workspaceId, limit, allowDegraded),
     enabled: !!workspaceId,
   });
+}
+
+export function useTopCandidates(workspaceId: number, limit = 25, allowDegraded = false) {
+  return useUniverseCandidates(workspaceId, limit, allowDegraded);
 }
 
 export function useValidationQueue(
@@ -238,6 +242,8 @@ export function useUpdateValidationCandidate(workspaceId: number) {
     }) => workspaceApi.updateValidationCandidate(workspaceId, candidateEntityId, { status }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["validation-queue", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["universe-candidates", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["universe-candidates", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });
@@ -262,6 +268,8 @@ export function useRefreshValidationQueue(workspaceId: number) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["validation-queue", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["universe-candidates", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["universe-candidates", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
     },
   });
@@ -285,6 +293,8 @@ export function useCreateCompany(workspaceId: number) {
     }) => workspaceApi.createCompany(workspaceId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["universe-candidates", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["universe-candidates", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
     },
   });
@@ -309,6 +319,7 @@ export function useUpdateCompany(workspaceId: number) {
     }) => workspaceApi.updateCompany(workspaceId, companyId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["universe-candidates", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
     },
   });
@@ -367,11 +378,12 @@ export function useReport(workspaceId: number, reportId: number | null) {
 export function useReportCards(
   workspaceId: number,
   reportId: number | null,
-  sizeBucket?: "sme_in_range" | "unknown" | "outside_sme_range"
+  sizeBucket?: "sme_in_range" | "unknown" | "outside_sme_range",
+  lane?: string
 ) {
   return useQuery({
-    queryKey: ["report-cards", workspaceId, reportId, sizeBucket],
-    queryFn: () => workspaceApi.listReportCards(workspaceId, reportId!, sizeBucket),
+    queryKey: ["report-cards", workspaceId, reportId, sizeBucket, lane],
+    queryFn: () => workspaceApi.listReportCards(workspaceId, reportId!, sizeBucket, lane),
     enabled: !!workspaceId && !!reportId,
   });
 }
@@ -563,6 +575,7 @@ export function useWorkspaceJobWithPolling(
         queryClient.invalidateQueries({ queryKey: ["company-context", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["scope-review", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["companies", workspaceId] });
+        queryClient.invalidateQueries({ queryKey: ["universe-candidates", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["top-candidates", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["discovery-diagnostics", workspaceId] });
         queryClient.invalidateQueries({ queryKey: ["gates", workspaceId] });

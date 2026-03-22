@@ -73,10 +73,11 @@ def build_discovery_candidate_graph_payload(
                 "entity_type": str(candidate.get("entity_type") or "company"),
                 "status": str(candidate.get("validation_status") or "queued_for_validation"),
                 "promoted_to_cards": bool(candidate.get("promoted_to_cards")),
-                "priority_score": float(candidate.get("priority_score") or 0.0),
+                "discovery_score": float(candidate.get("discovery_score") or candidate.get("priority_score") or 0.0),
+                "directness": str(candidate.get("directness") or "broad_market"),
             },
         )
-        for lane_id in candidate.get("validation_lane_ids") or []:
+        for lane_id in (candidate.get("lane_ids") or candidate.get("validation_lane_ids") or []):
             adjacency_id = _stable_id("adjacency_box_ref", workspace_id, lane_id)
             add_node(
                 "AdjacencyBoxRef",
@@ -87,7 +88,7 @@ def build_discovery_candidate_graph_payload(
                 },
             )
             add_edge("FITS_ADJACENCY_BOX", candidate_node_id, adjacency_id)
-        for lane_label in candidate.get("validation_lane_labels") or []:
+        for lane_label in (candidate.get("lane_labels") or candidate.get("validation_lane_labels") or []):
             adjacency_id = _stable_id("adjacency_box_ref", workspace_id, lane_label)
             add_node(
                 "AdjacencyBoxRef",
@@ -98,7 +99,7 @@ def build_discovery_candidate_graph_payload(
                 },
             )
             add_edge("FITS_ADJACENCY_BOX", candidate_node_id, adjacency_id)
-        for family in candidate.get("validation_query_families") or []:
+        for family in (candidate.get("query_families") or candidate.get("validation_query_families") or []):
             query_id = _stable_id("discovery_query", workspace_id, family)
             add_node(
                 "DiscoveryQuery",
@@ -109,9 +110,7 @@ def build_discovery_candidate_graph_payload(
                 },
             )
             add_edge("DISCOVERED_VIA_QUERY", candidate_node_id, query_id)
-        for source_family in candidate.get("validation_source_families") or []:
-            if str(source_family) != "directory":
-                continue
+        for source_family in (candidate.get("source_families") or candidate.get("validation_source_families") or []):
             directory_id = _stable_id("discovery_directory", workspace_id, source_family)
             add_node(
                 "DiscoveryDirectory",

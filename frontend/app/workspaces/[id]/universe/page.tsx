@@ -1,44 +1,42 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import clsx from "clsx";
 import {
   AlertCircle,
-  Check,
+  ArrowRight,
+  BadgeCheck,
+  Building2,
   CheckCircle,
-  Database,
   ExternalLink,
   Globe,
+  Landmark,
+  Layers3,
   Loader2,
+  MapPinned,
   Network,
-  Plus,
   Search,
-  Sparkles,
-  X,
 } from "lucide-react";
 
 import { JobProgressPanel } from "@/components/JobProgressPanel";
 import { JobRunSummary } from "@/components/JobRunSummary";
 import { StepHeader } from "@/components/StepHeader";
-import { Company, DiscoveryReadiness, UniverseTopCandidate, workspaceApi } from "@/lib/api";
 import {
-  useCompanies,
-  useCreateCompany,
+  DiscoveryReadiness,
+  UniverseCandidate,
+  UniverseCandidateRegistrySummary,
+  workspaceApi,
+} from "@/lib/api";
+import {
   useDiscoveryDiagnostics,
   useGates,
-  useTopCandidates,
-  useUpdateCompany,
+  useRefreshValidationQueue,
+  useUniverseCandidates,
   useWorkspaceJobs,
   useWorkspaceJobWithPolling,
 } from "@/lib/hooks";
-
-const CLASSIFICATION_LABELS: Record<string, string> = {
-  good_target: "Good target",
-  borderline_watchlist: "Watchlist",
-  not_good_target: "Not good",
-  insufficient_evidence: "Insufficient evidence",
-};
 
 const READINESS_REASON_LABELS: Record<string, string> = {
   db_schema_invalid: "Discovery schema is missing required columns.",
@@ -50,23 +48,10 @@ const READINESS_REASON_LABELS: Record<string, string> = {
   company_profile_missing: "Company profile is missing.",
 };
 
-function classificationBadgeClass(classification?: string | null) {
-  if (classification === "good_target") return "badge-success";
-  if (classification === "borderline_watchlist") return "badge-warning";
-  if (classification === "not_good_target") return "badge-danger";
-  return "badge-neutral";
-}
-
-function statusLabel(status?: string | null) {
-  if (status === "kept") return "Kept";
-  if (status === "removed") return "Removed";
-  if (status === "enriched") return "Enriched";
-  return "Candidate";
-}
-
 function titleCaseToken(value?: string | null) {
   return String(value || "")
-    .split(/[_\s-]+/)
+    .replaceAll("::", " / ")
+    .split(/[_\s/-]+/)
     .filter(Boolean)
     .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
     .join(" ");
@@ -81,88 +66,100 @@ function hostnameFor(url?: string | null) {
   }
 }
 
-function CitedSummary({ candidate }: { candidate: UniverseTopCandidate }) {
-  const summary = candidate.citation_summary_v1;
-  const fallback = candidate.rationale_summary || "No company description generated yet.";
+function compactText(value?: string | null) {
+  const trimmed = String(value || "").trim();
+  return trimmed || null;
+}
 
-  if (!summary || !summary.sentences?.length || !summary.source_pills?.length) {
-    return <p className="text-sm leading-6 text-steel-600">{fallback}</p>;
+function brandFirstName(candidate: UniverseCandidate) {
+  return compactText(candidate.display_name) || compactText(candidate.legal_name) || "Unknown candidate";
+}
+
+function legalSecondaryName(candidate: UniverseCandidate) {
+  const brand = brandFirstName(candidate).toLowerCase();
+  const legal = compactText(candidate.legal_name);
+  if (!legal || legal.toLowerCase() === brand) return null;
+  return legal;
+}
+
+function registrySummaryEntries(registry?: UniverseCandidateRegistrySummary | null) {
+  if (!registry) return [];
+  const entries: Array<{ label: string; value: string }> = [];
+  const apeCode = compactText(registry.ape_code);
+  const naf25Code = compactText(registry.naf25_code);
+  const status = compactText(registry.active_status);
+  const country = compactText(registry.country) || compactText(registry.country_code);
+  const observationCount =
+    typeof registry.observation_count === "number" && registry.observation_count > 0
+      ? String(registry.observation_count)
+      : null;
+  const commercialNames = (registry.commercial_names || []).slice(0, 2).join(", ");
+
+  if (apeCode) entries.push({ label: "APE", value: apeCode });
+  if (naf25Code) entries.push({ label: "NAF25", value: naf25Code });
+  if (status) entries.push({ label: "Status", value: status });
+  if (country) entries.push({ label: "Country", value: country });
+  if (commercialNames) entries.push({ label: "Brands", value: commercialNames });
+  if (observationCount) entries.push({ label: "Observations", value: observationCount });
+
+  return entries.slice(0, 6);
+}
+
+function matchedNodeLabels(candidate: UniverseCandidate) {
+  const labels = [
+    ...(candidate.node_fit_summary?.matched_node_labels || []),
+    ...(candidate.lane_labels || []),
+    ...(candidate.lane_ids || []),
+  ]
+    .map((value) => compactText(value))
+    .filter((value): value is string => Boolean(value));
+
+  return Array.from(new Set(labels)).slice(0, 8);
+}
+
+function nodeFitSummaryText(candidate: UniverseCandidate) {
+  const labels = matchedNodeLabels(candidate);
+  const coreCount = Number(candidate.node_fit_summary?.core_match_count || 0);
+  const adjacentCount = Number(candidate.node_fit_summary?.adjacent_match_count || 0);
+  if (!labels.length && !coreCount && !adjacentCount) return null;
+  if (labels.length) {
+    return `${labels.slice(0, 3).join(", ")}${labels.length > 3 ? ` +${labels.length - 3} more` : ""}`;
   }
+  return `Core overlap ${coreCount} • adjacent overlap ${adjacentCount}`;
+}
 
-  const pillById = new Map(summary.source_pills.map((pill) => [pill.pill_id, pill]));
-  const pillNumberById = new Map(summary.source_pills.map((pill, index) => [pill.pill_id, index + 1]));
-  const sentences = summary.sentences
-    .map((sentence) => ({
-      ...sentence,
-      citation_pill_ids: sentence.citation_pill_ids.filter((pillId) => pillById.has(pillId)),
-    }))
-    .filter((sentence) => sentence.citation_pill_ids.length > 0)
-    .slice(0, 2);
-
-  if (!sentences.length) {
-    return <p className="text-sm leading-6 text-steel-600">{fallback}</p>;
-  }
-
-  return (
-    <div className="space-y-2 text-sm leading-6 text-steel-600">
-      {sentences.map((sentence) => (
-        <p key={`${candidate.company_id ?? candidate.candidate_entity_id ?? candidate.company_name}-${sentence.id}`}>
-          {sentence.text}{" "}
-          {sentence.citation_pill_ids.slice(0, 2).map((pillId) => {
-            const pill = pillById.get(pillId);
-            const number = pillNumberById.get(pillId);
-            if (!pill || !number) return null;
-            return (
-              <a
-                key={`${sentence.id}-${pillId}`}
-                href={pill.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center rounded-full border border-info/30 bg-info/10 px-1.5 py-0.5 text-xs text-info hover:bg-info/20"
-                title={pill.label}
-              >
-                [{number}]
-              </a>
-            );
-          })}
-        </p>
-      ))}
-    </div>
+function candidateCountries(candidate: UniverseCandidate) {
+  return Array.from(
+    new Set(
+      [
+        ...(candidate.geo_signals || []),
+        compactText(candidate.registry_summary?.country),
+        compactText(candidate.registry_summary?.country_code),
+      ].filter((value): value is string => Boolean(value))
+    )
   );
 }
 
-function SignalChips({
-  title,
-  items,
-  tone = "neutral",
+function isFranceLinked(candidate: UniverseCandidate) {
+  const values = [
+    ...candidateCountries(candidate),
+    compactText(candidate.official_website_url),
+    compactText(candidate.provenance_summary?.primary_market as string | null),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+  return values.some((value) => value.includes("france") || value === "fr" || value.endsWith(".fr"));
+}
+
+function MetricTile({
+  label,
+  value,
+  icon: Icon,
 }: {
-  title: string;
-  items: string[];
-  tone?: "neutral" | "info" | "success";
+  label: string;
+  value: string | number;
+  icon: typeof Globe;
 }) {
-  if (!items.length) return null;
-  const toneClass =
-    tone === "info"
-      ? "border-info/20 bg-info/10 text-info"
-      : tone === "success"
-        ? "border-success/20 bg-success/10 text-success"
-        : "border-steel-200 bg-steel-50 text-steel-600";
-
-  return (
-    <div className="space-y-2">
-      <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-steel-400">{title}</div>
-      <div className="flex flex-wrap gap-2">
-        {items.map((item) => (
-          <span key={`${title}-${item}`} className={clsx("rounded-full border px-2.5 py-1 text-xs", toneClass)}>
-            {item}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function MetricTile({ label, value, icon: Icon }: { label: string; value: string | number; icon: typeof Globe }) {
   return (
     <div className="rounded-2xl border border-steel-200 bg-steel-50 px-4 py-3">
       <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-steel-400">
@@ -223,263 +220,183 @@ function DiscoveryReadinessPanel({ readiness }: { readiness: DiscoveryReadiness 
           <span className="rounded-full border border-steel-200 bg-white px-3 py-1">
             Worker {readiness.worker_available ? "ready" : "missing"}
           </span>
-          <span className="rounded-full border border-steel-200 bg-white px-3 py-1">
-            Retrieval {readiness.execution_mode === "fixture"
-              ? "not required"
-              : readiness.retrieval_provider_available
-                ? readiness.available_retrieval_providers.join(", ")
-                : "missing"}
-          </span>
-          <span className="rounded-full border border-steel-200 bg-white px-3 py-1">
-            Models {readiness.execution_mode === "fixture"
-              ? "not required"
-              : readiness.model_available
-                ? readiness.available_model_providers.join(", ")
-                : "missing"}
-          </span>
         </div>
       </div>
     </div>
   );
 }
 
-function UniverseCandidateCard({
-  candidate,
-  onKeep,
-  onRemove,
-  onRestore,
+function ChipList({
+  title,
+  items,
+  tone = "neutral",
 }: {
-  candidate: UniverseTopCandidate;
-  onKeep: () => Promise<void>;
-  onRemove: () => Promise<void>;
-  onRestore: () => Promise<void>;
+  title: string;
+  items: string[];
+  tone?: "neutral" | "info" | "success";
 }) {
-  const companyStatus = candidate.company_status || "candidate";
-  const discoveryHosts = candidate.discovery_sources
-    .map((source) => hostnameFor(source))
-    .filter((host): host is string => Boolean(host))
-    .slice(0, 3);
-  const registryIdentity = candidate.registry_identity || null;
-  const registryMatchConfidence =
-    typeof registryIdentity?.match_confidence === "number" && registryIdentity.match_confidence > 0
-      ? `${Math.round(registryIdentity.match_confidence * 100)}%`
-      : null;
-  const actionsDisabled = !candidate.company_id;
+  if (!items.length) return null;
+  const toneClass =
+    tone === "info"
+      ? "border-info/20 bg-info/10 text-info"
+      : tone === "success"
+        ? "border-success/20 bg-success/10 text-success"
+        : "border-steel-200 bg-steel-50 text-steel-600";
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-steel-400">{title}</div>
+      <div className="flex flex-wrap gap-2">
+        {items.map((item) => (
+          <span key={`${title}-${item}`} className={clsx("rounded-full border px-2.5 py-1 text-xs", toneClass)}>
+            {item}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RegistrySummaryCard({ candidate }: { candidate: UniverseCandidate }) {
+  const entries = registrySummaryEntries(candidate.registry_summary);
+  const summary = compactText(candidate.registry_summary?.summary);
+  const registryId = compactText(candidate.registry_id);
+
+  if (!entries.length && !summary && !registryId) return null;
 
   return (
-    <article className="rounded-3xl border border-steel-200 bg-white px-5 py-5 space-y-4">
+    <div className="rounded-2xl border border-steel-200 bg-white/70 px-4 py-3">
+      <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] text-steel-400">
+        <Landmark className="h-3.5 w-3.5" />
+        Registry
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {registryId ? (
+          <div className="rounded-xl border border-steel-100 bg-steel-50 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.14em] text-steel-400">Registry ID</div>
+            <div className="mt-1 text-sm text-oxford">{registryId}</div>
+          </div>
+        ) : null}
+        {entries.map((entry) => (
+          <div key={`${entry.label}-${entry.value}`} className="rounded-xl border border-steel-100 bg-steel-50 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.14em] text-steel-400">{entry.label}</div>
+            <div className="mt-1 text-sm text-oxford">{entry.value}</div>
+          </div>
+        ))}
+      </div>
+      {summary ? <p className="mt-3 text-sm leading-6 text-steel-600">{summary}</p> : null}
+    </div>
+  );
+}
+
+function UniverseCandidateCard({
+  candidate,
+  onValidate,
+  pending,
+}: {
+  candidate: UniverseCandidate;
+  onValidate: () => Promise<void>;
+  pending: boolean;
+}) {
+  const displayName = brandFirstName(candidate);
+  const legalName = legalSecondaryName(candidate);
+  const countries = candidateCountries(candidate);
+  const nodeLabels = matchedNodeLabels(candidate);
+  const nodeFitText = nodeFitSummaryText(candidate);
+  const discoveryHosts = (Array.isArray(candidate.provenance_summary?.top_source_urls) ? candidate.provenance_summary.top_source_urls : [])
+    .map((source) => hostnameFor(source))
+    .filter((host): host is string => Boolean(host))
+    .slice(0, 5);
+
+  return (
+    <article className="space-y-4 rounded-3xl border border-steel-200 bg-white px-5 py-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
+        <div className="min-w-0 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-lg text-oxford">{candidate.company_name}</h3>
-            <span className="rounded-full border border-steel-200 bg-steel-50 px-2 py-0.5 text-xs text-steel-500">
-              {statusLabel(companyStatus)}
+            <h3 className="text-lg font-medium text-oxford">{displayName}</h3>
+            <span className="rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-xs text-info">
+              {titleCaseToken(candidate.directness)}
             </span>
           </div>
-          <p className="text-sm text-steel-500">
-            {candidate.hq_country || "Unknown country"}
-            {candidate.entity_type ? ` · ${titleCaseToken(candidate.entity_type)}` : ""}
-          </p>
-          {candidate.official_website_url ? (
-            <a
-              href={candidate.official_website_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-sm text-info hover:underline"
-            >
-              {hostnameFor(candidate.official_website_url) || candidate.official_website_url}
-              <ExternalLink className="h-3 w-3" />
-            </a>
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-steel-500">
+            {countries.length ? <span>• {countries.join(", ")}</span> : null}
+          </div>
+
+          {legalName ? (
+            <div className="text-sm text-steel-600">
+              Legal entity <span className="font-medium text-oxford">{legalName}</span>
+            </div>
           ) : null}
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+            {candidate.official_website_url ? (
+              <a
+                href={candidate.official_website_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-info hover:underline"
+              >
+                {hostnameFor(candidate.official_website_url) || candidate.official_website_url}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            ) : null}
+            {candidate.registry_id ? <span className="text-steel-500">Registry ID {candidate.registry_id}</span> : null}
+          </div>
         </div>
 
-        <span className={clsx("badge", classificationBadgeClass(candidate.decision_classification))}>
-          {CLASSIFICATION_LABELS[candidate.decision_classification || "insufficient_evidence"] ||
-            "Insufficient evidence"}
-        </span>
+        <div className="text-right">
+          <div className="text-[11px] uppercase tracking-[0.18em] text-steel-400">Discovery Score</div>
+          <div className="mt-1 text-2xl font-semibold text-oxford">{Math.round(candidate.discovery_score)}</div>
+        </div>
       </div>
 
-      <CitedSummary candidate={candidate} />
+      <p className="text-sm leading-6 text-steel-600">
+        {candidate.short_description ||
+          "No short description yet. This candidate is in the registry because multiple discovery paths point to it."}
+      </p>
 
-      {candidate.top_claim?.text && candidate.top_claim?.source_url ? (
-        <div className="rounded-2xl border border-steel-200 bg-steel-50 px-4 py-3">
-          <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-steel-400">
-            Top evidence line
-          </div>
-          <p className="mt-2 text-sm leading-6 text-steel-700">{candidate.top_claim.text}</p>
+      {nodeFitText ? (
+        <div className="rounded-2xl border border-info/20 bg-info/10 px-4 py-3 text-sm text-info">
+          <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-info/80">Node Fit</div>
+          <div className="mt-2 leading-6">{nodeFitText}</div>
         </div>
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
-        <SignalChips
-          title="Scope Match"
-          items={candidate.scope_buckets.map((item) => titleCaseToken(item))}
-          tone="info"
-        />
-        <SignalChips title="Capability Signals" items={candidate.capability_signals.slice(0, 4)} />
-        <SignalChips title="Vertical Hints" items={candidate.likely_verticals.slice(0, 4)} tone="success" />
-        <SignalChips title="Discovery Sources" items={discoveryHosts} />
+        <ChipList title="Matched Nodes" items={nodeLabels} tone="info" />
+        <ChipList title="Source Families" items={candidate.source_families.map(titleCaseToken)} />
+        <ChipList title="Query Families" items={candidate.query_families.map(titleCaseToken)} tone="success" />
+        <ChipList title="Discovery Hosts" items={discoveryHosts} />
       </div>
 
-      {registryIdentity ? (
-        <div className="rounded-2xl border border-steel-200 bg-white px-4 py-3">
-          <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-steel-400">
-            Registry Identity
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2 text-xs text-steel-600">
-            {registryIdentity.country ? (
-              <span className="rounded-full border border-steel-200 px-2.5 py-1">
-                {registryIdentity.country}
-              </span>
-            ) : null}
-            {registryIdentity.source ? (
-              <span className="rounded-full border border-steel-200 px-2.5 py-1">
-                {titleCaseToken(registryIdentity.source)}
-              </span>
-            ) : null}
-            {registryIdentity.id ? (
-              <span className="rounded-full border border-steel-200 px-2.5 py-1">
-                ID {registryIdentity.id}
-              </span>
-            ) : null}
-            {registryMatchConfidence ? (
-              <span className="rounded-full border border-success/20 bg-success/10 px-2.5 py-1 text-success">
-                Match {registryMatchConfidence}
-              </span>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
+      <RegistrySummaryCard candidate={candidate} />
 
-      {candidate.expansion_provenance.length ? (
-        <div className="rounded-2xl border border-steel-200 bg-white px-4 py-3">
-          <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-steel-400">
-            Retrieval Provenance
-          </div>
-          <div className="mt-2 space-y-2">
-            {candidate.expansion_provenance.slice(0, 3).map((item, index) => (
-              <div key={`${candidate.company_name}-provenance-${index}`} className="text-sm text-steel-600">
-                <span className="font-medium text-steel-700">
-                  {[item.provider, item.query_type, item.brick_name].filter(Boolean).join(" · ") || "Discovery query"}
-                </span>
-                {item.query_text ? <span> · {item.query_text}</span> : null}
-              </div>
-            ))}
-          </div>
+      <div className="rounded-2xl border border-steel-200 bg-steel-50 px-4 py-3 text-sm text-steel-600">
+        <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-steel-400">Discovery provenance</div>
+        <div className="mt-2">
+          {String(candidate.provenance_summary?.origin_count || 0)} origins •{" "}
+          {String(candidate.provenance_summary?.source_family_count || candidate.source_families.length)} source families •{" "}
+          {String(candidate.provenance_summary?.query_family_count || candidate.query_families.length)} query families
         </div>
-      ) : null}
+      </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-steel-100 pt-4">
-        <div className="flex flex-wrap items-center gap-2 text-xs text-steel-400">
-          <span>{candidate.evidence_count} citations</span>
-          <span>•</span>
-          <span>{candidate.discovery_sources.length} discovery links</span>
-          {candidate.first_party_hint_pages_crawled_total ? (
-            <>
-              <span>•</span>
-              <span>{candidate.first_party_hint_pages_crawled_total} hint pages crawled</span>
-            </>
-          ) : null}
+        <div className="text-xs text-steel-400">
+          Universe is the registry stage. Use Validation for the first homepage and legal-fit pass.
         </div>
-        <div className="flex gap-2">
-          {companyStatus === "removed" ? (
-            <button
-              onClick={onRestore}
-              disabled={actionsDisabled}
-              className="btn-secondary text-sm py-1 px-3 disabled:opacity-50"
-            >
-              Restore
-            </button>
-          ) : (
-            <>
-              <button
-                onClick={onRemove}
-                disabled={actionsDisabled}
-                className="inline-flex items-center gap-1 rounded-full border border-steel-200 px-3 py-1.5 text-sm text-steel-700 transition-colors hover:border-danger/30 hover:bg-danger/10 hover:text-danger disabled:opacity-50"
-              >
-                <X className="h-4 w-4" />
-                Remove
-              </button>
-              <button
-                onClick={onKeep}
-                disabled={actionsDisabled || companyStatus === "kept" || companyStatus === "enriched"}
-                className={clsx(
-                  "inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-sm transition-colors disabled:opacity-50",
-                  companyStatus === "kept" || companyStatus === "enriched"
-                    ? "border-success/30 bg-success/10 text-success"
-                    : "border-steel-200 text-steel-700 hover:border-success/30 hover:bg-success/10 hover:text-success"
-                )}
-              >
-                <Check className="h-4 w-4" />
-                Keep
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {actionsDisabled ? (
-        <p className="text-xs text-warning-dark">
-          This candidate has not been materialized into a company row yet, so keep/remove actions are unavailable.
-        </p>
-      ) : null}
-    </article>
-  );
-}
-
-function ManualCompanyCard({
-  company,
-  onRemove,
-  onRestore,
-}: {
-  company: Company;
-  onRemove: () => Promise<void>;
-  onRestore: () => Promise<void>;
-}) {
-  return (
-    <article className="rounded-3xl border border-steel-200 bg-white px-5 py-5 space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="space-y-1">
-          <h3 className="text-lg text-oxford">{company.name}</h3>
-          <p className="text-sm text-steel-500">
-            Manual addition
-            {company.hq_country ? ` · ${company.hq_country}` : ""}
-          </p>
-          {company.website ? (
-            <a
-              href={company.website}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-sm text-info hover:underline"
-            >
-              {hostnameFor(company.website) || company.website}
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          ) : null}
-        </div>
-        <span className="rounded-full border border-steel-200 bg-steel-50 px-2 py-1 text-xs text-steel-500">
-          {statusLabel(company.status)}
-        </span>
-      </div>
-
-      <p className="text-sm text-steel-600">
-        Manual queue entries stay visible here even before they have discovery-backed screening metadata.
-      </p>
-
-      <div className="flex justify-end gap-2 border-t border-steel-100 pt-4">
-        {company.status === "removed" ? (
-          <button onClick={onRestore} className="btn-secondary text-sm py-1 px-3">
-            Restore
-          </button>
-        ) : (
+        <div className="flex flex-wrap gap-2">
           <button
-            onClick={onRemove}
-            className="inline-flex items-center gap-1 rounded-full border border-steel-200 px-3 py-1.5 text-sm text-steel-700 transition-colors hover:border-danger/30 hover:bg-danger/10 hover:text-danger"
+            onClick={onValidate}
+            disabled={pending}
+            className="btn-secondary px-3 py-1.5 text-sm disabled:opacity-50"
           >
-            <X className="h-4 w-4" />
-            Remove
+            {pending ? "Queuing..." : "Queue for Validation"}
           </button>
-        )}
+          <Link href={`./validation`} className="btn-secondary flex items-center gap-2 px-3 py-1.5 text-sm">
+            Open Validation
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
       </div>
     </article>
   );
@@ -489,117 +406,48 @@ export default function UniversePage() {
   const params = useParams();
   const workspaceId = Number(params.id);
 
-  const [filter, setFilter] = useState<"all" | "kept" | "good_target" | "borderline_watchlist">("all");
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [allowDegraded, setAllowDegraded] = useState(false);
-  const [newCompany, setNewCompany] = useState({ name: "", website: "", hq_country: "" });
+  const [directnessFilter, setDirectnessFilter] = useState<"all" | "direct" | "adjacent" | "broad_market">("all");
 
-  const { data: companies, isLoading: companiesLoading, refetch: refetchCompanies } = useCompanies(workspaceId);
   const {
     data: topCandidates,
     isLoading: topCandidatesLoading,
     error: topCandidatesError,
     refetch: refetchTopCandidates,
-  } = useTopCandidates(workspaceId, 60, allowDegraded);
+  } = useUniverseCandidates(workspaceId, 90, true);
   const { data: diagnostics, refetch: refetchDiagnostics } = useDiscoveryDiagnostics(workspaceId);
   const { data: gates } = useGates(workspaceId);
   const { data: discoveryJobs } = useWorkspaceJobs(workspaceId, "discovery_universe");
-  const updateCompany = useUpdateCompany(workspaceId);
-  const createCompany = useCreateCompany(workspaceId);
+  const refreshValidation = useRefreshValidationQueue(workspaceId);
 
   const jobRunner = useWorkspaceJobWithPolling(
     workspaceId,
     () => workspaceApi.runDiscovery(workspaceId),
     () => {
       void refetchTopCandidates();
-      void refetchCompanies();
       void refetchDiagnostics();
     },
     (jobId) => workspaceApi.cancelJob(workspaceId, jobId)
   );
 
   const candidates = useMemo(() => topCandidates ?? [], [topCandidates]);
-  const manualCompanies = useMemo(() => (companies || []).filter((company) => company.is_manual), [companies]);
-
   const filteredCandidates = useMemo(() => {
-    if (filter === "all") return candidates;
-    if (filter === "kept") {
-      return candidates.filter(
-        (candidate) => candidate.company_status === "kept" || candidate.company_status === "enriched"
-      );
-    }
-    return candidates.filter(
-      (candidate) => (candidate.decision_classification || "insufficient_evidence") === filter
-    );
-  }, [candidates, filter]);
+    if (directnessFilter === "all") return candidates;
+    return candidates.filter((candidate) => candidate.directness === directnessFilter);
+  }, [candidates, directnessFilter]);
 
-  const keptCount =
-    candidates.filter((candidate) => candidate.company_status === "kept" || candidate.company_status === "enriched")
-      .length || 0;
-  const goodCount =
-    candidates.filter((candidate) => (candidate.decision_classification || "insufficient_evidence") === "good_target")
-      .length || 0;
-  const watchlistCount =
-    candidates.filter(
-      (candidate) => (candidate.decision_classification || "insufficient_evidence") === "borderline_watchlist"
-    ).length || 0;
   const latestCompletedDiscoveryJob = discoveryJobs?.find((job) => job.state === "completed") ?? null;
-
+  const discoveryReadiness = gates?.discovery_readiness;
   const providerMix = diagnostics?.source_coverage?.external_search?.provider_mix || {};
   const providerMixLabels = Object.entries(providerMix)
     .filter(([, count]) => Number(count) > 0)
     .map(([provider, count]) => `${titleCaseToken(provider)} ${count}`);
-  const registryQueriesByCountry = diagnostics?.funnel_metrics?.registry_queries_by_country || {};
-  const registryCountryLabels = Object.entries(registryQueriesByCountry)
-    .filter(([, count]) => Number(count) > 0)
-    .map(([country, count]) => `${country} ${count}`);
+  const directCount = candidates.filter((candidate) => candidate.directness === "direct").length;
+  const franceLinkedCount = candidates.filter((candidate) => isFranceLinked(candidate)).length;
+  const registryLinkedCount = candidates.filter((candidate) => Boolean(candidate.registry_id || candidate.registry_summary)).length;
+  const uniqueSourceFamilies = new Set(candidates.flatMap((candidate) => candidate.source_families)).size;
+  const degradedError = topCandidatesError as (Error & { status?: number }) | null;
 
-  const handleKeep = async (candidate: UniverseTopCandidate) => {
-    if (!candidate.company_id) return;
-    await updateCompany.mutateAsync({
-      companyId: candidate.company_id,
-      data: { status: "kept" },
-    });
-  };
-
-  const handleRemove = async (candidate: UniverseTopCandidate) => {
-    if (!candidate.company_id) return;
-    await updateCompany.mutateAsync({
-      companyId: candidate.company_id,
-      data: { status: "removed" },
-    });
-  };
-
-  const handleRestore = async (candidate: UniverseTopCandidate) => {
-    if (!candidate.company_id) return;
-    await updateCompany.mutateAsync({
-      companyId: candidate.company_id,
-      data: { status: "candidate" },
-    });
-  };
-
-  const handleManualRemove = async (company: Company) => {
-    await updateCompany.mutateAsync({
-      companyId: company.id,
-      data: { status: "removed" },
-    });
-  };
-
-  const handleManualRestore = async (company: Company) => {
-    await updateCompany.mutateAsync({
-      companyId: company.id,
-      data: { status: "candidate" },
-    });
-  };
-
-  const handleAddCompany = async () => {
-    if (!newCompany.name) return;
-    await createCompany.mutateAsync(newCompany);
-    setNewCompany({ name: "", website: "", hq_country: "" });
-    setShowAddModal(false);
-  };
-
-  if (companiesLoading || topCandidatesLoading) {
+  if (topCandidatesLoading) {
     return (
       <div className="flex items-center justify-center py-16">
         <Loader2 className="h-8 w-8 animate-spin text-oxford" />
@@ -607,16 +455,12 @@ export default function UniversePage() {
     );
   }
 
-  const degradedError = topCandidatesError as (Error & { status?: number; detail?: unknown }) | null;
-  const canShowDegraded = degradedError?.status === 409 && !allowDegraded;
-  const discoveryReadiness = gates?.discovery_readiness;
-
   return (
     <div className="space-y-6">
       <StepHeader
         step={3}
         title="Universe"
-        subtitle="Search around the approved graph nodes, resolve identities, and decide which companies deserve deeper validation."
+        subtitle="Build the longlist as a brand-first candidate registry before sending selected companies into Validation."
       />
 
       {gates ? (
@@ -634,8 +478,8 @@ export default function UniversePage() {
             )}
             <span className={gates.universe ? "font-medium text-success" : "font-medium text-warning-dark"}>
               {gates.universe
-                ? `${keptCount} companies kept`
-                : "Universe output is still early. Use keep/remove to shape the list."}
+                ? `${candidates.length} candidates are available in the discovery registry.`
+                : "Universe is the registry stage. It should stay broad, cheap, and provenance-rich."}
             </span>
           </div>
         </div>
@@ -645,20 +489,16 @@ export default function UniversePage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-steel-400">
-              Retrieval Overview
+              Market Registry
             </div>
-            <h3 className="mt-2 text-2xl font-semibold text-oxford">Graph-oriented discovery output</h3>
+            <h3 className="mt-2 text-2xl font-semibold text-oxford">Brand-first longlist around approved nodes</h3>
             <p className="mt-2 max-w-3xl text-sm text-steel-500">
-              Universe now shows which capabilities, vertical hints, and retrieval paths surfaced each company, plus
-              registry identity context before deeper enrichment.
+              Universe now acts as the market registry: brand-first rows, legal metadata secondary, and cheap relevance
+              only. Validation is where the first real homepage and fit pass happens.
             </p>
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => setShowAddModal(true)} className="btn-secondary flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Add Company
-            </button>
             <button
               onClick={jobRunner.run}
               disabled={jobRunner.isRunning || !discoveryReadiness?.runnable}
@@ -676,28 +516,24 @@ export default function UniversePage() {
                 </>
               )}
             </button>
+            <Link href={`./validation`} className="btn-secondary flex items-center gap-2">
+              Validation
+              <ArrowRight className="h-4 w-4" />
+            </Link>
           </div>
         </div>
 
-        <div className="mt-5 grid gap-3 md:grid-cols-4">
-          <MetricTile label="Surfaced" value={candidates.length} icon={Globe} />
-          <MetricTile label="Good Target" value={goodCount} icon={Sparkles} />
-          <MetricTile
-            label="Registry Mapped"
-            value={diagnostics?.funnel_metrics?.registry_identity_mapped_count ?? 0}
-            icon={Database}
-          />
-          <MetricTile
-            label="Registry Queries"
-            value={diagnostics?.funnel_metrics?.registry_queries_count ?? 0}
-            icon={Network}
-          />
+        <div className="mt-5 grid gap-3 md:grid-cols-5">
+          <MetricTile label="Candidates" value={candidates.length} icon={Building2} />
+          <MetricTile label="France-linked" value={franceLinkedCount} icon={MapPinned} />
+          <MetricTile label="Registry-linked" value={registryLinkedCount} icon={Landmark} />
+          <MetricTile label="Direct" value={directCount} icon={BadgeCheck} />
+          <MetricTile label="Source Families" value={uniqueSourceFamilies} icon={Layers3} />
         </div>
 
-        {providerMixLabels.length || registryCountryLabels.length ? (
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            <SignalChips title="Web Provider Mix" items={providerMixLabels} />
-            <SignalChips title="Registry Query Mix" items={registryCountryLabels} tone="info" />
+        {providerMixLabels.length ? (
+          <div className="mt-5">
+            <ChipList title="Web Provider Mix" items={providerMixLabels} />
           </div>
         ) : null}
 
@@ -732,142 +568,65 @@ export default function UniversePage() {
         />
       ) : null}
 
-      {showAddModal ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-oxford/80">
-          <div className="w-full max-w-md rounded-3xl border border-steel-200 bg-white p-6 shadow-xl">
-            <h3 className="text-lg text-oxford">Add Company Manually</h3>
-            <div className="mt-4 space-y-4">
-              <div>
-                <label className="label">Company Name *</label>
-                <input
-                  type="text"
-                  value={newCompany.name}
-                  onChange={(event) => setNewCompany({ ...newCompany, name: event.target.value })}
-                  className="input"
-                />
-              </div>
-              <div>
-                <label className="label">Website</label>
-                <input
-                  type="url"
-                  value={newCompany.website}
-                  onChange={(event) => setNewCompany({ ...newCompany, website: event.target.value })}
-                  placeholder="https://company.com"
-                  className="input"
-                />
-              </div>
-              <div>
-                <label className="label">HQ Country</label>
-                <input
-                  type="text"
-                  value={newCompany.hq_country}
-                  onChange={(event) => setNewCompany({ ...newCompany, hq_country: event.target.value })}
-                  placeholder="e.g. France"
-                  className="input"
-                />
-              </div>
-            </div>
-            <div className="mt-6 flex gap-3">
-              <button onClick={() => setShowAddModal(false)} className="flex-1 btn-secondary">
-                Cancel
-              </button>
-              <button
-                onClick={handleAddCompany}
-                disabled={!newCompany.name || createCompany.isPending}
-                className="flex-1 btn-primary disabled:opacity-50"
-              >
-                Add Company
-              </button>
-            </div>
-          </div>
+      {degradedError ? (
+        <div className="rounded-3xl border border-warning/30 bg-warning/10 px-5 py-4 text-sm text-warning-dark">
+          {degradedError.message || "Universe candidates could not be loaded."}
         </div>
       ) : null}
 
-      <div className="flex flex-wrap gap-1 rounded-full border border-steel-200 bg-white p-1">
-        {([
-          { key: "all", label: `All (${candidates.length})` },
-          { key: "good_target", label: `Good (${goodCount})` },
-          { key: "borderline_watchlist", label: `Watchlist (${watchlistCount})` },
-          { key: "kept", label: `Kept (${keptCount})` },
-        ] as const).map((item) => (
-          <button
-            key={item.key}
-            onClick={() => setFilter(item.key)}
-            className={clsx(
-              "rounded-full px-4 py-2 text-sm transition-colors",
-              filter === item.key ? "bg-oxford text-white" : "text-steel-600 hover:bg-steel-50"
-            )}
-          >
-            {item.label}
-          </button>
-        ))}
+      <div className="rounded-3xl border border-steel-200 bg-white px-5 py-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-oxford">Universe registry</h2>
+            <p className="mt-1 text-sm text-steel-500">
+              Browse the longlist by directness, matched nodes, geography, and discovery provenance. No shortlist or
+              quality semantics live here.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { key: "all", label: "All" },
+              { key: "direct", label: "Direct" },
+              { key: "adjacent", label: "Adjacent" },
+              { key: "broad_market", label: "Broad market" },
+            ].map((option) => (
+              <button
+                key={option.key}
+                onClick={() => setDirectnessFilter(option.key as typeof directnessFilter)}
+                className={clsx(
+                  "rounded-full border px-3 py-1.5 text-sm transition-colors",
+                  directnessFilter === option.key
+                    ? "border-oxford bg-oxford text-white"
+                    : "border-steel-200 bg-white text-steel-600 hover:border-info/30 hover:bg-info/10 hover:text-info"
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
-      {canShowDegraded ? (
-        <div className="rounded-3xl border border-warning/30 bg-warning/10 px-5 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="font-medium text-warning-dark">Latest discovery run is degraded</div>
-              <p className="mt-1 text-sm text-warning-dark/80">
-                The page is hiding the last run by default because the quality gate failed. You can still inspect it.
-              </p>
-            </div>
-            <button onClick={() => setAllowDegraded(true)} className="btn-secondary">
-              Show Degraded Run
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {degradedError && !canShowDegraded ? (
-        <div className="rounded-3xl border border-danger/20 bg-danger/10 px-5 py-4 text-sm text-danger">
-          {degradedError.message}
-        </div>
-      ) : null}
-
-      {filteredCandidates.length === 0 ? (
-        <div className="rounded-[28px] border border-steel-200 bg-white px-6 py-12 text-center">
-          <Globe className="mx-auto h-12 w-12 text-steel-300" />
-          <h3 className="mt-4 text-lg text-oxford">No surfaced candidates yet</h3>
-          <p className="mt-2 text-sm text-steel-500">
-            Run discovery to populate the universe from approved capabilities, customers, and adjacent lanes.
-          </p>
+      {!filteredCandidates.length ? (
+        <div className="rounded-3xl border border-steel-200 bg-white px-6 py-12 text-center text-sm text-steel-500">
+          No candidates match this filter yet.
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4 xl:grid-cols-2">
           {filteredCandidates.map((candidate) => (
             <UniverseCandidateCard
-              key={candidate.company_id ?? candidate.candidate_entity_id ?? candidate.company_name}
+              key={candidate.candidate_entity_id}
               candidate={candidate}
-              onKeep={() => handleKeep(candidate)}
-              onRemove={() => handleRemove(candidate)}
-              onRestore={() => handleRestore(candidate)}
+              pending={refreshValidation.isPending}
+              onValidate={() =>
+                refreshValidation
+                  .mutateAsync({ candidateEntityIds: [candidate.candidate_entity_id] })
+                  .then(() => undefined)
+              }
             />
           ))}
         </div>
       )}
-
-      {manualCompanies.length ? (
-        <section className="space-y-4">
-          <div>
-            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-steel-400">Manual Queue</div>
-            <h3 className="mt-2 text-xl font-semibold text-oxford">Manual additions</h3>
-            <p className="mt-1 text-sm text-steel-500">
-              These companies were added directly and may not have discovery provenance yet.
-            </p>
-          </div>
-          <div className="grid gap-4 lg:grid-cols-2">
-            {manualCompanies.map((company) => (
-              <ManualCompanyCard
-                key={company.id}
-                company={company}
-                onRemove={() => handleManualRemove(company)}
-                onRestore={() => handleManualRestore(company)}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
     </div>
   );
 }

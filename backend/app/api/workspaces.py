@@ -71,7 +71,9 @@ from app.services.discovery_validation import (
     VALIDATION_STATUS_REJECT,
     VALIDATION_STATUS_REMOVED,
     VALIDATION_STATUS_WATCHLIST,
+    build_candidate_discovery_context,
     build_candidate_validation_context,
+    build_diversified_universe_candidates,
     build_diversified_validation_queue,
     set_validation_metadata,
     validation_metadata,
@@ -750,69 +752,68 @@ class ReportCard(BaseModel):
     reason_highlights: List[str] = Field(default_factory=list)
     evidence_quality_summary: Dict[str, Any] = Field(default_factory=dict)
     known_unknowns: List[str] = Field(default_factory=list)
+    lane_ids: List[str] = Field(default_factory=list)
+    lane_labels: List[str] = Field(default_factory=list)
+
+
+class UniverseRegistrySummary(BaseModel):
+    ape_code: Optional[str] = None
+    naf25_code: Optional[str] = None
+    active_status: Optional[str] = None
+    commercial_names: List[str] = Field(default_factory=list)
+    object_text_present: bool = False
+    observation_count: int = 0
+    country: Optional[str] = None
+    country_code: Optional[str] = None
+    summary: Optional[str] = None
+
+
+class UniverseNodeFitSummary(BaseModel):
+    matched_node_ids: List[str] = Field(default_factory=list)
+    matched_node_labels: List[str] = Field(default_factory=list)
+    core_match_count: int = 0
+    adjacent_match_count: int = 0
+    node_fit_score: float = 0.0
 
 
 class UniverseTopCandidateResponse(BaseModel):
-    company_id: Optional[int] = None
-    candidate_entity_id: Optional[int] = None
-    company_name: str
-    company_status: Optional[str] = None
+    candidate_entity_id: int
+    display_name: str
+    legal_name: Optional[str] = None
+    registry_id: Optional[str] = None
+    registry_source: Optional[str] = None
+    registry_country: Optional[str] = None
     official_website_url: Optional[str] = None
-    hq_country: Optional[str] = None
-    evidence_count: int = 0
-    discovery_sources: List[str] = Field(default_factory=list)
-    entity_type: str = "company"
-    decision_classification: str
-    evidence_sufficiency: str
-    reason_codes: Dict[str, List[str]] = Field(default_factory=lambda: {"positive": [], "caution": [], "reject": []})
-    rationale_summary: Optional[str] = None
-    top_claim: Dict[str, Any] = Field(default_factory=dict)
-    citation_summary_v1: Optional[CitationSummaryV1] = None
-    registry_neighbors_with_first_party_website_count: int = 0
-    registry_neighbors_dropped_missing_official_website_count: int = 0
-    registry_origin_screening_counts: Dict[str, int] = Field(default_factory=dict)
-    first_party_hint_urls_used_count: int = 0
-    first_party_hint_pages_crawled_total: int = 0
-    capability_signals: List[str] = Field(default_factory=list)
-    likely_verticals: List[str] = Field(default_factory=list)
-    scope_buckets: List[str] = Field(default_factory=list)
-    origin_types: List[str] = Field(default_factory=list)
-    registry_identity: Dict[str, Any] = Field(default_factory=dict)
-    expansion_provenance: List[Dict[str, Any]] = Field(default_factory=list)
-    missing_claim_groups: List[str] = Field(default_factory=list)
-    unresolved_contradictions_count: int = 0
-    ranking_eligible: bool = False
-    validation_status: str = VALIDATION_STATUS_QUEUED
-    validation_recommendation: str = VALIDATION_STATUS_QUEUED
-    validation_queue_rank: Optional[int] = None
-    promoted_to_cards: bool = False
-    validation_lane_ids: List[str] = Field(default_factory=list)
-    validation_lane_labels: List[str] = Field(default_factory=list)
-    validation_query_families: List[str] = Field(default_factory=list)
-    validation_source_families: List[str] = Field(default_factory=list)
-    vendor_classification: Optional[str] = None
-    identity_confidence: Optional[str] = None
-    official_website_confidence: Optional[str] = None
-    identity_diagnostics: Dict[str, Any] = Field(default_factory=dict)
-    multi_origin_count: int = 0
-    priority_score: float = 0.0
-    run_quality_tier: str = "degraded"
-    quality_gate_passed: bool = False
-    quality_audit_passed: bool = False
-    degraded_reasons: List[str] = Field(default_factory=list)
+    discovery_url: Optional[str] = None
+    short_description: Optional[str] = None
+    discovery_score: float = 0.0
+    source_families: List[str] = Field(default_factory=list)
+    query_families: List[str] = Field(default_factory=list)
+    lane_ids: List[str] = Field(default_factory=list)
+    lane_labels: List[str] = Field(default_factory=list)
+    geo_signals: List[str] = Field(default_factory=list)
+    directness: str = "broad_market"
+    registry_summary: UniverseRegistrySummary | None = None
+    node_fit_summary: UniverseNodeFitSummary = Field(default_factory=UniverseNodeFitSummary)
+    provenance_summary: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ValidationQueueItemResponse(BaseModel):
     candidate_entity_id: int
     company_id: Optional[int] = None
+    display_name: str
     company_name: str
+    legal_name: Optional[str] = None
+    registry_id: Optional[str] = None
+    registry_source: Optional[str] = None
+    registry_country: Optional[str] = None
+    registry_match_confidence: Optional[float] = None
+    registry_status: Optional[str] = None
+    registry_fields: Dict[str, Any] = Field(default_factory=dict)
     official_website_url: Optional[str] = None
     discovery_url: Optional[str] = None
     hq_country: Optional[str] = None
     entity_type: str = "company"
-    decision_classification: str
-    evidence_sufficiency: str
-    rationale_summary: Optional[str] = None
     validation_status: str
     validation_recommendation: str
     validation_queue_rank: int
@@ -823,18 +824,19 @@ class ValidationQueueItemResponse(BaseModel):
     validation_source_families: List[str] = Field(default_factory=list)
     discovery_sources: List[str] = Field(default_factory=list)
     origin_types: List[str] = Field(default_factory=list)
-    capability_signals: List[str] = Field(default_factory=list)
-    likely_verticals: List[str] = Field(default_factory=list)
+    short_description: Optional[str] = None
+    validated_description: Optional[str] = None
+    page_classification: Optional[str] = None
+    validation_score: float = 0.0
+    geo_signals: List[str] = Field(default_factory=list)
+    directness: str = "broad_market"
     vendor_classification: Optional[str] = None
     identity_confidence: Optional[str] = None
     official_website_confidence: Optional[str] = None
     identity_diagnostics: Dict[str, Any] = Field(default_factory=dict)
     multi_origin_count: int = 0
     priority_score: float = 0.0
-    top_claim: Dict[str, Any] = Field(default_factory=dict)
-    reason_codes: Dict[str, List[str]] = Field(default_factory=lambda: {"positive": [], "caution": [], "reject": []})
-    expansion_provenance: List[Dict[str, Any]] = Field(default_factory=list)
-    citation_summary_v1: Optional[CitationSummaryV1] = None
+    provenance_summary: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ValidationStatusUpdateRequest(BaseModel):
@@ -1444,6 +1446,172 @@ async def _latest_screenings_by_candidate_entity(
     return latest
 
 
+def _page_classification_from_reasons(
+    reasons: list[dict[str, Any]],
+    *,
+    official_website_url: Optional[str],
+    discovery_url: Optional[str],
+) -> str:
+    text = " ".join(str(item.get("text") or "").strip().lower() for item in reasons if isinstance(item, dict))
+    url_text = " ".join(filter(None, [str(official_website_url or "").lower(), str(discovery_url or "").lower()]))
+    if any(token in url_text for token in ("/blog", "/news", "/insights", "/article")):
+        return "blog_news"
+    if any(token in text for token in ("consulting", "advisory", "professional services")):
+        return "services_consulting"
+    if any(token in text for token in ("hospital", "clinic", "care home", "operator")) and "software" not in text:
+        return "operator_institution"
+    if any(token in text for token in ("directory", "vendor showcase", "marketplace")):
+        return "directory"
+    if any(token in text for token in ("platform", "software", "workflow", "scheduling", "staffing", "management")):
+        return "product"
+    return "company"
+
+
+async def _candidate_entities_for_workspace(
+    db: AsyncSession,
+    workspace_id: int,
+) -> tuple[list[CandidateEntity], dict[int, list[CandidateOriginEdge]]]:
+    entity_result = await db.execute(
+        select(CandidateEntity)
+        .where(CandidateEntity.workspace_id == workspace_id)
+        .order_by(CandidateEntity.created_at.asc())
+    )
+    entities = entity_result.scalars().all()
+    entity_ids = [int(entity.id) for entity in entities if getattr(entity, "id", None) is not None]
+    _entity_map, origins_by_entity = await _candidate_entity_maps(db, entity_ids)
+    return entities, origins_by_entity
+
+
+def _first_non_empty_string(*values: Any) -> Optional[str]:
+    for value in values:
+        normalized = str(value or "").strip()
+        if normalized:
+            return normalized
+    return None
+
+
+def _candidate_registry_payload(entity: CandidateEntity) -> dict[str, Any]:
+    metadata = entity.metadata_json if isinstance(entity.metadata_json, dict) else {}
+    registry_identity = metadata.get("registry_identity") if isinstance(metadata.get("registry_identity"), dict) else {}
+    registry_id = _first_non_empty_string(
+        getattr(entity, "registry_id", None),
+        registry_identity.get("id"),
+        registry_identity.get("registry_id"),
+        metadata.get("registry_id"),
+    )
+    registry_source = _first_non_empty_string(
+        getattr(entity, "registry_source", None),
+        registry_identity.get("source"),
+        metadata.get("registry_source"),
+    )
+    registry_country = _first_non_empty_string(
+        getattr(entity, "registry_country", None),
+        registry_identity.get("country"),
+        metadata.get("registry_country"),
+        getattr(entity, "country", None),
+    )
+    legal_name = _first_non_empty_string(
+        metadata.get("legal_name"),
+        metadata.get("legalName"),
+        metadata.get("company_legal_name"),
+        metadata.get("registry_name"),
+        registry_identity.get("legal_name"),
+        registry_identity.get("name"),
+        registry_identity.get("entity_name"),
+    )
+    display_name = _first_non_empty_string(
+        metadata.get("display_name"),
+        metadata.get("brand_name"),
+        metadata.get("brand"),
+        metadata.get("short_name"),
+        getattr(entity, "canonical_name", None),
+        legal_name,
+        getattr(entity, "canonical_domain", None),
+    ) or "Unknown Candidate"
+    raw_registry_fields = metadata.get("registry_fields") if isinstance(metadata.get("registry_fields"), dict) else {}
+    match_confidence_raw = (
+        registry_identity.get("match_confidence")
+        if registry_identity.get("match_confidence") is not None
+        else metadata.get("registry_match_confidence")
+    )
+    try:
+        match_confidence = float(match_confidence_raw) if match_confidence_raw is not None else None
+    except Exception:
+        match_confidence = None
+    registry_status = _first_non_empty_string(
+        registry_identity.get("status"),
+        metadata.get("registry_status"),
+        raw_registry_fields.get("active_status"),
+    )
+    return {
+        "display_name": display_name,
+        "legal_name": legal_name,
+        "registry_id": registry_id,
+        "registry_source": registry_source,
+        "registry_country": registry_country,
+        "registry_match_confidence": match_confidence,
+        "registry_status": registry_status,
+        "registry_fields": raw_registry_fields,
+        "registry_summary": {
+            "ape_code": _first_non_empty_string(raw_registry_fields.get("ape_code"), raw_registry_fields.get("activity_code")),
+            "naf25_code": _first_non_empty_string(raw_registry_fields.get("naf25_code")),
+            "active_status": registry_status,
+            "commercial_names": _worker_dedupe_strings(raw_registry_fields.get("commercial_names") or [])[:8],
+            "object_text_present": bool(raw_registry_fields.get("object_text_present", False)),
+            "observation_count": int(raw_registry_fields.get("observation_count") or 0),
+            "country": registry_country,
+            "country_code": registry_country,
+            "summary": _first_non_empty_string(raw_registry_fields.get("object_text")),
+        },
+    }
+
+
+async def _build_universe_candidate_items(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    allow_degraded: bool = False,
+    limit: Optional[int] = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], Optional[str]]:
+    _screenings, quality_payload, latest_run_id = await _latest_screenings_for_workspace_run(db, workspace_id)
+
+    entities, origins_by_entity = await _candidate_entities_for_workspace(db, workspace_id)
+    if not entities:
+        return [], quality_payload, latest_run_id
+
+    items: list[dict[str, Any]] = []
+    for entity in entities:
+        discovery = build_candidate_discovery_context(
+            entity=entity,
+            origins=origins_by_entity.get(int(entity.id), []),
+        )
+        validation = validation_metadata(entity)
+        registry_payload = _candidate_registry_payload(entity)
+        item = {
+            **discovery,
+            **registry_payload,
+            "company_name": registry_payload["display_name"],
+            "validation_status": validation.get("status") or VALIDATION_STATUS_QUEUED,
+            "promoted_to_cards": bool(validation.get("promoted_to_cards")),
+            "multi_origin_count": len(discovery.get("origin_types") or []),
+        }
+        items.append(item)
+
+    settings_obj = get_settings()
+    limit_value = int(limit or getattr(settings_obj, "discovery_universe_limit", 60))
+    lane_cap = int(getattr(settings_obj, "discovery_validation_lane_cap", 8))
+    family_cap = int(getattr(settings_obj, "discovery_validation_query_family_cap", 6))
+    source_cap = int(getattr(settings_obj, "discovery_validation_source_family_cap", 24))
+    ranked = build_diversified_universe_candidates(
+        items,
+        limit=limit_value,
+        lane_cap=max(1, lane_cap),
+        family_cap=max(1, family_cap),
+        source_family_cap=max(1, source_cap),
+    )
+    return ranked, quality_payload, latest_run_id
+
+
 async def _refresh_validation_identity_slice(
     db: AsyncSession,
     workspace_id: int,
@@ -1454,17 +1622,35 @@ async def _refresh_validation_identity_slice(
     settings = get_settings()
     refresh_cap = max(1, int(getattr(settings, "discovery_validation_refresh_identity_cap", 12)))
     effective_top_n = max(1, min(int(top_n or refresh_cap), refresh_cap))
-    queue_items, _quality_payload, _latest_run_id = await _build_validation_queue_items(
-        db,
-        workspace_id,
-        allow_degraded=True,
-        limit=max(refresh_cap, effective_top_n),
-        include_rejected=False,
-    )
+    selected_items: list[dict[str, Any]] = []
     if candidate_entity_ids:
-        requested_ids = {int(item) for item in candidate_entity_ids if int(item) > 0}
-        selected_items = [item for item in queue_items if int(item["candidate_entity_id"]) in requested_ids][:refresh_cap]
+        requested_ids = [int(item) for item in candidate_entity_ids if int(item) > 0][:refresh_cap]
+        entity_map, origins_by_entity = await _candidate_entity_maps(db, requested_ids)
+        for entity_id in requested_ids:
+            entity = entity_map.get(entity_id)
+            if entity is None:
+                continue
+            discovery = build_candidate_discovery_context(
+                entity=entity,
+                origins=origins_by_entity.get(entity_id, []),
+            )
+            selected_items.append(
+                {
+                    "candidate_entity_id": entity_id,
+                    "company_name": discovery["company_name"],
+                    "official_website_url": discovery["official_website_url"],
+                    "discovery_url": discovery["discovery_url"],
+                    "short_description": discovery.get("short_description"),
+                }
+            )
     else:
+        queue_items, _quality_payload, _latest_run_id = await _build_validation_queue_items(
+            db,
+            workspace_id,
+            allow_degraded=True,
+            limit=max(refresh_cap, effective_top_n),
+            include_rejected=False,
+        )
         selected_items = queue_items[:effective_top_n]
     if not selected_items:
         return []
@@ -1477,16 +1663,17 @@ async def _refresh_validation_identity_slice(
     for item in selected_items:
         entity = entity_map.get(int(item["candidate_entity_id"]))
         screening = screening_map.get(int(item["candidate_entity_id"]))
-        if entity is None or screening is None:
+        if entity is None:
             continue
+        registry_payload = _candidate_registry_payload(entity)
         refresh_candidates.append(
             {
                 "candidate_entity_id": int(entity.id),
-                "name": str(screening.candidate_name or entity.canonical_name or "").strip(),
-                "website": str(screening.candidate_official_website or entity.canonical_website or entity.discovery_primary_url or "").strip() or None,
-                "official_website_url": str(screening.candidate_official_website or entity.canonical_website or "").strip() or None,
-                "discovery_url": str(screening.candidate_discovery_url or entity.discovery_primary_url or "").strip() or None,
-                "profile_url": str(screening.candidate_discovery_url or entity.discovery_primary_url or "").strip() or None,
+                "name": str(item.get("display_name") or registry_payload["display_name"] or entity.canonical_name or "").strip(),
+                "website": str((screening.candidate_official_website if screening else None) or entity.canonical_website or entity.discovery_primary_url or "").strip() or None,
+                "official_website_url": str((screening.candidate_official_website if screening else None) or entity.canonical_website or "").strip() or None,
+                "discovery_url": str((screening.candidate_discovery_url if screening else None) or entity.discovery_primary_url or "").strip() or None,
+                "profile_url": str((screening.candidate_discovery_url if screening else None) or entity.discovery_primary_url or "").strip() or None,
                 "first_party_domains": list(entity.first_party_domains_json or []),
                 "_origins": [
                     {
@@ -1515,7 +1702,7 @@ async def _refresh_validation_identity_slice(
         entity_id = int(candidate.get("candidate_entity_id") or 0)
         entity = entity_map.get(entity_id)
         screening = screening_map.get(entity_id)
-        if entity is None or screening is None:
+        if entity is None:
             continue
         official_website = str(candidate.get("official_website_url") or candidate.get("website") or "").strip() or None
         official_domain = normalize_domain(official_website)
@@ -1524,7 +1711,7 @@ async def _refresh_validation_identity_slice(
         if official_website and official_domain:
             entity.canonical_website = official_website
             entity.canonical_domain = official_domain
-            if not screening.candidate_official_website:
+            if screening is not None and not screening.candidate_official_website:
                 screening.candidate_official_website = official_website
         identity = candidate.get("identity") if isinstance(candidate.get("identity"), dict) else {}
         entity.identity_confidence = str(identity.get("identity_confidence") or entity.identity_confidence or "low")[:20]
@@ -1541,7 +1728,7 @@ async def _refresh_validation_identity_slice(
                 vendor_classification = "vendor_candidate"
 
         validation = validation_metadata(entity)
-        screening_meta = screening.screening_meta_json if isinstance(screening.screening_meta_json, dict) else {}
+        screening_meta = screening.screening_meta_json if screening is not None and isinstance(screening.screening_meta_json, dict) else {}
         first_party_meta = screening_meta.get("first_party_enrichment") if isinstance(screening_meta.get("first_party_enrichment"), dict) else {}
         if homepage_reasons:
             first_party_meta = {
@@ -1551,8 +1738,19 @@ async def _refresh_validation_identity_slice(
                 "pages_crawled": 1,
                 "signals_extracted": len(homepage_reasons),
             }
-            screening_meta["first_party_enrichment"] = first_party_meta
-            screening.screening_meta_json = screening_meta
+            if screening is not None:
+                screening_meta["first_party_enrichment"] = first_party_meta
+                screening.screening_meta_json = screening_meta
+        page_classification = _page_classification_from_reasons(
+            homepage_reasons,
+            official_website_url=official_website,
+            discovery_url=str(candidate.get("discovery_url") or "").strip() or None,
+        )
+        validated_description = None
+        for reason in homepage_reasons:
+            if isinstance(reason, dict) and str(reason.get("text") or "").strip():
+                validated_description = str(reason.get("text") or "").strip()[:240]
+                break
 
         set_validation_metadata(
             entity,
@@ -1560,6 +1758,18 @@ async def _refresh_validation_identity_slice(
                 "identity_confidence": entity.identity_confidence,
                 "official_website_confidence": "high" if official_website else validation.get("official_website_confidence"),
                 "vendor_classification": vendor_classification or validation.get("vendor_classification"),
+                "page_classification": page_classification,
+                "short_description": validation.get("short_description")
+                or (
+                    str((entity.metadata_json or {}).get("short_description") or "").strip()
+                    if isinstance(entity.metadata_json, dict)
+                    else None
+                ),
+                "validated_description": validated_description,
+                "validation_score": max(
+                    float(validation.get("validation_score") or 0.0),
+                    float(validation.get("priority_score") or 0.0) + (4.0 if homepage_reasons else 0.0),
+                ),
                 "identity_diagnostics": {
                     "identity_error": homepage_error or entity.identity_error,
                     "resolved_via_redirect": bool(identity.get("resolved_via_redirect", False)),
@@ -1595,9 +1805,7 @@ async def _build_validation_queue_items(
     limit: Optional[int] = None,
     include_rejected: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], Optional[str]]:
-    screenings, quality_payload, latest_run_id = await _latest_screenings_for_workspace_run(db, workspace_id)
-    if not screenings:
-        return [], quality_payload, latest_run_id
+    _screenings, quality_payload, latest_run_id = await _latest_screenings_for_workspace_run(db, workspace_id)
     if quality_payload["run_quality_tier"] == "degraded" and not allow_degraded:
         raise HTTPException(
             status_code=409,
@@ -1612,47 +1820,39 @@ async def _build_validation_queue_items(
             },
         )
 
-    candidates = [row for row in screenings if bool(row.ranking_eligible) and row.candidate_entity_id]
-    if not include_rejected:
-        candidates = [
-            row for row in candidates
-            if str(row.decision_classification or "insufficient_evidence") != "not_good_target"
-        ]
-    if not candidates:
+    entities, origins_by_entity = await _candidate_entities_for_workspace(db, workspace_id)
+    if not entities:
         return [], quality_payload, latest_run_id
-
-    entity_ids = [int(row.candidate_entity_id) for row in candidates if row.candidate_entity_id]
-    entity_map, origins_by_entity = await _candidate_entity_maps(db, entity_ids)
+    entity_ids = [int(entity.id) for entity in entities]
+    screening_map = await _latest_screenings_by_candidate_entity(db, workspace_id, entity_ids)
 
     items: list[dict[str, Any]] = []
-    for screening in candidates:
-        entity = entity_map.get(int(screening.candidate_entity_id or 0))
-        if entity is None:
-            continue
+    for entity in entities:
+        screening = screening_map.get(int(entity.id))
         validation = build_candidate_validation_context(
             screening=screening,
             entity=entity,
-            origins=origins_by_entity.get(entity.id, []),
+            origins=origins_by_entity.get(int(entity.id), []),
         )
         if validation["status"] in {VALIDATION_STATUS_REJECT, VALIDATION_STATUS_REMOVED} and not include_rejected:
             continue
-        screening_meta = screening.screening_meta_json if isinstance(screening.screening_meta_json, dict) else {}
-        source_summary = screening.source_summary_json if isinstance(screening.source_summary_json, dict) else {}
-        universe_context = _universe_context_from_screening(screening_meta, source_summary)
-        top_claim = screening.top_claim_json if isinstance(screening.top_claim_json, dict) else {}
-        if not top_claim.get("source_url") or not top_claim.get("source_tier"):
-            top_claim = {}
+        registry_payload = _candidate_registry_payload(entity)
         item = {
-            "candidate_entity_id": entity.id,
-            "company_id": screening.company_id,
-            "company_name": screening.candidate_name,
-            "official_website_url": screening.candidate_official_website or entity.canonical_website,
-            "discovery_url": screening.candidate_discovery_url or entity.discovery_primary_url,
-            "hq_country": (screening_meta.get("candidate_hq_country") or entity.country or None),
+            "candidate_entity_id": int(entity.id),
+            "company_id": screening.company_id if screening else None,
+            "display_name": registry_payload["display_name"],
+            "company_name": registry_payload["display_name"],
+            "legal_name": registry_payload["legal_name"],
+            "registry_id": registry_payload["registry_id"],
+            "registry_source": registry_payload["registry_source"],
+            "registry_country": registry_payload["registry_country"],
+            "registry_match_confidence": registry_payload["registry_match_confidence"],
+            "registry_status": registry_payload["registry_status"],
+            "registry_fields": registry_payload.get("registry_fields") or {},
+            "official_website_url": validation.get("official_website_url") or entity.canonical_website,
+            "discovery_url": entity.discovery_primary_url,
+            "hq_country": entity.country or None,
             "entity_type": validation["entity_type"],
-            "decision_classification": str(screening.decision_classification or "insufficient_evidence"),
-            "evidence_sufficiency": str(screening.evidence_sufficiency or "insufficient"),
-            "rationale_summary": screening.rationale_summary,
             "validation_status": validation["status"],
             "validation_recommendation": validation["recommendation"],
             "promoted_to_cards": bool(validation["promoted_to_cards"]),
@@ -1662,18 +1862,19 @@ async def _build_validation_queue_items(
             "validation_source_families": validation["source_families"],
             "origin_types": validation["origin_types"],
             "discovery_sources": validation["discovery_sources"],
-            "capability_signals": universe_context["capability_signals"],
-            "likely_verticals": universe_context["likely_verticals"],
+            "short_description": validation.get("short_description"),
+            "validated_description": validation.get("validated_description"),
+            "page_classification": validation.get("page_classification"),
+            "validation_score": float(validation.get("validation_score") or validation.get("priority_score") or 0.0),
+            "geo_signals": validation.get("geo_signals") or [],
+            "directness": validation.get("directness") or "broad_market",
             "vendor_classification": validation["vendor_classification"],
             "identity_confidence": validation["identity_confidence"],
             "official_website_confidence": validation["official_website_confidence"],
             "identity_diagnostics": validation.get("identity_diagnostics") if isinstance(validation.get("identity_diagnostics"), dict) else {},
             "multi_origin_count": len(validation["origin_types"]),
             "priority_score": float(validation["priority_score"] or 0.0),
-            "top_claim": top_claim,
-            "reason_codes": _reason_codes_payload(screening),
-            "expansion_provenance": universe_context["expansion_provenance"],
-            "citation_summary_v1": _citation_summary_from_meta(screening_meta),
+            "provenance_summary": validation.get("provenance_summary") or {},
         }
         items.append(item)
 
@@ -3311,6 +3512,9 @@ async def run_discovery(workspace_id: int, db: AsyncSession = Depends(get_db)):
         expansion_confirmed=bool(expansion_brief.get("confirmed_at")),
         database_url_sync=_database_url_sync_for_async_session(db),
         check_worker=True,
+        geo_scope=profile.geo_scope if profile else {},
+        buyer_company_url=profile.buyer_company_url if profile else None,
+        context_pack_json=profile.context_pack_json if profile else {},
     )
     if not profile:
         discovery_readiness["runnable"] = False
@@ -3729,80 +3933,38 @@ async def list_top_candidates(
     workspace = workspace_result.scalar_one_or_none()
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    queue_items, quality_payload, _latest_run_id = await _build_validation_queue_items(
+    universe_items, quality_payload, _latest_run_id = await _build_universe_candidate_items(
         db,
         workspace_id,
         allow_degraded=allow_degraded,
         limit=limit,
-        include_rejected=True,
     )
-    if not queue_items:
+    if not universe_items:
         return []
 
-    company_ids = [int(item["company_id"]) for item in queue_items if item.get("company_id")]
-    company_map: Dict[int, Company] = {}
-    if company_ids:
-        company_result = await db.execute(select(Company).where(Company.id.in_(company_ids)))
-        company_map = {row.id: row for row in company_result.scalars().all()}
-    evidence_count_by_company: Dict[int, int] = {}
-    if company_ids:
-        evidence_counts_result = await db.execute(
-            select(SourceEvidence.company_id, func.count(SourceEvidence.id))
-            .where(SourceEvidence.company_id.in_(company_ids))
-            .group_by(SourceEvidence.company_id)
-        )
-        evidence_count_by_company = {
-            int(company_id): int(count)
-            for company_id, count in evidence_counts_result.all()
-            if company_id is not None
-        }
-
     output: List[UniverseTopCandidateResponse] = []
-    for item in queue_items:
-        company = company_map.get(int(item["company_id"])) if item.get("company_id") else None
+    for item in universe_items:
         output.append(
             UniverseTopCandidateResponse(
-                company_id=item.get("company_id"),
                 candidate_entity_id=item["candidate_entity_id"],
-                company_name=(company.name if company else item["company_name"]),
-                company_status=(company.status.value if company else None),
+                display_name=item["display_name"],
+                legal_name=item.get("legal_name"),
+                registry_id=item.get("registry_id"),
+                registry_source=item.get("registry_source"),
+                registry_country=item.get("registry_country"),
+                registry_summary=item.get("registry_summary") or {},
                 official_website_url=item.get("official_website_url"),
-                hq_country=(company.hq_country if company and company.hq_country else item.get("hq_country")),
-                evidence_count=(evidence_count_by_company.get(company.id, 0) if company else 0),
-                discovery_sources=item.get("discovery_sources") or [],
-                entity_type=item.get("entity_type") or "company",
-                decision_classification=item["decision_classification"],
-                evidence_sufficiency=item["evidence_sufficiency"],
-                reason_codes=item.get("reason_codes") or {"positive": [], "caution": [], "reject": []},
-                rationale_summary=item.get("rationale_summary"),
-                top_claim=item.get("top_claim") or {},
-                citation_summary_v1=item.get("citation_summary_v1"),
-                capability_signals=item.get("capability_signals") or [],
-                likely_verticals=item.get("likely_verticals") or [],
-                scope_buckets=item.get("validation_lane_ids") or [],
-                origin_types=item.get("origin_types") or [],
-                registry_identity={},
-                expansion_provenance=item.get("expansion_provenance") or [],
-                missing_claim_groups=[],
-                unresolved_contradictions_count=0,
-                ranking_eligible=True,
-                validation_status=item["validation_status"],
-                validation_recommendation=item["validation_recommendation"],
-                validation_queue_rank=item["validation_queue_rank"],
-                promoted_to_cards=bool(item.get("promoted_to_cards")),
-                validation_lane_ids=item.get("validation_lane_ids") or [],
-                validation_lane_labels=item.get("validation_lane_labels") or [],
-                validation_query_families=item.get("validation_query_families") or [],
-                validation_source_families=item.get("validation_source_families") or [],
-                vendor_classification=item.get("vendor_classification"),
-                identity_confidence=item.get("identity_confidence"),
-                official_website_confidence=item.get("official_website_confidence"),
-                multi_origin_count=int(item.get("multi_origin_count") or 0),
-                priority_score=float(item.get("priority_score") or 0.0),
-                run_quality_tier=quality_payload["run_quality_tier"],
-                quality_gate_passed=bool(quality_payload["quality_gate_passed"]),
-                quality_audit_passed=bool(quality_payload["quality_audit_passed"]),
-                degraded_reasons=quality_payload["degraded_reasons"],
+                discovery_url=item.get("discovery_url"),
+                short_description=item.get("short_description"),
+                discovery_score=float(item.get("discovery_score") or 0.0),
+                source_families=item.get("source_families") or [],
+                query_families=item.get("query_families") or [],
+                lane_ids=item.get("lane_ids") or [],
+                lane_labels=item.get("lane_labels") or [],
+                geo_signals=item.get("geo_signals") or [],
+                directness=item.get("directness") or "broad_market",
+                node_fit_summary=item.get("node_fit_summary") or {},
+                provenance_summary=item.get("provenance_summary") or {},
             )
         )
 
@@ -3908,8 +4070,6 @@ async def update_validation_candidate(
         .limit(1)
     )
     screening = screening_result.scalar_one_or_none()
-    if screening is None:
-        raise HTTPException(status_code=404, detail="No screening found for candidate entity")
 
     validation = validation_metadata(entity)
     recommendation = str(validation.get("recommendation") or "").strip() or requested_status
@@ -3927,7 +4087,7 @@ async def update_validation_candidate(
     )
 
     company: Optional[Company] = None
-    if screening.company_id:
+    if screening is not None and screening.company_id:
         company_result = await db.execute(
             select(Company).where(Company.workspace_id == workspace_id, Company.id == screening.company_id)
         )
@@ -3936,9 +4096,9 @@ async def update_validation_candidate(
     if promoted_to_cards and company is None:
         company = Company(
             workspace_id=workspace_id,
-            name=screening.candidate_name,
-            website=screening.candidate_official_website or entity.canonical_website,
-            hq_country=(screening.screening_meta_json or {}).get("candidate_hq_country") if isinstance(screening.screening_meta_json, dict) else entity.country,
+            name=entity.canonical_name,
+            website=entity.canonical_website,
+            hq_country=entity.country,
             tags_custom=["validation:promoted_to_cards"],
             status=CompanyStatus.kept,
             why_relevant=[],
@@ -3946,7 +4106,8 @@ async def update_validation_candidate(
         )
         db.add(company)
         await db.flush()
-        screening.company_id = company.id
+        if screening is not None:
+            screening.company_id = company.id
 
     if company is not None and not company.is_manual:
         if requested_status == VALIDATION_STATUS_REJECT:
@@ -4304,6 +4465,10 @@ async def get_report_snapshot(
 async def list_report_cards(
     workspace_id: int,
     report_id: int,
+    lane: Optional[str] = Query(
+        None,
+        description="Optional capability or adjacency lane filter.",
+    ),
     size_bucket: Optional[str] = Query(
         None,
         description="Optional bucket filter: sme_in_range|unknown|outside_sme_range",
@@ -4399,6 +4564,25 @@ async def list_report_cards(
         )
         claims = claims_result.scalars().all()
         screening = await _latest_screening_for_company(db, workspace_id, company.id)
+        validation_lane_ids: list[str] = []
+        validation_lane_labels: list[str] = []
+        if screening and screening.candidate_entity_id:
+            entity_result = await db.execute(
+                select(CandidateEntity).where(
+                    CandidateEntity.workspace_id == workspace_id,
+                    CandidateEntity.id == screening.candidate_entity_id,
+                )
+            )
+            entity = entity_result.scalar_one_or_none()
+            if entity is not None:
+                validation = validation_metadata(entity)
+                validation_lane_ids = validation.get("lane_ids") or []
+                validation_lane_labels = validation.get("lane_labels") or []
+        if lane:
+            requested_lane = str(lane).strip().lower()
+            lane_keys = {str(value).strip().lower() for value in validation_lane_ids + validation_lane_labels if str(value).strip()}
+            if requested_lane not in lane_keys:
+                continue
 
         estimate = item.lens_breakdown_json.get("size_estimate")
         if estimate is None:
@@ -4541,6 +4725,8 @@ async def list_report_cards(
                 item.evidence_summary_json if isinstance(item.evidence_summary_json, dict) and item.evidence_summary_json else evidence_quality_summary
             ),
             known_unknowns=known_unknowns[:8],
+            lane_ids=validation_lane_ids,
+            lane_labels=validation_lane_labels,
         )
         cards.append(card)
 
@@ -5819,21 +6005,6 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         if row.company_id not in latest_by_company:
             latest_by_company[row.company_id] = row
 
-    universe_cfg = gate_cfg.get("universe", {})
-    allowed_classes = set(universe_cfg.get("allowed_classes", ["good_target", "borderline_watchlist"]))
-    min_decision_qualified = int(
-        universe_cfg.get("min_decision_qualified_companies", universe_cfg.get("min_decision_qualified_vendors", 5))
-    )
-    max_insufficient_ratio = float(universe_cfg.get("max_insufficient_ratio", 0.5))
-
-    decision_qualified = [
-        row for row in latest_by_company.values()
-        if str(row.decision_classification or "") in allowed_classes
-    ]
-    insufficient_count = len(
-        [row for row in latest_by_company.values() if str(row.evidence_sufficiency or "") == "insufficient"]
-    )
-    insufficient_ratio = insufficient_count / max(1, len(latest_by_company))
     ranking_eligible_count = len([row for row in screenings_all if bool(row.ranking_eligible)])
 
     kept_companies_result = await db.execute(
@@ -5843,25 +6014,18 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         )
     )
     kept_companies_count = kept_companies_result.scalar() or 0
-    universe_ready = (
-        len(decision_qualified) >= min_decision_qualified
-        and insufficient_ratio <= max_insufficient_ratio
-    )
-    if len(decision_qualified) < min_decision_qualified:
-        missing_items["universe"].append(
-            f"Need decision-qualified companies ({len(decision_qualified)}/{min_decision_qualified})"
-        )
-    if insufficient_ratio > max_insufficient_ratio:
-        missing_items["universe"].append(
-            f"Evidence insufficiency ratio too high ({round(insufficient_ratio, 2)} > {max_insufficient_ratio})"
-        )
-    if kept_companies_count < 5:
-        missing_items["universe"].append(f"Keep at least 5 companies ({kept_companies_count} kept)")
-    
     candidate_entities_result = await db.execute(
         select(CandidateEntity).where(CandidateEntity.workspace_id == workspace_id)
     )
     candidate_entities = candidate_entities_result.scalars().all()
+    candidate_entities_count = len(candidate_entities)
+    universe_ready = scope_review_ready and candidate_entities_count > 0
+    if not universe_ready:
+        missing_items["universe"].append(
+            "Run universe discovery to populate the candidate registry"
+            if scope_review_ready
+            else "Confirm the scope review before building the candidate registry"
+        )
     promoted_to_cards_count = len(
         [entity for entity in candidate_entities if bool(validation_metadata(entity).get("promoted_to_cards"))]
     )
@@ -5871,7 +6035,7 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         missing_items["validation"].append("Run universe discovery to populate a ranked validation queue")
 
     # Check segmentation (has reviewed and focused)
-    segmentation_ready = universe_ready and len(decision_qualified) >= 10
+    segmentation_ready = universe_ready and kept_companies_count >= 10
     if not segmentation_ready and universe_ready:
         missing_items["segmentation"].append("Review and keep at least 10 companies")
     
@@ -5918,6 +6082,9 @@ async def get_gates(workspace_id: int, db: AsyncSession = Depends(get_db)):
         expansion_confirmed=expansion_confirmed,
         database_url_sync=_database_url_sync_for_async_session(db),
         check_worker=True,
+        geo_scope=profile.geo_scope if profile else {},
+        buyer_company_url=profile.buyer_company_url if profile else None,
+        context_pack_json=profile.context_pack_json if profile else {},
     )
     if not profile and "company_profile_missing" not in discovery_readiness["reasons_blocked"]:
         discovery_readiness["reasons_blocked"] = [

@@ -28,13 +28,6 @@ function hostLabel(url?: string | null) {
   }
 }
 
-function classificationClass(classification?: string | null) {
-  if (classification === "good_target") return "badge-success";
-  if (classification === "borderline_watchlist") return "badge-warning";
-  if (classification === "not_good_target") return "badge-danger";
-  return "badge-neutral";
-}
-
 function queueGroupLabel(item: ValidationQueueItem) {
   return item.validation_lane_labels[0] || item.validation_lane_ids[0] || "Unscoped";
 }
@@ -61,15 +54,18 @@ function QueueCard({
         <div className="space-y-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-lg text-oxford">{item.company_name}</h3>
-            <span className={clsx("badge", classificationClass(item.decision_classification))}>
-              {item.decision_classification.replaceAll("_", " ")}
-            </span>
             <span className="rounded-full border border-steel-200 bg-steel-50 px-2 py-0.5 text-xs text-steel-500">
               {STATUS_LABELS[item.validation_status] || item.validation_status}
             </span>
+            {item.page_classification ? (
+              <span className="rounded-full border border-info/20 bg-info/10 px-2 py-0.5 text-xs text-info">
+                {item.page_classification.replaceAll("_", " ")}
+              </span>
+            ) : null}
           </div>
           <div className="text-sm text-steel-500">
-            Rank #{item.validation_queue_rank} • {item.hq_country || "Unknown country"} • {item.entity_type}
+            Rank #{item.validation_queue_rank} • {item.hq_country || "Unknown country"} • {item.entity_type} •{" "}
+            {item.directness.replaceAll("_", " ")}
           </div>
           {item.official_website_url ? (
             <a
@@ -87,15 +83,16 @@ function QueueCard({
           <div>Identity {item.identity_confidence || "unknown"}</div>
           <div>Website {item.official_website_confidence || "unknown"}</div>
           <div>{item.vendor_classification || "unclassified"}</div>
+          <div>Validation {Math.round(item.validation_score || 0)}</div>
           {item.identity_diagnostics?.has_first_party_evidence ? (
             <div>Homepage signals {item.identity_diagnostics.signals_extracted || 0}</div>
           ) : null}
         </div>
       </div>
 
-      {item.rationale_summary ? (
-        <p className="text-sm leading-6 text-steel-600">{item.rationale_summary}</p>
-      ) : null}
+      <p className="text-sm leading-6 text-steel-600">
+        {item.validated_description || item.short_description || "No validated description yet."}
+      </p>
 
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-2">
@@ -120,18 +117,15 @@ function QueueCard({
         </div>
       </div>
 
-      {item.capability_signals.length ? (
-        <div className="space-y-2">
-          <div className="text-[11px] uppercase tracking-[0.18em] text-steel-400">Capability Signals</div>
-          <div className="flex flex-wrap gap-2">
-            {item.capability_signals.slice(0, 5).map((signal) => (
-              <span key={signal} className="rounded-full border border-success/20 bg-success/10 px-2.5 py-1 text-xs text-success">
-                {signal}
-              </span>
-            ))}
-          </div>
+      <div className="space-y-2">
+        <div className="text-[11px] uppercase tracking-[0.18em] text-steel-400">Provenance</div>
+        <div className="text-sm text-steel-600">
+          {item.multi_origin_count} origin types •{" "}
+          {String(item.provenance_summary?.source_family_count || item.validation_source_families.length)} source
+          families • {String(item.provenance_summary?.query_family_count || item.validation_query_families.length)} query
+          families
         </div>
-      ) : null}
+      </div>
 
       <div className="flex flex-wrap justify-between gap-3 border-t border-steel-100 pt-4">
         <div className="text-xs text-steel-400">
@@ -252,7 +246,8 @@ export default function ValidationPage() {
           <div>
             <h2 className="text-xl font-semibold text-oxford">Validation Queue</h2>
             <p className="mt-1 text-sm text-steel-500">
-              This queue is sourced from Universe ranking and diversified by adjacency lane and query family.
+              This queue is sourced from Universe ranking and is the first place where light enrichment and shortlist
+              decisions happen.
             </p>
           </div>
           <div className="flex items-center gap-2">
